@@ -4,6 +4,18 @@ from pico_modules.pico_joystick2state import JoystickRateHandler
 from pico_modules.pico_transmitpackets import CRSFPacketProcessor
 from serial.tools import list_ports
 
+from config import load_config
+
+
+def validate_port(name: str, port: str) -> bool:
+    available = [p.device for p in list_ports.comports()]
+    if port not in available:
+        print(
+            f"Warning: {name} port '{port}' not found. Available ports: {', '.join(available) or 'None'}"
+        )
+        return False
+    return True
+
 
 class HardwareManager:
     def __init__(self, ui):
@@ -12,30 +24,48 @@ class HardwareManager:
         """
         self.ui = ui
 
-        # Define COM ports and baud rates for each device
+        # Load configuration
+        cfg = load_config()
         self.configs = {
-            "video_feed": {"port": "COM5", "baudrate": 9600},
-            "joystick": {"port": "COM14", "baudrate": 9600},
-            "crsf": {"port": "COM3", "baudrate": 921600}
+            "joystick": cfg.get("joystick", {}),
+            "crsf": cfg.get("crsf", {}),
         }
 
         # Initialize hardware components
         self.video_feed = VideoFeed(self.ui.VideoLabel)
-        self.joystick = JoystickRateHandler(
-            port=self.configs["joystick"]["port"],
-            baudrate=self.configs["joystick"]["baudrate"],
-            update_interval=0.01,
-            roll_rate_max=100,
-            pitch_rate_max=100,
-            roll_sensitivity=0.3,
-            pitch_sensitivity=0.3,
-            roll_exponent=1.5,
-            pitch_exponent=1.5,
-        )
-        self.crsf_processor = CRSFPacketProcessor(
-            port=self.configs["crsf"]["port"],
-            baudrate=self.configs["crsf"]["baudrate"]
-        )
+
+        self.joystick = None
+        joy_cfg = self.configs["joystick"]
+        if validate_port("joystick", joy_cfg.get("port")):
+            try:
+                self.joystick = JoystickRateHandler(
+                    port=joy_cfg.get("port"),
+                    baudrate=joy_cfg.get("baudrate"),
+                    update_interval=0.01,
+                    roll_rate_max=100,
+                    pitch_rate_max=100,
+                    roll_sensitivity=0.3,
+                    pitch_sensitivity=0.3,
+                    roll_exponent=1.5,
+                    pitch_exponent=1.5,
+                )
+            except Exception as exc:
+                print(f"Failed to initialize joystick: {exc}")
+        else:
+            print("Joystick disabled due to unavailable port.")
+
+        self.crsf_processor = None
+        crsf_cfg = self.configs["crsf"]
+        if validate_port("CRSF", crsf_cfg.get("port")):
+            try:
+                self.crsf_processor = CRSFPacketProcessor(
+                    port=crsf_cfg.get("port"),
+                    baudrate=crsf_cfg.get("baudrate"),
+                )
+            except Exception as exc:
+                print(f"Failed to initialize CRSF processor: {exc}")
+        else:
+            print("CRSF disabled due to unavailable port.")
 
         # Timer to check hardware connections
         self.check_timer = QTimer()
@@ -47,13 +77,16 @@ class HardwareManager:
         Check and manage connections to all hardware components.
         """
         for name, config in self.configs.items():
-            if not self.is_port_connected(config["port"]):
+            port = config.get("port")
+            if not port:
+                continue
+            if not self.is_port_connected(port):
                 self.ui.transmitstatus1.setText(f"{name} Disconnected")
-                print(f"{name} on {config['port']} disconnected. Attempting to reconnect...")
+                print(f"{name} on {port} disconnected. Attempting to reconnect...")
                 self.reconnect_hardware(name, config)
             else:
                 self.ui.transmitstatus1.setText(f"{name} Connected")
-                print(f"{name} on {config['port']} connected.")
+                print(f"{name} on {port} connected.")
 
     def is_port_connected(self, port):
         """
@@ -67,11 +100,9 @@ class HardwareManager:
         Attempt to reconnect a specific hardware component.
         """
         try:
-            if name == "video_feed":
-                self.video_feed.start()
-            elif name == "joystick":
+            if name == "joystick" and self.joystick and hasattr(self.joystick, "connect_serial"):
                 self.joystick.connect_serial()
-            elif name == "crsf":
+            elif name == "crsf" and self.crsf_processor:
                 self.crsf_processor.connect_serial()
             print(f"Reconnected to {name} on {config['port']}")
         except Exception as e:
@@ -82,6 +113,8 @@ class HardwareManager:
         Cleanly close all hardware connections.
         """
         self.video_feed.stop()
-        self.joystick.close_serial()
-        self.crsf_processor.close_serial()
+        if self.joystick and hasattr(self.joystick, "close_serial"):
+            self.joystick.close_serial()
+        if self.crsf_processor and hasattr(self.crsf_processor, "close_serial"):
+            self.crsf_processor.close_serial()
         print("All hardware connections closed.")

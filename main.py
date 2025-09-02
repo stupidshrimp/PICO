@@ -2,7 +2,9 @@ import sys
 import os
 from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QTimer
- 
+
+from serial.tools import list_ports
+
 from modules import *
 from widgets import *
 
@@ -14,6 +16,19 @@ from pico_modules.labelsmanager import LabelManager
 
 # Import the custom OSD module
 from pico_modules.rollpitch_osd import RollPitchOSD
+
+from config import load_config
+
+
+def validate_port(name: str, port: str) -> bool:
+    """Validate that a serial port exists on the system."""
+    available = [p.device for p in list_ports.comports()]
+    if port not in available:
+        print(
+            f"Warning: {name} port '{port}' not found. Available ports: {', '.join(available) or 'None'}"
+        )
+        return False
+    return True
 
 widgets = None
 
@@ -34,32 +49,47 @@ class MainWindow(QMainWindow):
         # Start the video feed
         self.video_feed.start()        
 
-        # User-defined parameters for the joystick handler
-        PORT = "COM14"  # Replace with your COM port
-        BAUDRATE = 9600
+        config = load_config()
+
+        # Joystick parameters
+        joystick_cfg = config.get("joystick", {})
         UPDATE_INTERVAL = 0.01  # 10 ms update interval
         ROLL_SENSITIVITY = 0.3  # Higher sensitivity for roll
         PITCH_SENSITIVITY = 0.3  # Normal sensitivity for pitch
         ROLL_EXPONENT = 1.5  # Exponential curve for roll
         PITCH_EXPONENT = 1.5  # Gentler exponential curve for pitch
 
-        # Initialize the joystick handler
-        self.joystick = JoystickRateHandler(
-            port=PORT,
-            baudrate=BAUDRATE,
-            update_interval=UPDATE_INTERVAL,
-            roll_rate_max=100,  # Max roll rate (degrees/second)
-            pitch_rate_max=100,  # Max pitch rate (degrees/second)
-            roll_sensitivity=ROLL_SENSITIVITY,
-            pitch_sensitivity=PITCH_SENSITIVITY,
-            roll_exponent=ROLL_EXPONENT,
-            pitch_exponent=PITCH_EXPONENT,
-        )
-        
+        self.joystick = None
+        if validate_port("joystick", joystick_cfg.get("port")):
+            try:
+                self.joystick = JoystickRateHandler(
+                    port=joystick_cfg.get("port"),
+                    baudrate=joystick_cfg.get("baudrate"),
+                    update_interval=UPDATE_INTERVAL,
+                    roll_rate_max=100,  # Max roll rate (degrees/second)
+                    pitch_rate_max=100,  # Max pitch rate (degrees/second)
+                    roll_sensitivity=ROLL_SENSITIVITY,
+                    pitch_sensitivity=PITCH_SENSITIVITY,
+                    roll_exponent=ROLL_EXPONENT,
+                    pitch_exponent=PITCH_EXPONENT,
+                )
+            except Exception as e:
+                print(f"Failed to initialize joystick: {e}")
+        else:
+            print("Joystick disabled due to unavailable port.")
+
         # Initialize CRSFPacketProcessor
-        CRSF_PORT = "COM3"  # Replace with the correct port for CRSF
-        CRSF_BAUDRATE = 921600
-        self.crsf_processor = CRSFPacketProcessor(port=CRSF_PORT, baudrate=CRSF_BAUDRATE)
+        crsf_cfg = config.get("crsf", {})
+        self.crsf_processor = None
+        if validate_port("CRSF", crsf_cfg.get("port")):
+            try:
+                self.crsf_processor = CRSFPacketProcessor(
+                    port=crsf_cfg.get("port"), baudrate=crsf_cfg.get("baudrate")
+                )
+            except Exception as e:
+                print(f"Failed to initialize CRSF processor: {e}")
+        else:
+            print("CRSF disabled due to unavailable port.")
 
         # Create a dictionary of QLabel references for LabelManager
         labels = {
@@ -153,6 +183,13 @@ class MainWindow(QMainWindow):
         """
         Fetch joystick data and update labels with raw angles.
         """
+        if not self.joystick:
+            self.label_manager.update_labels({
+                "pitch": "N/A",
+                "roll": "N/A",
+                "yaw": "N/A",
+            })
+            return
         try:
             # Fetch raw joystick angles for updating the labels
             raw_pitch, raw_roll = self.joystick.update_angles()
@@ -164,7 +201,6 @@ class MainWindow(QMainWindow):
                 "yaw": 0,  # Replace with actual yaw data if available
             })
         except Exception as e:
-            #print(f"Error updating labels: {e}")
             self.label_manager.update_labels({
                 "pitch": "Error",
                 "roll": "Error",
@@ -175,6 +211,12 @@ class MainWindow(QMainWindow):
         """
         Transmit CRSF packets using mapped joystick angles and update transmit status.
         """
+        if not self.joystick or not self.crsf_processor:
+            self.label_manager.update_labels({
+                "Transmit Status": "Hardware Unavailable",
+            })
+            return
+
         try:
             # Fetch mapped joystick angles for transmission
             mapped_pitch, mapped_roll = self.joystick.update_mapped_angles()
@@ -207,6 +249,15 @@ class MainWindow(QMainWindow):
         """
         Fetch joystick data, update labels using raw angles, and transmit CRSF packets using mapped angles.
         """
+        if not self.joystick or not self.crsf_processor:
+            self.label_manager.update_labels({
+                "pitch": "N/A",
+                "roll": "N/A",
+                "yaw": "N/A",
+                "Transmit Status": "Hardware Unavailable",
+            })
+            return
+
         try:
             # Fetch raw joystick angles for updating the labels
             raw_pitch, raw_roll = self.joystick.update_angles()
