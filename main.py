@@ -160,17 +160,6 @@ class MainWindow(QMainWindow):
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
         self.rollpitch_osd.show()
 
-        # For simulation, we set up our simulated pitch values.
-        self.simulated_pitch = 0.0    # Start at 0 degrees
-        self.pitch_direction = 1      # 1 means increasing pitch
-
-        # For this demo, we'll keep roll constant (for example, 0)
-        self.simulated_roll = 0.0
-
-        # Timer to animate the OSD overlay (update every 100ms)
-        self.osd_timer = QTimer(self)
-        self.osd_timer.timeout.connect(self.update_osd_animation)
-        self.osd_timer.start(100)
 
         # TOGGLE MENU
         widgets.toggleButton.clicked.connect(lambda: UIFunctions.toggleMenu(self, True))
@@ -200,29 +189,13 @@ class MainWindow(QMainWindow):
         widgets.stackedWidget.setCurrentWidget(widgets.home)
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
-    def update_osd_animation(self):
-        """
-        Update the OSD overlay's pitch value for demonstration.
-        The simulated pitch value will cycle from 0 up to 50, then down to -50, and repeat.
-        """
-        # Increment the pitch
-        self.simulated_pitch += self.pitch_direction * 2  # Change by 2 degrees per update
-
-        # Reverse direction if we reach the limits
-        if self.simulated_pitch >= 50:
-            self.pitch_direction = -1
-        elif self.simulated_pitch <= -50:
-            self.pitch_direction = 1
-
-        # Update the RollPitchOSD widget with the new pitch (and constant roll)
-        self.rollpitch_osd.setRollPitch(self.simulated_roll, self.simulated_pitch)
-
 
     def update_labels(self):
         """
         Fetch joystick data and update labels with raw angles.
         """
         if not self.joystick:
+            self.rollpitch_osd.setRollPitch(0.0, 0.0)
             self.label_manager.update_labels({
                 "pitch": "N/A",
                 "roll": "N/A",
@@ -239,12 +212,16 @@ class MainWindow(QMainWindow):
                 "roll": raw_roll,
                 "yaw": 0,  # Replace with actual yaw data if available
             })
+
+            # Update the OSD with the same joystick data
+            self.rollpitch_osd.setRollPitch(raw_roll, raw_pitch)
         except Exception as e:
             self.label_manager.update_labels({
                 "pitch": "Error",
                 "roll": "Error",
                 "yaw": "Error",
             })
+            self.rollpitch_osd.setRollPitch(0.0, 0.0)
 
     def transmit_data(self):
         """
@@ -289,6 +266,7 @@ class MainWindow(QMainWindow):
         Fetch joystick data, update labels using raw angles, and transmit CRSF packets using mapped angles.
         """
         if not self.joystick or not self.crsf_processor:
+            self.rollpitch_osd.setRollPitch(0.0, 0.0)
             self.label_manager.update_labels({
                 "pitch": "N/A",
                 "roll": "N/A",
@@ -307,6 +285,9 @@ class MainWindow(QMainWindow):
                 "roll": raw_roll,
                 "yaw": 0,  # Replace with actual yaw data if available
             })
+
+            # Update the OSD with the same joystick data
+            self.rollpitch_osd.setRollPitch(raw_roll, raw_pitch)
 
             # Fetch mapped angles for CRSF transmission
             mapped_pitch, mapped_roll = self.joystick.update_mapped_angles()
@@ -333,6 +314,7 @@ class MainWindow(QMainWindow):
                 "yaw": "Error",
                 "Transmit Status": "Error",
             })
+            self.rollpitch_osd.setRollPitch(0.0, 0.0)
 
     def setup_configuration_page(self):
         """Create configuration page for selecting COM ports."""
