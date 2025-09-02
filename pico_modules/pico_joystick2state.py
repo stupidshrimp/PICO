@@ -3,6 +3,7 @@ import time
 from queue import Queue
 import threading
 import math
+import re
 
 
 class JoystickRateHandler:
@@ -67,7 +68,14 @@ class JoystickRateHandler:
         if not self.data_queue.empty():
             try:
                 raw_data = self.data_queue.get()
-                x, y = map(int, raw_data.split(","))
+
+                if "," in raw_data:
+                    x, y = map(int, raw_data.split(","))
+                else:
+                    match = re.search(r"X\s*=\s*(\d+)\s*Y\s*=\s*(\d+)", raw_data)
+                    if not match:
+                        raise ValueError
+                    x, y = map(int, match.groups())
 
                 # Dead zone implementation
                 dead_zone_threshold = self.dead_zone / 100 * 127  # Dead zone threshold for joystick range (0-127)
