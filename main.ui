@@ -7,14 +7,14 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1292</width>
-    <height>738</height>
+    <width>1240</width>
+    <height>662</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>940</width>
-    <height>560</height>
+    <width>1240</width>
+    <height>662</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -650,7 +650,7 @@ Button */
                <family>Segoe UI Semibold</family>
                <pointsize>12</pointsize>
                <italic>false</italic>
-               <fontweight></fontweight>
+               <weight>63</weight>
               </font>
              </property>
              <property name="text">
