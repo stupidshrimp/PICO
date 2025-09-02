@@ -45,16 +45,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        # Ensure the main window always fits its contents by removing the
-        # fixed minimum size added in the generated UI file and adjusting the
-        # window to the layout's size hint. This allows the GUI to resize based
-        # on the widgets it contains and prevents it from being smaller than the
-        # required size.
-        self.setMinimumSize(0, 0)
+        # Size the window using the command page and keep it fixed. This
+        # ensures the GUI is always large enough for its contents and does not
+        # change size when switching between pages.
+        self.ui.stackedWidget.setCurrentWidget(self.ui.new_page)
         self.adjustSize()
-        # Default to a wider and shorter window
-        self.resize(1600, 600)
-        self.setMinimumSize(self.size())
+        self.setFixedSize(self.size())
+        self.ui.stackedWidget.setCurrentWidget(self.ui.home)
 
         global widgets
         widgets = self.ui
@@ -423,10 +420,6 @@ class MainWindow(QMainWindow):
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
-            # Resize window to fit the contents of the command page
-            self.setMinimumSize(0, 0)
-            self.adjustSize()
-            self.setMinimumSize(self.size())
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
