@@ -1,6 +1,14 @@
 import sys
 import os
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QComboBox,
+    QLabel,
+    QHBoxLayout,
+    QWidget,
+    QVBoxLayout,
+)
 from PySide6.QtCore import Qt, QTimer
 
 from serial.tools import list_ports
@@ -40,6 +48,20 @@ class MainWindow(QMainWindow):
         global widgets
         widgets = self.ui
 
+        # Update application branding
+        self.ui.titleLeftApp.setText("PICO Program")
+        self.ui.titleLeftDescription.setText(
+            "Pilotless Integrated Computer Operated Program"
+        )
+
+        # Remove unwanted side tabs
+        self.ui.btn_save.hide()
+        self.ui.btn_exit.hide()
+
+        # Rename side tab buttons
+        self.ui.btn_new.setText("Command")
+        self.ui.btn_widgets.setText("Configuration")
+
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
         # self.setAttribute(Qt.WA_TranslucentBackground)
@@ -51,27 +73,30 @@ class MainWindow(QMainWindow):
 
         config = load_config()
 
+        # Configuration sections
+        self.joystick_cfg = config.get("joystick", {})
+        self.crsf_cfg = config.get("crsf", {})
+
         # Joystick parameters
-        joystick_cfg = config.get("joystick", {})
-        UPDATE_INTERVAL = 0.01  # 10 ms update interval
-        ROLL_SENSITIVITY = 0.3  # Higher sensitivity for roll
-        PITCH_SENSITIVITY = 0.3  # Normal sensitivity for pitch
-        ROLL_EXPONENT = 1.5  # Exponential curve for roll
-        PITCH_EXPONENT = 1.5  # Gentler exponential curve for pitch
+        self.UPDATE_INTERVAL = 0.01  # 10 ms update interval
+        self.ROLL_SENSITIVITY = 0.3  # Higher sensitivity for roll
+        self.PITCH_SENSITIVITY = 0.3  # Normal sensitivity for pitch
+        self.ROLL_EXPONENT = 1.5  # Exponential curve for roll
+        self.PITCH_EXPONENT = 1.5  # Gentler exponential curve for pitch
 
         self.joystick = None
-        if validate_port("joystick", joystick_cfg.get("port")):
+        if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
                 self.joystick = JoystickRateHandler(
-                    port=joystick_cfg.get("port"),
-                    baudrate=joystick_cfg.get("baudrate"),
-                    update_interval=UPDATE_INTERVAL,
+                    port=self.joystick_cfg.get("port"),
+                    baudrate=self.joystick_cfg.get("baudrate"),
+                    update_interval=self.UPDATE_INTERVAL,
                     roll_rate_max=100,  # Max roll rate (degrees/second)
                     pitch_rate_max=100,  # Max pitch rate (degrees/second)
-                    roll_sensitivity=ROLL_SENSITIVITY,
-                    pitch_sensitivity=PITCH_SENSITIVITY,
-                    roll_exponent=ROLL_EXPONENT,
-                    pitch_exponent=PITCH_EXPONENT,
+                    roll_sensitivity=self.ROLL_SENSITIVITY,
+                    pitch_sensitivity=self.PITCH_SENSITIVITY,
+                    roll_exponent=self.ROLL_EXPONENT,
+                    pitch_exponent=self.PITCH_EXPONENT,
                 )
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
@@ -79,17 +104,20 @@ class MainWindow(QMainWindow):
             print("Joystick disabled due to unavailable port.")
 
         # Initialize CRSFPacketProcessor
-        crsf_cfg = config.get("crsf", {})
         self.crsf_processor = None
-        if validate_port("CRSF", crsf_cfg.get("port")):
+        if validate_port("CRSF", self.crsf_cfg.get("port")):
             try:
                 self.crsf_processor = CRSFPacketProcessor(
-                    port=crsf_cfg.get("port"), baudrate=crsf_cfg.get("baudrate")
+                    port=self.crsf_cfg.get("port"),
+                    baudrate=self.crsf_cfg.get("baudrate"),
                 )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         else:
             print("CRSF disabled due to unavailable port.")
+
+        # Setup configuration page for COM port selections
+        self.setup_configuration_page()
 
         # Create a dictionary of QLabel references for LabelManager
         labels = {
@@ -143,7 +171,6 @@ class MainWindow(QMainWindow):
         widgets.btn_home.clicked.connect(self.buttonClick)
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
-        widgets.btn_save.clicked.connect(self.buttonClick)
 
         # EXTRA LEFT BOX
         widgets.toggleLeftBox.clicked.connect(lambda: UIFunctions.toggleLeftBox(self, True))
@@ -295,6 +322,91 @@ class MainWindow(QMainWindow):
                 "Transmit Status": "Error",
             })
 
+    def setup_configuration_page(self):
+        """Create configuration page for selecting COM ports."""
+        self.ui.configuration_page = QWidget()
+        widgets.configuration_page = self.ui.configuration_page
+        widgets.stackedWidget.addWidget(self.ui.configuration_page)
+
+        layout = QVBoxLayout(self.ui.configuration_page)
+        ports = [p.device for p in list_ports.comports()]
+
+        def add_port_selector(title):
+            container = QWidget()
+            row = QHBoxLayout(container)
+            row.addWidget(QLabel(title))
+            combo = QComboBox()
+            combo.addItems(ports)
+            row.addWidget(combo)
+            layout.addWidget(container)
+            return combo
+
+        self.control_port_combo = add_port_selector("Control System")
+        self.video_port_combo = add_port_selector("Video Transmitter")
+        self.elrs_port_combo = add_port_selector("ELRS Transmitter")
+
+        # Set default selections
+        self.control_port_combo.setCurrentText(self.joystick_cfg.get("port", ""))
+        self.elrs_port_combo.setCurrentText(self.crsf_cfg.get("port", ""))
+
+        # Connect signals
+        self.control_port_combo.currentTextChanged.connect(
+            self.on_control_port_selected
+        )
+        self.video_port_combo.currentTextChanged.connect(
+            self.on_video_port_selected
+        )
+        self.elrs_port_combo.currentTextChanged.connect(
+            self.on_elrs_port_selected
+        )
+
+    def on_control_port_selected(self, port: str):
+        """Handle selection of control system port."""
+        self.joystick_cfg["port"] = port
+        if self.joystick:
+            try:
+                self.joystick.serial_connection.close()
+            except Exception:
+                pass
+            self.joystick = None
+        if validate_port("joystick", port):
+            try:
+                self.joystick = JoystickRateHandler(
+                    port=port,
+                    baudrate=self.joystick_cfg.get("baudrate"),
+                    update_interval=self.UPDATE_INTERVAL,
+                    roll_rate_max=100,
+                    pitch_rate_max=100,
+                    roll_sensitivity=self.ROLL_SENSITIVITY,
+                    pitch_sensitivity=self.PITCH_SENSITIVITY,
+                    roll_exponent=self.ROLL_EXPONENT,
+                    pitch_exponent=self.PITCH_EXPONENT,
+                )
+            except Exception as e:
+                print(f"Failed to initialize joystick: {e}")
+
+    def on_video_port_selected(self, port: str):
+        """Handle selection of video transmitter port."""
+        self.video_port = port
+        print(f"Video transmitter port set to {port}")
+
+    def on_elrs_port_selected(self, port: str):
+        """Handle selection of ELRS transmitter port."""
+        self.crsf_cfg["port"] = port
+        if self.crsf_processor:
+            try:
+                self.crsf_processor.close_serial()
+            except Exception:
+                pass
+            self.crsf_processor = None
+        if validate_port("CRSF", port):
+            try:
+                self.crsf_processor = CRSFPacketProcessor(
+                    port=port, baudrate=self.crsf_cfg.get("baudrate")
+                )
+            except Exception as e:
+                print(f"Failed to initialize CRSF processor: {e}")
+
     def buttonClick(self):
         # GET BUTTON CLICKED
         btn = self.sender()
@@ -308,7 +420,7 @@ class MainWindow(QMainWindow):
 
         # SHOW WIDGETS PAGE
         if btnName == "btn_widgets":
-            widgets.stackedWidget.setCurrentWidget(widgets.widgets)
+            widgets.stackedWidget.setCurrentWidget(widgets.configuration_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
