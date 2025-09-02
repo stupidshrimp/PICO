@@ -45,6 +45,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        # Ensure the main window always fits its contents by removing the
+        # fixed minimum size added in the generated UI file and adjusting the
+        # window to the layout's size hint. This allows the GUI to resize based
+        # on the widgets it contains and prevents it from being smaller than the
+        # required size.
+        self.setMinimumSize(0, 0)
+        self.adjustSize()
+        self.setMinimumSize(self.size())
+
         global widgets
         widgets = self.ui
 
