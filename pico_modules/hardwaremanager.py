@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QTimer
+from PySide6.QtCore import QTimer
 from pico_modules.pico_videofeed import VideoFeed
 from pico_modules.pico_joystick2state import JoystickRateHandler
 from pico_modules.pico_transmitpackets import CRSFPacketProcessor
