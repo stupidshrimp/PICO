@@ -52,6 +52,8 @@ class MainWindow(QMainWindow):
         # required size.
         self.setMinimumSize(0, 0)
         self.adjustSize()
+        # Default to a wider and shorter window
+        self.resize(1600, 600)
         self.setMinimumSize(self.size())
 
         global widgets
