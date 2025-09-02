@@ -439,6 +439,10 @@ class MainWindow(QMainWindow):
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
+            # Resize window to fit the contents of the command page
+            self.setMinimumSize(0, 0)
+            self.adjustSize()
+            self.setMinimumSize(self.size())
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
