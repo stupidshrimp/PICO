@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from modules import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -103,7 +103,8 @@ class Ui_MainWindow(object):
 "	background-color: rgb(40, 44, 52);\n"
 "}\n"
 "#topMenu .QPushButton:pressed {	\n"
-"       background-color: rgb(80, 250, 123);\n"
+"	background-color: rgb(80,"
+                        " 250, 123);\n"
 "	color: rgb(255, 255, 255);\n"
 "}\n"
 "#bottomMenu .QPushButton {	\n"
@@ -141,8 +142,8 @@ class Ui_MainWindow(object):
 "	background-color: rgb(40, 44, 52);\n"
 "}\n"
 "#toggleButton:pressed {\n"
-"	background-color: rgb("
-                        "80, 250, 123);\n"
+"	background-color: rgb(80,"
+                        " 250, 123);\n"
 "}\n"
 "\n"
 "/* Title Menu */\n"
@@ -175,8 +176,8 @@ class Ui_MainWindow(object):
 "\n"
 "/* Extra Content */\n"
 "#extraContent{\n"
-"	border"
-                        "-top: 3px solid rgb(40, 44, 52);\n"
+"	border-top: 3"
+                        "px solid rgb(40, 44, 52);\n"
 "}\n"
 "\n"
 "/* Extra Top Menus */\n"
@@ -208,8 +209,8 @@ class Ui_MainWindow(object):
 "\n"
 "/* Top Buttons */\n"
 "#rightButtons .QPushButton { background-color: rgba(255, 255, 255, 0); border: none;  border-radius: 5px; }\n"
-"#rightButtons .QPushButton:hover { background-color: rgb(44, 49, 57); border-sty"
-                        "le: solid; border-radius: 4px; }\n"
+"#rightButtons .QPushButton:hover { background-color: rgb(44, 49, 57); border-style: soli"
+                        "d; border-radius: 4px; }\n"
 "#rightButtons .QPushButton:pressed { background-color: rgb(23, 26, 30); border-style: solid; border-radius: 4px; }\n"
 "\n"
 "/* Theme Settings */\n"
@@ -236,8 +237,8 @@ class Ui_MainWindow(object):
 "}\n"
 "#contentSettings .QPushButton:pressed {	\n"
 "	background-color: rgb(80, 250, 123);\n"
-"	color: rgb"
-                        "(255, 255, 255);\n"
+"	color: rgb(255, 255,"
+                        " 255);\n"
 "}\n"
 "\n"
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
@@ -272,8 +273,8 @@ class Ui_MainWindow(object):
 "QHeaderView::section:horizontal\n"
 "{\n"
 "    border: 1px solid rgb(33, 37, 43);\n"
-"	background-co"
-                        "lor: rgb(33, 37, 43);\n"
+"	background-color: rgb(33"
+                        ", 37, 43);\n"
 "	padding: 3px;\n"
 "	border-top-left-radius: 7px;\n"
 "    border-top-right-radius: 7px;\n"
@@ -307,8 +308,8 @@ class Ui_MainWindow(object):
 "	border-radius: 5px;\n"
 "	padding: 10px;\n"
 "	selection-color: rgb(255, 255, 255);\n"
-"	selection-background-c"
-                        "olor: rgb(255, 121, 198);\n"
+"	selection-background-color: rgb(2"
+                        "55, 121, 198);\n"
 "}\n"
 "QPlainTextEdit  QScrollBar:vertical {\n"
 "    width: 8px;\n"
@@ -346,8 +347,8 @@ class Ui_MainWindow(object):
 "    subcontrol-position: right;\n"
 "    subcontrol-origin: margin;\n"
 "}\n"
-""
-                        "QScrollBar::sub-line:horizontal {\n"
+"QScrollBar"
+                        "::sub-line:horizontal {\n"
 "    border: none;\n"
 "    background: rgb(55, 63, 77);\n"
 "    width: 20px;\n"
@@ -383,8 +384,8 @@ class Ui_MainWindow(object):
 "	border-bottom-left-radius: 4px;\n"
 "    border-bottom-right-radius: 4px;\n"
 "     subcontrol-position: bottom;\n"
-"     su"
-                        "bcontrol-origin: margin;\n"
+"     subcontrol-or"
+                        "igin: margin;\n"
 " }\n"
 " QScrollBar::sub-line:vertical {\n"
 "	border: none;\n"
@@ -418,8 +419,8 @@ class Ui_MainWindow(object):
 "QCheckBox::indicator:checked {\n"
 "    background: 3px solid rgb(52, 59, 72);\n"
 "	border: 3px solid rgb(52, 59, 72);	\n"
-"	back"
-                        "ground-image: url(:/icons/images/icons/cil-check-alt.png);\n"
+"	background-imag"
+                        "e: url(:/icons/images/icons/cil-check-alt.png);\n"
 "}\n"
 "\n"
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
@@ -453,8 +454,8 @@ class Ui_MainWindow(object):
 "}\n"
 "QComboBox::drop-down {\n"
 "	subcontrol-origin: padding;\n"
-"	subco"
-                        "ntrol-position: top right;\n"
+"	subcontrol-posit"
+                        "ion: top right;\n"
 "	width: 25px; \n"
 "	border-left-width: 3px;\n"
 "	border-left-color: rgba(39, 44, 54, 150);\n"
@@ -486,8 +487,8 @@ class Ui_MainWindow(object):
 "QSlider::handle:horizontal {\n"
 "    background-color: rgb(80, 250, 123);\n"
 "    border: none;\n"
-"    h"
-                        "eight: 10px;\n"
+"    height: 10px;"
+                        "\n"
 "    width: 10px;\n"
 "    margin: 0px;\n"
 "	border-radius: 5px;\n"
@@ -525,9 +526,9 @@ class Ui_MainWindow(object):
 "\n"
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
 "CommandLinkButton */\n"
-"QCommandLi"
-                        "nkButton {	\n"
-"	color: rgb(255, 121, 198);\n"
+"QCommandLinkButton {	\n"
+""
+                        "	color: rgb(255, 121, 198);\n"
 "	border-radius: 5px;\n"
 "	padding: 5px;\n"
 "	color: rgb(255, 170, 255);\n"
@@ -685,7 +686,7 @@ class Ui_MainWindow(object):
         self.btn_new.setFont(font)
         self.btn_new.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_new.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.btn_new.setStyleSheet(u"background-image: url(:/icons/images/icons/cil-file.png);")
+        self.btn_new.setStyleSheet(u"background-image: url(:/icons/images/icons/cil-airplane-mode.png);")
 
         self.verticalLayout_8.addWidget(self.btn_new)
 
@@ -1402,9 +1403,6 @@ class Ui_MainWindow(object):
         self.VideoLabel.setObjectName(u"VideoLabel")
         self.VideoLabel.setGeometry(QRect(0, 0, 771, 591))
         self.VideoLabel.setStyleSheet(u"background-color: black;")
-        self.label_4 = QLabel(self.frame_2)
-        self.label_4.setObjectName(u"label_4")
-        self.label_4.setGeometry(QRect(10, 20, 81, 16))
         self.label_5 = QLabel(self.frame_2)
         self.label_5.setObjectName(u"label_5")
         self.label_5.setGeometry(QRect(10, 50, 91, 21))
@@ -1431,15 +1429,18 @@ class Ui_MainWindow(object):
         self.frame_4.setGeometry(QRect(789, 399, 371, 191))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
+        self.InputsLabel = QLabel(self.frame_4)
+        self.InputsLabel.setObjectName(u"InputsLabel")
+        self.InputsLabel.setGeometry(QRect(10, 10, 81, 31))
         self.PitchLabel1 = QLabel(self.frame_4)
         self.PitchLabel1.setObjectName(u"PitchLabel1")
-        self.PitchLabel1.setGeometry(QRect(10, 10, 81, 31))
+        self.PitchLabel1.setGeometry(QRect(10, 50, 81, 31))
         self.RollLabel1 = QLabel(self.frame_4)
         self.RollLabel1.setObjectName(u"RollLabel1")
-        self.RollLabel1.setGeometry(QRect(110, 10, 81, 31))
+        self.RollLabel1.setGeometry(QRect(110, 50, 81, 31))
         self.YawLabel1 = QLabel(self.frame_4)
         self.YawLabel1.setObjectName(u"YawLabel1")
-        self.YawLabel1.setGeometry(QRect(200, 10, 81, 31))
+        self.YawLabel1.setGeometry(QRect(200, 50, 81, 31))
 
         self.verticalLayout_20.addWidget(self.frame)
 
@@ -1711,10 +1712,10 @@ class Ui_MainWindow(object):
         self.tableWidget.setSortingEnabled(__sortingEnabled)
 
         self.VideoLabel.setText("")
-        self.label_4.setText(QCoreApplication.translate("MainWindow", u"Altitude: 123", None))
         self.label_5.setText(QCoreApplication.translate("MainWindow", u"Air Speed: 123", None))
         self.transmitstatus1.setText(QCoreApplication.translate("MainWindow", u"Transmit Status: 123", None))
         self.label_7.setText(QCoreApplication.translate("MainWindow", u"Telemetry Status: 123", None))
+        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Inputs", None))
         self.PitchLabel1.setText(QCoreApplication.translate("MainWindow", u"Pitch: 123", None))
         self.RollLabel1.setText(QCoreApplication.translate("MainWindow", u"Roll: 123", None))
         self.YawLabel1.setText(QCoreApplication.translate("MainWindow", u"Yaw: 123", None))
