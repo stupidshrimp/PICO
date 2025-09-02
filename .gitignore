@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual envs
+venv/
+.env/
+env/
+.venv/
+
+# IDE / tooling
+.vscode/
+.idea/
+.qtcreator/
+*.user
+
+# Builds / bundles
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db
