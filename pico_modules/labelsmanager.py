@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import QLabel
-from PyQt5.QtCore import QVariantAnimation, Qt
-from PyQt5.QtGui import QColor
+from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import QVariantAnimation, Qt
+from PySide6.QtGui import QColor
 
 
 class LabelManager:

@@ -1,6 +1,6 @@
 from enum import IntEnum
 import serial
-from PyQt5.QtCore import QTimer
+from PySide6.QtCore import QTimer
 from serial.tools import list_ports
 
 class CRSFPacketProcessor:
