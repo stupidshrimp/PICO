@@ -10,8 +10,12 @@ class RollPitchOSD(QWidget):
         self.setMinimumSize(300, 300)
 
     def setRollPitch(self, roll, pitch):
-        self._roll = roll
-        self._pitch = pitch
+        """Accept raw joystick readings and normalise for display."""
+        # Incoming values are expected in the 0-1023 HID range. Convert them to
+        # degrees so the pitch ladder renders sensibly. Roll is mapped to
+        # ±180°, pitch to ±90°.
+        self._roll = (roll - 512) * (180.0 / 512)
+        self._pitch = (pitch - 512) * (90.0 / 512)
         self.update()
 
     def paintEvent(self, event):

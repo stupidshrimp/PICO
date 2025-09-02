@@ -1,6 +1,6 @@
 from PySide6.QtCore import QTimer
 from pico_modules.pico_videofeed import VideoFeed
-from pico_modules.pico_joystick2state import JoystickRateHandler
+from pico_modules.pico_joystick2state import JoystickRawHandler
 from pico_modules.pico_transmitpackets import CRSFPacketProcessor
 from serial.tools import list_ports
 
@@ -38,16 +38,9 @@ class HardwareManager:
         joy_cfg = self.configs["joystick"]
         if validate_port("joystick", joy_cfg.get("port")):
             try:
-                self.joystick = JoystickRateHandler(
+                self.joystick = JoystickRawHandler(
                     port=joy_cfg.get("port"),
                     baudrate=joy_cfg.get("baudrate"),
-                    update_interval=0.01,
-                    roll_rate_max=100,
-                    pitch_rate_max=100,
-                    roll_sensitivity=0.3,
-                    pitch_sensitivity=0.3,
-                    roll_exponent=1.5,
-                    pitch_exponent=1.5,
                 )
             except Exception as exc:
                 print(f"Failed to initialize joystick: {exc}")
