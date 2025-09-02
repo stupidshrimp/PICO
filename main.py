@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         # Update application branding
         self.ui.titleLeftApp.setText("PICO Program")
         self.ui.titleLeftDescription.setText(
-            "Pilotless Integrated Computer Operated Program"
+            "a Modern UAS control platform"
         )
 
         # Remove unwanted side tabs
