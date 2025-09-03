@@ -9,13 +9,22 @@ class CRSFPacketProcessor:
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
 
-    def __init__(self, port, baudrate=921600, channels=None):
-        """
-        Initializes the CRSFPacketProcessor.
-        Args:
-            port (str): Serial port (e.g., 'COM3').
-            baudrate (int): Baudrate for serial communication (default 921600).
-            channels (list): Initial channel values (up to 16 channels). Defaults to 1500 for all channels.
+    def __init__(self, port, baudrate=921600, channels=None, telemetry_callback=None):
+        """Initialize the CRSFPacketProcessor.
+
+        Parameters
+        ----------
+        port : str
+            Serial port (e.g., ``'COM3'``).
+        baudrate : int, optional
+            Baudrate for serial communication (default ``921600``).
+        channels : list, optional
+            Initial channel values (up to 16 channels). Defaults to ``1500`` for
+            all channels.
+        telemetry_callback : callable, optional
+            Function invoked when telemetry packets are decoded. The callback is
+            called with ``(packet_type, *values)`` where ``packet_type`` is a
+            string identifier such as ``"attitude"`` or ``"gps"``.
         """
         if channels is None:
             channels = [1500] * 16  # Default channel values
@@ -29,6 +38,7 @@ class CRSFPacketProcessor:
         self.serial_port = port
         self.baudrate = baudrate
         self.serial = None  # Initialize serial connection as None
+        self.telemetry_callback = telemetry_callback
 
         self.connect_serial()
 
@@ -217,6 +227,11 @@ class CRSFPacketProcessor:
             )
             lat = lat_raw / 1000000.0
             lon = lon_raw / 1000000.0
+            speed = speed / 10.0
+            course = course / 10.0
+            alt = alt / 10.0
+            if self.telemetry_callback:
+                self.telemetry_callback("gps", lat, lon, speed, course, alt, sats)
             print("--- Decoded GPS Telemetry ---")
             print(f"Latitude: {lat}")
             print(f"Longitude: {lon}")
@@ -253,6 +268,8 @@ class CRSFPacketProcessor:
             pitch /= 10
             roll /= 10
             yaw /= 10
+            if self.telemetry_callback:
+                self.telemetry_callback("attitude", pitch, roll, yaw)
             print("--- Attitude Data (0x1E) ---")
             print(f"Pitch: {pitch}")
             print(f"Roll:  {roll}")

@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=self.crsf_cfg.get("port"),
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    telemetry_callback=self.handle_telemetry,
                 )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
@@ -138,7 +139,14 @@ class MainWindow(QMainWindow):
         # Initialize the LabelManager with the labels
         self.label_manager = LabelManager(labels)
 
-        # Timer for joystick label updates (10ms interval, 100Hz)
+        # Variables updated from telemetry packets
+        self.telemetry_pitch = None
+        self.telemetry_roll = None
+        self.telemetry_yaw = None
+        self.current_altitude = None
+        self.current_airspeed = None
+
+        # Timer for updating labels/OSD (10ms interval, 100Hz)
         self.label_update_timer = QTimer(self)
         self.label_update_timer.timeout.connect(self.update_labels)
         self.label_update_timer.start(10)
@@ -176,11 +184,6 @@ class MainWindow(QMainWindow):
         self.airspeed_osd.setAirspeed(0.0)
         self.airspeed_osd.show()
 
-        # Current altitude placeholder variable; to be updated from telemetry
-        self.current_altitude = 0.0
-        # Current airspeed placeholder variable; to be updated from telemetry
-        self.current_airspeed = 0.0
-
         # Connect OSD visibility checkboxes to show/hide the overlays
         self.ui.chk_altitude.toggled.connect(self.altitude_osd.setVisible)
         self.ui.chk_airspeed.toggled.connect(self.airspeed_osd.setVisible)
@@ -215,41 +218,45 @@ class MainWindow(QMainWindow):
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
 
-    def update_labels(self):
-        """
-        Fetch joystick data and update labels with raw values.
-        """
-        if not self.joystick:
+    def update_labels(self) -> None:
+        """Update GUI labels and OSD widgets using the latest telemetry."""
+        if self.telemetry_pitch is None:
             self.rollpitch_osd.setRollPitch(0.0, 0.0)
-            self.altitude_osd.setAltitude(self.current_altitude)
-            self.label_manager.update_labels({
-                "pitch": "N/A",
-                "roll": "N/A",
-                "yaw": "N/A",
-            })
+            self.altitude_osd.setAltitude(self.current_altitude or 0.0)
+            self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
+            self.label_manager.update_labels(
+                {
+                    "pitch": "N/A",
+                    "roll": "N/A",
+                    "yaw": "N/A",
+                }
+            )
             return
-        try:
-            # Fetch raw joystick values for updating the labels
-            raw_pitch, raw_roll = self.joystick.get_raw_values()
 
-            # Update labels with raw joystick data
-            self.label_manager.update_labels({
-                "pitch": raw_pitch,
-                "roll": raw_roll,
-                "yaw": 0,  # Replace with actual yaw data if available
-            })
+        self.label_manager.update_labels(
+            {
+                "pitch": f"{self.telemetry_pitch:.1f}",
+                "roll": f"{self.telemetry_roll:.1f}",
+                "yaw": f"{self.telemetry_yaw:.1f}",
+            }
+        )
+        self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
+        if self.current_altitude is not None:
+            self.altitude_osd.setAltitude(self.current_altitude)
+        if self.current_airspeed is not None:
+            self.airspeed_osd.setAirspeed(self.current_airspeed)
 
-            # Update the OSD with the same joystick data
-            self.rollpitch_osd.setRollPitch(raw_roll, raw_pitch)
-            self.altitude_osd.setAltitude(self.current_altitude)
-        except Exception as e:
-            self.label_manager.update_labels({
-                "pitch": "Error",
-                "roll": "Error",
-                "yaw": "Error",
-            })
-            self.rollpitch_osd.setRollPitch(0.0, 0.0)
-            self.altitude_osd.setAltitude(self.current_altitude)
+    def handle_telemetry(self, packet_type, *values) -> None:
+        """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
+        if packet_type == "attitude":
+            pitch, roll, yaw = values
+            self.telemetry_pitch = pitch
+            self.telemetry_roll = roll
+            self.telemetry_yaw = yaw
+        elif packet_type == "gps":
+            _lat, _lon, speed, _course, alt, _sats = values
+            self.current_airspeed = speed
+            self.current_altitude = alt
 
     def transmit_data(self):
         """
@@ -451,7 +458,9 @@ class MainWindow(QMainWindow):
         if validate_port("CRSF", port):
             try:
                 self.crsf_processor = CRSFPacketProcessor(
-                    port=port, baudrate=self.crsf_cfg.get("baudrate")
+                    port=port,
+                    baudrate=self.crsf_cfg.get("baudrate"),
+                    telemetry_callback=self.handle_telemetry,
                 )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
