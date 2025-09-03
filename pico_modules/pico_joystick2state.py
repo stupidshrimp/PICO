@@ -12,10 +12,11 @@ class JoystickRawHandler:
     range ``0-1023``. The handler normalises the incoming data to this range
     (inverting the Y axis to match typical HID behaviour) and exposes helper
     methods for retrieving the most recent readings or values mapped to the
-    ``0-2000`` range used by the CRSF protocol.
+    ``0-2000`` range used by the CRSF protocol. Deadzone and sensitivity can
+    be adjusted live.
     """
 
-    def __init__(self, port, baudrate=9600):
+    def __init__(self, port, baudrate=9600, deadzone=0, sensitivity=100):
         try:
             self.serial_connection = serial.Serial(port, baudrate=baudrate, timeout=1)
             print(f"Connected to joystick on {port} at {baudrate} baud.")
@@ -25,10 +26,18 @@ class JoystickRawHandler:
         self.data_queue = Queue()
         self.roll = 512
         self.pitch = 512
+        self.deadzone = deadzone  # percent
+        self.sensitivity = sensitivity  # percent
 
         # Start background thread to continually read data from the serial port
         self.reading_thread = threading.Thread(target=self._read_joystick_data, daemon=True)
         self.reading_thread.start()
+
+    def set_deadzone(self, percent):
+        self.deadzone = max(0, min(100, int(percent)))
+
+    def set_sensitivity(self, percent):
+        self.sensitivity = max(1, int(percent))
 
     # ------------------------------------------------------------------
     # Serial helpers
@@ -88,6 +97,20 @@ class JoystickRawHandler:
     def get_mapped_values(self):
         """Map raw values to the 0-2000 range used by CRSF."""
         pitch, roll = self.get_raw_values()
+
+        def apply_settings(value):
+            center = 512
+            delta = value - center
+            deadzone_range = (self.deadzone / 100) * 512
+            if abs(delta) < deadzone_range:
+                delta = 0
+            delta *= self.sensitivity / 100
+            adjusted = center + delta
+            return max(0, min(1023, int(adjusted)))
+
+        roll = apply_settings(roll)
+        pitch = apply_settings(pitch)
+
         roll_mapped = int(roll * (2000 / 1023))
         pitch_mapped = int(pitch * (2000 / 1023))
         return roll_mapped, pitch_mapped
