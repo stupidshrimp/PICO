@@ -288,6 +288,9 @@ class MainWindow(QMainWindow):
 
         # Radiofrequency settings
         rf_layout, self.rf_status = add_section("Radiofrequency Settings", first=True)
+        rf_layout.addWidget(
+            QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
+        )
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
         self.elrs_port_combo = QComboBox()
@@ -298,12 +301,18 @@ class MainWindow(QMainWindow):
         rate_row = QHBoxLayout()
         rate_row.addWidget(QLabel("Packet Interval (ms)"))
         self.packet_interval_edit = QLineEdit()
-        self.packet_interval_edit.setText(str(self.crsf_cfg.get("packet_interval", 10)))
+        self.packet_interval_edit.setText(
+            str(self.crsf_cfg.get("packet_interval", 10))
+        )
+        self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
         rf_layout.addLayout(rate_row)
 
         # Control system settings
         control_layout, self.control_status = add_section("Control System Settings")
+        control_layout.addWidget(
+            QLabel(f"Baud rate: {self.joystick_cfg.get('baudrate', 'N/A')}")
+        )
         control_port_row = QHBoxLayout()
         control_port_row.addWidget(QLabel("Port"))
         self.control_port_combo = QComboBox()
