@@ -216,7 +216,12 @@ class CRSFPacketProcessor:
 
 
     def decode_gps(self, data):
-        """Decode a CRSF GPS telemetry packet."""
+        """Decode a CRSF GPS telemetry packet.
+
+        The CRSF protocol reports ground speed in km/h * 10. This method
+        converts the value to miles per hour before invoking the telemetry
+        callback.
+        """
         if len(data) < 18:
             print("GPS packet too short.")
             return
@@ -227,15 +232,16 @@ class CRSFPacketProcessor:
             )
             lat = lat_raw / 1000000.0
             lon = lon_raw / 1000000.0
-            speed = speed / 10.0
+            speed_kmh = speed / 10.0
+            speed_mph = speed_kmh * 0.621371
             course = course / 10.0
             alt = alt / 10.0
             if self.telemetry_callback:
-                self.telemetry_callback("gps", lat, lon, speed, course, alt, sats)
+                self.telemetry_callback("gps", lat, lon, speed_mph, course, alt, sats)
             print("--- Decoded GPS Telemetry ---")
             print(f"Latitude: {lat}")
             print(f"Longitude: {lon}")
-            print(f"Speed: {speed}")
+            print(f"Speed: {speed_mph} mph")
             print(f"Ground Course: {course}")
             print(f"Altitude: {alt}")
             print(f"Satellites: {sats}")

@@ -1,10 +1,10 @@
 """Airspeed tape on-screen display widget.
 
 This widget renders a vertical airspeed tape similar to those seen on
-primary flight displays. It accepts airspeed values (e.g., in knots) and
-draws a scrolling scale with tick marks and a central readout showing the
-current airspeed. The telemetry source is expected to supply the airspeed
-value; here we only provide the visual representation.
+primary flight displays. It accepts airspeed values (in miles per hour)
+and draws a scrolling scale with tick marks and a central readout showing
+the current airspeed. The telemetry source is expected to supply the
+airspeed value in mph; here we only provide the visual representation.
 """
 
 from PySide6.QtWidgets import QWidget
@@ -24,7 +24,7 @@ class AirspeedOSD(QWidget):
         Parameters
         ----------
         airspeed: float
-            Airspeed value in user-defined units (e.g., knots).
+            Airspeed value in miles per hour.
         """
         self._airspeed = airspeed
         self.update()
@@ -35,9 +35,9 @@ class AirspeedOSD(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         # -------------------- Display constants -------------------- #
-        SCALE = 0.5              # Pixels per airspeed unit
-        TICK_INTERVAL = 10       # Minor tick every 10 units
-        MAJOR_INTERVAL = 50      # Major tick every 50 units
+        SCALE = 2.0              # Pixels per airspeed unit (mph)
+        TICK_INTERVAL = 5        # Minor tick every 5 mph
+        MAJOR_INTERVAL = 25      # Major tick every 25 mph
         MAJOR_LEN = 20           # Length of major tick in pixels
         MINOR_LEN = 10           # Length of minor tick in pixels
         BOX_HEIGHT = 40          # Height of centre readout box
@@ -69,7 +69,7 @@ class AirspeedOSD(QWidget):
         box_top = center_y - BOX_HEIGHT / 2
         painter.fillRect(0, box_top, self.width(), BOX_HEIGHT, QColor(0, 0, 0, 180))
         painter.drawRect(0, box_top, self.width() - 1, BOX_HEIGHT - 1)
-        painter.drawText(self.width() - 35, center_y + 8, f"{int(self._airspeed)}")
+        painter.drawText(self.width() - 60, center_y + 8, f"{int(self._airspeed)} mph")
 
         # Draw pointer triangle to right of readout box
         painter.setBrush(Qt.green)
