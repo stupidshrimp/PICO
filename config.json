@@ -1,4 +1,14 @@
 {
-    "joystick": {"port": "COM14", "baudrate": 9600},
-    "crsf": {"port": "COM3", "baudrate": 921600}
+    "joystick": {
+        "port": "COM14",
+        "baudrate": 9600,
+        "deadzone": 5,
+        "sensitivity": 100
+    },
+    "crsf": {
+        "port": "COM3",
+        "baudrate": 921600,
+        "packet_interval": 10
+    },
+    "vtx": {"port": ""}
 }

@@ -3,8 +3,18 @@ import os
 from copy import deepcopy
 
 DEFAULT_CONFIG = {
-    "joystick": {"port": "COM14", "baudrate": 9600},
-    "crsf": {"port": "COM3", "baudrate": 921600}
+    "joystick": {
+        "port": "COM14",
+        "baudrate": 9600,
+        "deadzone": 5,
+        "sensitivity": 100,
+    },
+    "crsf": {
+        "port": "COM3",
+        "baudrate": 921600,
+        "packet_interval": 10,
+    },
+    "vtx": {"port": ""},
 }
 
 def load_config(path: str = "config.json"):
@@ -50,3 +60,12 @@ def load_config(path: str = "config.json"):
             print(f"Invalid CRSF_BAUDRATE '{crsf_baud}', using default {config['crsf']['baudrate']}")
 
     return config
+
+
+def save_config(config, path: str = "config.json"):
+    """Persist configuration to a JSON file."""
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=4)
+    except Exception as exc:
+        print(f"Failed to write config file '{path}': {exc}")
