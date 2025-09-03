@@ -148,6 +148,12 @@ class MainWindow(QMainWindow):
         self.transmit_timer.timeout.connect(self.transmit_data)
         self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 10))
 
+        # Timer for reading incoming telemetry packets
+        if self.crsf_processor:
+            self.telemetry_timer = QTimer(self)
+            self.telemetry_timer.timeout.connect(self.crsf_processor.read_serial_data)
+            self.telemetry_timer.start(1)
+
 
         # --------------------------------------------------------------------
         # OSD Overlay Setup - Create and initialize the RollPitchOSD widget
