@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLineEdit,
     QSlider,
+    QFrame,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -265,11 +266,17 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.ui.configuration_page)
         ports = [p.device for p in list_ports.comports()]
 
-        def add_section(title):
+        def add_section(title, first=False):
+            if not first:
+                line = QFrame()
+                line.setFrameShape(QFrame.HLine)
+                line.setFrameShadow(QFrame.Sunken)
+                layout.addWidget(line)
             section = QWidget()
             vbox = QVBoxLayout(section)
             header = QHBoxLayout()
             label = QLabel(title)
+            label.setStyleSheet("font-weight: bold;")
             status = QLabel()
             status.setStyleSheet("color: red;")
             header.addWidget(label)
@@ -280,7 +287,7 @@ class MainWindow(QMainWindow):
             return vbox, status
 
         # Radiofrequency settings
-        rf_layout, self.rf_status = add_section("Radiofrequency Settings")
+        rf_layout, self.rf_status = add_section("Radiofrequency Settings", first=True)
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
         self.elrs_port_combo = QComboBox()
@@ -310,6 +317,8 @@ class MainWindow(QMainWindow):
         self.deadzone_slider.setRange(0, 100)
         self.deadzone_slider.setValue(self.joystick_cfg.get("deadzone", 0))
         dz_row.addWidget(self.deadzone_slider)
+        self.deadzone_value_label = QLabel(str(self.deadzone_slider.value()))
+        dz_row.addWidget(self.deadzone_value_label)
         control_layout.addLayout(dz_row)
 
         sens_row = QHBoxLayout()
@@ -318,6 +327,8 @@ class MainWindow(QMainWindow):
         self.sensitivity_slider.setRange(1, 200)
         self.sensitivity_slider.setValue(self.joystick_cfg.get("sensitivity", 100))
         sens_row.addWidget(self.sensitivity_slider)
+        self.sensitivity_value_label = QLabel(str(self.sensitivity_slider.value()))
+        sens_row.addWidget(self.sensitivity_value_label)
         control_layout.addLayout(sens_row)
 
         # VTX settings
@@ -414,12 +425,14 @@ class MainWindow(QMainWindow):
 
     def on_deadzone_changed(self, value: int):
         self.joystick_cfg["deadzone"] = value
+        self.deadzone_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_deadzone(value)
         save_config(self.config)
 
     def on_sensitivity_changed(self, value: int):
         self.joystick_cfg["sensitivity"] = value
+        self.sensitivity_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_sensitivity(value)
         save_config(self.config)
