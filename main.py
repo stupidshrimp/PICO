@@ -175,6 +175,10 @@ class MainWindow(QMainWindow):
         # Current airspeed placeholder variable; to be updated from telemetry
         self.current_airspeed = 0.0
 
+        # Connect OSD visibility checkboxes to show/hide the overlays
+        self.ui.chk_altitude.toggled.connect(self.altitude_osd.setVisible)
+        self.ui.chk_airspeed.toggled.connect(self.airspeed_osd.setVisible)
+        self.ui.chk_attitude.toggled.connect(self.rollpitch_osd.setVisible)
 
         # TOGGLE MENU
         widgets.toggleButton.clicked.connect(lambda: UIFunctions.toggleMenu(self, True))
