@@ -58,6 +58,9 @@ class MainWindow(QMainWindow):
         global widgets
         widgets = self.ui
 
+        # Timers used for blinking "Not Connected" indicators
+        self.status_timers = {}
+
         # Update application branding
         self.ui.titleLeftApp.setText("PICO Program")
         self.ui.titleLeftDescription.setText(
