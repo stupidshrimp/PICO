@@ -36,11 +36,12 @@ class RollPitchOSD(QWidget):
 
         # -------------------- Tuning Constants -------------------- #
         SCALE       = 4.0   # Pixels per pitch degree
-        MAJOR_LEN   = 80    # Half length for long rungs
-        MINOR_LEN   = 40    # Half length for short rungs
+        MAJOR_LEN   = 60    # Half length for long rungs
+        MINOR_LEN   = 30    # Half length for short rungs
         GAP_SIZE    = 40    # Gap in the centre
 
-        FADE_ZONE   = 40    # Pixels from top/bottom edge to start fading
+        FADE_ZONE   = 100   # Pixels from top/bottom edge to start fading
+        CROSS_SIZE  = 10    # Half size of the centre cross
 
         center_x = self.width() / 2
         center_y = self.height() / 2
@@ -86,14 +87,17 @@ class RollPitchOSD(QWidget):
             painter.drawLine(GAP_SIZE / 2, y, half_len, y)
 
             if pitch_deg % 10 == 0:
+                painter.save()
+                painter.rotate(self._roll)
                 painter.drawText(half_len + 5, y + 3, f"{pitch_deg}")
+                painter.restore()
 
         painter.restore()
 
         # Reference cross that stays fixed regardless of roll
         pen = QPen(Qt.gray, 2)
         painter.setPen(pen)
-        painter.drawLine(center_x, 0, center_x, self.height())
-        painter.drawLine(0, center_y, self.width(), center_y)
+        painter.drawLine(center_x, center_y - CROSS_SIZE, center_x, center_y + CROSS_SIZE)
+        painter.drawLine(center_x - CROSS_SIZE, center_y, center_x + CROSS_SIZE, center_y)
 
         painter.end()
