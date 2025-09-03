@@ -10,7 +10,7 @@ classic staggered pattern used on real attitude indicators.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor
+from PySide6.QtGui import QPainter, QPen, QColor
 from PySide6.QtCore import Qt
 
 class RollPitchOSD(QWidget):
@@ -35,10 +35,10 @@ class RollPitchOSD(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         # -------------------- Tuning Constants -------------------- #
-        SCALE       = 4.0   # Pixels per pitch degree
-        MAJOR_LEN   = 60    # Half length for long rungs
-        MINOR_LEN   = 30    # Half length for short rungs
-        GAP_SIZE    = 40    # Gap in the centre
+        SCALE          = 4.0  # Pixels per pitch degree
+        SHRINK_PER_DEG = 2    # Pixels trimmed from half length per degree
+        MIN_LEN        = 20   # Minimum half length for far rungs
+        GAP_SIZE       = 40   # Gap in the centre
 
         FADE_ZONE   = 100   # Pixels from top/bottom edge to start fading
         CROSS_SIZE  = 10    # Half size of the centre cross
@@ -53,7 +53,6 @@ class RollPitchOSD(QWidget):
 
         pen = QPen(Qt.green, 2)
         painter.setPen(pen)
-        painter.setFont(QFont("Arial", 10))
 
         # Determine which pitch rungs are visible.  This lets the ladder
         # appear infinite because we always draw enough lines to cover the
@@ -64,16 +63,16 @@ class RollPitchOSD(QWidget):
 
         half_height_px = self.height() / 2
 
-        for index, pitch_deg in enumerate(range(start_pitch, end_pitch + 5, 5)):
+        for pitch_deg in range(start_pitch, end_pitch + 5, 5):
             y = (self._pitch - pitch_deg) * SCALE
 
-            # Make the zero‑degree horizon line span the widget so the real
-            # horizon is more visible. Other rungs keep their alternating
-            # long/short lengths.
+            # Make the zero‑degree horizon line span the widget and shrink
+            # other rungs progressively as they move away from centre.
             if pitch_deg == 0:
                 half_len = self.width() / 2
             else:
-                half_len = MAJOR_LEN if index % 2 == 0 else MINOR_LEN
+                max_half_len = self.width() / 2
+                half_len = max(MIN_LEN, max_half_len - abs(pitch_deg) * SHRINK_PER_DEG)
 
             # Fade rungs near the top and bottom edges so they smoothly
             # disappear instead of abruptly ending.
@@ -96,12 +95,6 @@ class RollPitchOSD(QWidget):
                 # Left and right segments with a gap in the middle
                 painter.drawLine(-half_len, y, -GAP_SIZE / 2, y)
                 painter.drawLine(GAP_SIZE / 2, y, half_len, y)
-
-            if pitch_deg % 10 == 0 and pitch_deg != 0:
-                painter.save()
-                painter.rotate(self._roll)
-                painter.drawText(half_len + 5, y + 3, f"{pitch_deg}")
-                painter.restore()
 
         painter.restore()
 
