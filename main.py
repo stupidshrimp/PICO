@@ -244,61 +244,6 @@ class MainWindow(QMainWindow):
             })
             self.label_manager.apply_error_animation("Transmit Status", self.ui.transmitstatus1)
 
-    def update_labels_and_transmit(self):
-        """
-        Fetch joystick data, update labels using raw values, and transmit CRSF packets using mapped values.
-        """
-        if not self.joystick or not self.crsf_processor:
-            self.rollpitch_osd.setRollPitch(0.0, 0.0)
-            self.label_manager.update_labels({
-                "pitch": "N/A",
-                "roll": "N/A",
-                "yaw": "N/A",
-                "Transmit Status": "Hardware Unavailable",
-            })
-            return
-
-        try:
-            # Fetch raw joystick values for updating the labels
-            raw_pitch, raw_roll = self.joystick.get_raw_values()
-
-            # Update labels with raw joystick data
-            self.label_manager.update_labels({
-                "pitch": raw_pitch,
-                "roll": raw_roll,
-                "yaw": 0,  # Replace with actual yaw data if available
-            })
-
-            # Update the OSD with the same joystick data
-            self.rollpitch_osd.setRollPitch(raw_roll, raw_pitch)
-
-            # Fetch mapped values for CRSF transmission
-            mapped_roll, mapped_pitch = self.joystick.get_mapped_values()
-
-            # Prepare CRSF channels for transmission
-            channels = [1500] * 16  # Default values for all channels
-            channels[0] = int(mapped_roll)  # Map roll to channel 1
-            channels[1] = int(mapped_pitch)  # Map pitch to channel 2
-
-            # Send CRSF packet
-            self.crsf_processor.update_and_send_packet(channels)
-
-            # Update Transmit Status label
-            self.label_manager.update_labels({
-                "Transmit Status": "Good",
-            })
-
-        except Exception as e:
-            print(f"Error during transmission: {e}")
-            # Update labels with error status
-            self.label_manager.update_labels({
-                "pitch": "Error",
-                "roll": "Error",
-                "yaw": "Error",
-                "Transmit Status": "Error",
-            })
-            self.rollpitch_osd.setRollPitch(0.0, 0.0)
-
     def setup_configuration_page(self):
         """Create configuration page for selecting COM ports."""
         self.ui.configuration_page = QWidget()
