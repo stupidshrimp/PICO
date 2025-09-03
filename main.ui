@@ -2828,14 +2828,23 @@ background-repeat: no-repeat;</string>
                           <widget class="QLabel" name="InputsLabel">
                            <property name="geometry">
                             <rect>
-                             <x>10</x>
+                             <x>0</x>
                              <y>10</y>
-                             <width>81</width>
+                             <width>371</width>
                              <height>31</height>
                             </rect>
                            </property>
+                           <property name="font">
+                            <font>
+                             <bold>true</bold>
+                             <underline>true</underline>
+                            </font>
+                           </property>
                            <property name="text">
-                            <string>Inputs</string>
+                            <string>Control Inputs</string>
+                           </property>
+                           <property name="alignment">
+                            <set>Qt::AlignCenter</set>
                            </property>
                           </widget>
                           <widget class="QLabel" name="PitchLabel1">
