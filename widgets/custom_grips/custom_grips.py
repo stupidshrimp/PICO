@@ -220,7 +220,7 @@ class Widgets(object):
         self.leftgrip.setGeometry(QRect(0, 10, 10, 480))
         self.leftgrip.setMinimumSize(QSize(10, 0))
         self.leftgrip.setCursor(QCursor(Qt.SizeHorCursor))
-        self.leftgrip.setStyleSheet(u"background-color: rgb(255, 121, 198);")
+        self.leftgrip.setStyleSheet(u"background-color: rgb(46, 125, 50);")
         self.leftgrip.setFrameShape(QFrame.NoFrame)
         self.leftgrip.setFrameShadow(QFrame.Raised)
 
@@ -233,6 +233,6 @@ class Widgets(object):
         self.rightgrip.setGeometry(QRect(0, 0, 10, 500))
         self.rightgrip.setMinimumSize(QSize(10, 0))
         self.rightgrip.setCursor(QCursor(Qt.SizeHorCursor))
-        self.rightgrip.setStyleSheet(u"background-color: rgb(255, 0, 127);")
+        self.rightgrip.setStyleSheet(u"background-color: rgb(46, 125, 50);")
         self.rightgrip.setFrameShape(QFrame.NoFrame)
         self.rightgrip.setFrameShadow(QFrame.Raised)
