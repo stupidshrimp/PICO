@@ -25,6 +25,9 @@ class VideoFeed:
 
     def check_camera(self):
         """Check if a camera is available and start video feed if not already running."""
+        # Ensure the camera check timer is running
+        if not self.camera_check_timer.isActive():
+            self.camera_check_timer.start(1000)
         if self.cap is None or not self.cap.isOpened():
             self.cap = cv2.VideoCapture(0)  # Attempt to open the default camera
             if self.cap.isOpened():
@@ -46,6 +49,8 @@ class VideoFeed:
         if self.cap and self.cap.isOpened():
             self.cap.release()
         self.cap = None  # Reset the capture object
+        # Stop the camera availability check timer
+        self.camera_check_timer.stop()
 
     def update_frame(self):
         """Updates the video feed on the QLabel."""
