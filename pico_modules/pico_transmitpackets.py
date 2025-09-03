@@ -195,22 +195,42 @@ class CRSFPacketProcessor:
 
     def decode_link_statistics(self, data):
         """Decode link statistics telemetry packet and print the info."""
-        if len(data) < 11:
+        # Link statistics packets contain ten bytes of payload following the type
+        # field.  The fields are defined in the CRSF protocol specification as:
+        #   RSSI1, RSSI2, Link quality, SNR, Active antenna, RF mode,
+        #   TX power, Downlink RSSI, Downlink link quality, Downlink SNR
+        if len(data) < 13:
             print("Link statistics packet too short.")
             return
         try:
-            rssi_a, rssi_b, snr, noise, tx_power, antenna, rf_mode, uplink = struct.unpack(
-                "BBBBBBBB", data[3:11]
-            )
+            (
+                rssi_a,
+                rssi_b,
+                link_quality,
+                snr,
+                active_antenna,
+                rf_mode,
+                tx_power_enum,
+                downlink_rssi,
+                downlink_lq,
+                downlink_snr,
+            ) = struct.unpack("=bbBbBBBbBb", data[3:13])
+
+            # Map TX power enumeration to milliwatts as defined by the protocol.
+            tx_power_map = [0, 10, 25, 100, 500, 1000, 2000, 250]
+            tx_power = tx_power_map[tx_power_enum] if tx_power_enum < len(tx_power_map) else tx_power_enum
+
             print("--- Link Statistics ---")
             print(f"RSSI A: {rssi_a} dBm")
             print(f"RSSI B: {rssi_b} dBm")
+            print(f"Link Quality: {link_quality}%")
             print(f"SNR: {snr} dB")
-            print(f"Noise: {noise} dBm")
-            print(f"TX Power: {tx_power} mW")
-            print(f"Antenna: {antenna}")
+            print(f"Active Antenna: {active_antenna}")
             print(f"RF Mode: {rf_mode}")
-            print(f"Uplink Quality: {uplink}%")
+            print(f"TX Power: {tx_power} mW")
+            print(f"Downlink RSSI: {downlink_rssi} dBm")
+            print(f"Downlink Link Quality: {downlink_lq}%")
+            print(f"Downlink SNR: {downlink_snr} dB")
         except Exception as e:
             print("Error decoding link statistics:", e)
 
