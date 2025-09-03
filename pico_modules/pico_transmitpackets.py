@@ -144,7 +144,8 @@ class CRSFPacketProcessor:
             try:
                 packet = self.create_packet()
                 self.serial.write(packet)
-                print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
+                # Disable verbose packet transmission debug output to focus on telemetry
+                # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
                 return "Good"  # Return "Good" only if transmission is successful
             except Exception as e:
                 print(f"Failed to send packet: {e}")
