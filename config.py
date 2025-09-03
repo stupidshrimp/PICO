@@ -14,7 +14,7 @@ DEFAULT_CONFIG = {
         "baudrate": 921600,
         "packet_interval": 10,
     },
-    "vtx": {"port": ""},
+    "vtx": {"port": "", "device_index": 1},
 }
 
 def load_config(path: str = "config.json"):

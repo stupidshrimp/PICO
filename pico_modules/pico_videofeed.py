@@ -3,13 +3,22 @@ from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QAbstra
 from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
 import cv2
 
+
 class VideoFeed:
-    def __init__(self, VideoLabel):
+    def __init__(self, VideoLabel: QLabel, device_index: int = 1):
+        """Initialize the video feed.
+
+        Parameters
+        ----------
+        VideoLabel: QLabel
+            Widget where the video feed will be displayed.
+        device_index: int, optional
+            Index of the capture device to open. Defaults to 1 so that the
+            laptop's integrated camera (typically index 0) is ignored.
         """
-        Initializes the video feed class.
-        :param VideoLabel: QLabel object where the video feed will be displayed.
-        """
+
         self.label = VideoLabel
+        self.device_index = device_index
         self.cap = None  # Camera capture object
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
@@ -18,38 +27,31 @@ class VideoFeed:
         # Timer for periodically checking camera availability
         self.camera_check_timer = QTimer()
         self.camera_check_timer.timeout.connect(self.check_camera)
-        self.camera_check_timer.start(1000)  # Check every 1 second
 
-        # Initially check for camera availability
+    def start(self):
+        """Begin checking for the camera and start the feed when available."""
+        if not self.camera_check_timer.isActive():
+            self.camera_check_timer.start(1000)  # Check every 1 second
         self.check_camera()
 
     def check_camera(self):
-        """Check if a camera is available and start video feed if not already running."""
-        # Ensure the camera check timer is running
-        if not self.camera_check_timer.isActive():
-            self.camera_check_timer.start(1000)
+        """Check if the selected camera is available and start the video feed."""
         if self.cap is None or not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(0)  # Attempt to open the default camera
+            self.cap = cv2.VideoCapture(self.device_index)
             if self.cap.isOpened():
                 self.label.clear()  # Clear any error message
                 self.remove_opacity_effect()  # Remove opacity effect
-                self.start()
+                self.timer.start(10)  # Update frame every 10 ms (~100 FPS)
             else:
                 # Show fading error message when no camera is detected
                 self.show_fading_text("No Camera Detected")
 
-    def start(self):
-        """Start the video feed."""
-        if self.cap and self.cap.isOpened():
-            self.timer.start(10)  # Update frame every 10 ms (~100 FPS)
-
     def stop(self):
-        """Stop the video feed."""
+        """Stop the video feed and camera checks."""
         self.timer.stop()
         if self.cap and self.cap.isOpened():
             self.cap.release()
         self.cap = None  # Reset the capture object
-        # Stop the camera availability check timer
         self.camera_check_timer.stop()
 
     def update_frame(self):

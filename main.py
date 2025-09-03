@@ -79,11 +79,6 @@ class MainWindow(QMainWindow):
         # self.setWindowFlags(Qt.FramelessWindowHint)
         # self.setAttribute(Qt.WA_TranslucentBackground)
 
-        # Initialize the video feed
-        self.video_feed = VideoFeed(self.ui.VideoLabel)
-        # Start the video feed
-        self.video_feed.start()
-
         self.config = load_config()
 
         # Configuration sections
@@ -91,6 +86,14 @@ class MainWindow(QMainWindow):
         self.crsf_cfg = self.config.setdefault("crsf", {})
         self.vtx_cfg = self.config.setdefault("vtx", {})
 
+        # Initialize the video feed using the configured device index
+        self.video_port = self.vtx_cfg.get("port", "")
+        video_index = self.vtx_cfg.get("device_index", 1)
+        self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
+        if validate_port("VTX", self.video_port):
+            self.video_feed.start()
+        else:
+            print("VTX video disabled due to unavailable port.")
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
@@ -104,8 +107,6 @@ class MainWindow(QMainWindow):
                 print(f"Failed to initialize joystick: {e}")
         else:
             print("Joystick disabled due to unavailable port.")
-
-        self.video_port = self.vtx_cfg.get("port", "")
 
         # Initialize CRSFPacketProcessor
         self.crsf_processor = None
@@ -345,7 +346,7 @@ class MainWindow(QMainWindow):
         self.update_connection_status(self.control_status, self.joystick is not None)
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
         self.update_connection_status(
-            self.vtx_status, validate_port("video", self.video_port_combo.currentText())
+            self.vtx_status, validate_port("VTX", self.video_port_combo.currentText())
         )
 
     def on_control_port_selected(self, port: str):
@@ -374,8 +375,12 @@ class MainWindow(QMainWindow):
         """Handle selection of video transmitter port."""
         self.video_port = port
         self.vtx_cfg["port"] = port
-        valid = validate_port("video", port)
+        valid = validate_port("VTX", port)
         self.update_connection_status(self.vtx_status, valid)
+        if valid:
+            self.video_feed.start()
+        else:
+            self.video_feed.stop()
         save_config(self.config)
 
     def on_elrs_port_selected(self, port: str):
