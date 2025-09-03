@@ -332,6 +332,9 @@ class MainWindow(QMainWindow):
         rf_layout.addWidget(
             QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
         )
+        rf_layout.addWidget(
+            QLabel("ELRS transmitting at 250 Hz at 1:2 telemetry ratio")
+        )
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
         self.elrs_port_combo = QComboBox()
