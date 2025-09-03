@@ -141,8 +141,6 @@ class MainWindow(QMainWindow):
         self.transmit_timer.timeout.connect(self.transmit_data)
         self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 10))
 
-        # Timers for blinking status indicators
-        self.status_timers = {}
 
         # --------------------------------------------------------------------
         # OSD Overlay Setup - Create and initialize the RollPitchOSD widget
