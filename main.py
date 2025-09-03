@@ -288,12 +288,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.ui.configuration_page)
         ports = [p.device for p in list_ports.comports()]
 
-        def add_section(title, first=False):
-            if not first:
-                line = QFrame()
-                line.setFrameShape(QFrame.HLine)
-                line.setFrameShadow(QFrame.Sunken)
-                layout.addWidget(line)
+        def add_section(title):
             section = QWidget()
             vbox = QVBoxLayout(section)
             header = QHBoxLayout()
@@ -308,8 +303,15 @@ class MainWindow(QMainWindow):
             layout.addWidget(section)
             return vbox, status
 
+        def add_separator():
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            line.setStyleSheet("background-color: rgb(44, 49, 58);")
+            layout.addWidget(line)
+
         # Radiofrequency settings
-        rf_layout, self.rf_status = add_section("Radiofrequency Settings", first=True)
+        rf_layout, self.rf_status = add_section("Radiofrequency Settings")
         rf_layout.addWidget(
             QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
         )
@@ -329,6 +331,7 @@ class MainWindow(QMainWindow):
         self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
         rf_layout.addLayout(rate_row)
+        add_separator()
 
         # Control system settings
         control_layout, self.control_status = add_section("Control System Settings")
@@ -361,6 +364,7 @@ class MainWindow(QMainWindow):
         self.sensitivity_value_label = QLabel(str(self.sensitivity_slider.value()))
         sens_row.addWidget(self.sensitivity_value_label)
         control_layout.addLayout(sens_row)
+        add_separator()
 
         # VTX settings
         vtx_layout, self.vtx_status = add_section("VTX System Settings")
