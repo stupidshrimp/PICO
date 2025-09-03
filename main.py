@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QWidget,
     QVBoxLayout,
+    QLineEdit,
+    QSlider,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -25,7 +27,7 @@ from pico_modules.labelsmanager import LabelManager
 # Import the custom OSD module
 from pico_modules.rollpitch_osd import RollPitchOSD
 
-from config import load_config
+from config import load_config, save_config
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -77,13 +79,14 @@ class MainWindow(QMainWindow):
         # Initialize the video feed
         self.video_feed = VideoFeed(self.ui.VideoLabel)
         # Start the video feed
-        self.video_feed.start()        
+        self.video_feed.start()
 
-        config = load_config()
+        self.config = load_config()
 
         # Configuration sections
-        self.joystick_cfg = config.get("joystick", {})
-        self.crsf_cfg = config.get("crsf", {})
+        self.joystick_cfg = self.config.setdefault("joystick", {})
+        self.crsf_cfg = self.config.setdefault("crsf", {})
+        self.vtx_cfg = self.config.setdefault("vtx", {})
 
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
@@ -91,11 +94,15 @@ class MainWindow(QMainWindow):
                 self.joystick = JoystickRawHandler(
                     port=self.joystick_cfg.get("port"),
                     baudrate=self.joystick_cfg.get("baudrate"),
+                    deadzone=self.joystick_cfg.get("deadzone", 0),
+                    sensitivity=self.joystick_cfg.get("sensitivity", 100),
                 )
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         else:
             print("Joystick disabled due to unavailable port.")
+
+        self.video_port = self.vtx_cfg.get("port", "")
 
         # Initialize CRSFPacketProcessor
         self.crsf_processor = None
@@ -129,10 +136,13 @@ class MainWindow(QMainWindow):
         self.label_update_timer.timeout.connect(self.update_labels)
         self.label_update_timer.start(10)
 
-        # Timer for transmitting data (10ms interval, 100Hz)
+        # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        self.transmit_timer.start(10)
+        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 10))
+
+        # Timers for blinking status indicators
+        self.status_timers = {}
 
         # --------------------------------------------------------------------
         # OSD Overlay Setup - Create and initialize the RollPitchOSD widget
@@ -245,7 +255,7 @@ class MainWindow(QMainWindow):
             self.label_manager.apply_error_animation("Transmit Status", self.ui.transmitstatus1)
 
     def setup_configuration_page(self):
-        """Create configuration page for selecting COM ports."""
+        """Create configuration page for selecting settings."""
         self.ui.configuration_page = QWidget()
         widgets.configuration_page = self.ui.configuration_page
         widgets.stackedWidget.addWidget(self.ui.configuration_page)
@@ -253,33 +263,88 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.ui.configuration_page)
         ports = [p.device for p in list_ports.comports()]
 
-        def add_port_selector(title):
-            container = QWidget()
-            row = QHBoxLayout(container)
-            row.addWidget(QLabel(title))
-            combo = QComboBox()
-            combo.addItems(ports)
-            row.addWidget(combo)
-            layout.addWidget(container)
-            return combo
+        def add_section(title):
+            section = QWidget()
+            vbox = QVBoxLayout(section)
+            header = QHBoxLayout()
+            label = QLabel(title)
+            status = QLabel()
+            status.setStyleSheet("color: red;")
+            header.addWidget(label)
+            header.addWidget(status)
+            header.addStretch()
+            vbox.addLayout(header)
+            layout.addWidget(section)
+            return vbox, status
 
-        self.control_port_combo = add_port_selector("Control System")
-        self.video_port_combo = add_port_selector("Video Transmitter")
-        self.elrs_port_combo = add_port_selector("ELRS Transmitter")
+        # Radiofrequency settings
+        rf_layout, self.rf_status = add_section("Radiofrequency Settings")
+        rf_port_row = QHBoxLayout()
+        rf_port_row.addWidget(QLabel("Port"))
+        self.elrs_port_combo = QComboBox()
+        self.elrs_port_combo.addItems(ports)
+        rf_port_row.addWidget(self.elrs_port_combo)
+        rf_layout.addLayout(rf_port_row)
+
+        rate_row = QHBoxLayout()
+        rate_row.addWidget(QLabel("Packet Interval (ms)"))
+        self.packet_interval_edit = QLineEdit()
+        self.packet_interval_edit.setText(str(self.crsf_cfg.get("packet_interval", 10)))
+        rate_row.addWidget(self.packet_interval_edit)
+        rf_layout.addLayout(rate_row)
+
+        # Control system settings
+        control_layout, self.control_status = add_section("Control System Settings")
+        control_port_row = QHBoxLayout()
+        control_port_row.addWidget(QLabel("Port"))
+        self.control_port_combo = QComboBox()
+        self.control_port_combo.addItems(ports)
+        control_port_row.addWidget(self.control_port_combo)
+        control_layout.addLayout(control_port_row)
+
+        dz_row = QHBoxLayout()
+        dz_row.addWidget(QLabel("Deadzone (%)"))
+        self.deadzone_slider = QSlider(Qt.Horizontal)
+        self.deadzone_slider.setRange(0, 100)
+        self.deadzone_slider.setValue(self.joystick_cfg.get("deadzone", 0))
+        dz_row.addWidget(self.deadzone_slider)
+        control_layout.addLayout(dz_row)
+
+        sens_row = QHBoxLayout()
+        sens_row.addWidget(QLabel("Sensitivity (%)"))
+        self.sensitivity_slider = QSlider(Qt.Horizontal)
+        self.sensitivity_slider.setRange(1, 200)
+        self.sensitivity_slider.setValue(self.joystick_cfg.get("sensitivity", 100))
+        sens_row.addWidget(self.sensitivity_slider)
+        control_layout.addLayout(sens_row)
+
+        # VTX settings
+        vtx_layout, self.vtx_status = add_section("VTX System Settings")
+        vtx_port_row = QHBoxLayout()
+        vtx_port_row.addWidget(QLabel("Port"))
+        self.video_port_combo = QComboBox()
+        self.video_port_combo.addItems(ports)
+        vtx_port_row.addWidget(self.video_port_combo)
+        vtx_layout.addLayout(vtx_port_row)
 
         # Set default selections
         self.control_port_combo.setCurrentText(self.joystick_cfg.get("port", ""))
         self.elrs_port_combo.setCurrentText(self.crsf_cfg.get("port", ""))
+        self.video_port_combo.setCurrentText(self.vtx_cfg.get("port", ""))
 
         # Connect signals
-        self.control_port_combo.currentTextChanged.connect(
-            self.on_control_port_selected
-        )
-        self.video_port_combo.currentTextChanged.connect(
-            self.on_video_port_selected
-        )
-        self.elrs_port_combo.currentTextChanged.connect(
-            self.on_elrs_port_selected
+        self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
+        self.video_port_combo.currentTextChanged.connect(self.on_video_port_selected)
+        self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
+        self.packet_interval_edit.editingFinished.connect(self.on_packet_interval_changed)
+        self.deadzone_slider.valueChanged.connect(self.on_deadzone_changed)
+        self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
+
+        # Initial connection status
+        self.update_connection_status(self.control_status, self.joystick is not None)
+        self.update_connection_status(self.rf_status, self.crsf_processor is not None)
+        self.update_connection_status(
+            self.vtx_status, validate_port("video", self.video_port_combo.currentText())
         )
 
     def on_control_port_selected(self, port: str):
@@ -287,7 +352,7 @@ class MainWindow(QMainWindow):
         self.joystick_cfg["port"] = port
         if self.joystick:
             try:
-                self.joystick.serial_connection.close()
+                self.joystick.close_serial()
             except Exception:
                 pass
             self.joystick = None
@@ -296,14 +361,21 @@ class MainWindow(QMainWindow):
                 self.joystick = JoystickRawHandler(
                     port=port,
                     baudrate=self.joystick_cfg.get("baudrate"),
+                    deadzone=self.joystick_cfg.get("deadzone", 0),
+                    sensitivity=self.joystick_cfg.get("sensitivity", 100),
                 )
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
+        self.update_connection_status(self.control_status, self.joystick is not None)
+        save_config(self.config)
 
     def on_video_port_selected(self, port: str):
         """Handle selection of video transmitter port."""
         self.video_port = port
-        print(f"Video transmitter port set to {port}")
+        self.vtx_cfg["port"] = port
+        valid = validate_port("video", port)
+        self.update_connection_status(self.vtx_status, valid)
+        save_config(self.config)
 
     def on_elrs_port_selected(self, port: str):
         """Handle selection of ELRS transmitter port."""
@@ -321,6 +393,53 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
+        self.update_connection_status(self.rf_status, self.crsf_processor is not None)
+        save_config(self.config)
+
+    def on_packet_interval_changed(self):
+        try:
+            interval = int(self.packet_interval_edit.text())
+        except ValueError:
+            interval = self.crsf_cfg.get("packet_interval", 10)
+            self.packet_interval_edit.setText(str(interval))
+        self.crsf_cfg["packet_interval"] = interval
+        self.transmit_timer.start(interval)
+        save_config(self.config)
+
+    def on_deadzone_changed(self, value: int):
+        self.joystick_cfg["deadzone"] = value
+        if self.joystick:
+            self.joystick.set_deadzone(value)
+        save_config(self.config)
+
+    def on_sensitivity_changed(self, value: int):
+        self.joystick_cfg["sensitivity"] = value
+        if self.joystick:
+            self.joystick.set_sensitivity(value)
+        save_config(self.config)
+
+    def start_blinking(self, label: QLabel):
+        timer = QTimer(self)
+        timer.setInterval(500)
+        timer.timeout.connect(lambda: label.setVisible(not label.isVisible()))
+        timer.start()
+        self.status_timers[label] = timer
+
+    def stop_blinking(self, label: QLabel):
+        timer = self.status_timers.pop(label, None)
+        if timer:
+            timer.stop()
+        label.setVisible(True)
+
+    def update_connection_status(self, label: QLabel, connected: bool):
+        if connected:
+            label.setText("")
+            self.stop_blinking(label)
+        else:
+            label.setText("Not Connected")
+            label.setStyleSheet("color: red;")
+            if label not in self.status_timers:
+                self.start_blinking(label)
 
     def buttonClick(self):
         # GET BUTTON CLICKED
