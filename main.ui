@@ -2780,6 +2780,16 @@ background-repeat: no-repeat;</string>
                             </rect>
                            </property>
                           </widget>
+                          <widget class="QWidget" name="altitudeosd" native="true">
+                           <property name="geometry">
+                            <rect>
+                             <x>640</x>
+                             <y>100</y>
+                             <width>100</width>
+                             <height>400</height>
+                            </rect>
+                           </property>
+                          </widget>
                          </widget>
                          <widget class="QFrame" name="frame_3">
                           <property name="geometry">

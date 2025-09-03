@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from . import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -70,8 +70,8 @@ class Ui_MainWindow(object):
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
 "Bg App */\n"
 "#bgApp {	\n"
-"	background"
-                        "-color: rgb(40, 44, 52);\n"
+"	background-c"
+                        "olor: rgb(40, 44, 52);\n"
 "	border: 1px solid rgb(44, 49, 58);\n"
 "}\n"
 "\n"
@@ -103,8 +103,8 @@ class Ui_MainWindow(object):
 "	background-color: rgb(40, 44, 52);\n"
 "}\n"
 "#topMenu .QPushButton:pressed {	\n"
-"	background-color: rgb(80,"
-                        " 250, 123);\n"
+"	background-color: rgb(46, 12"
+                        "5, 50);\n"
 "	color: rgb(255, 255, 255);\n"
 "}\n"
 "#bottomMenu .QPushButton {	\n"
@@ -142,8 +142,8 @@ class Ui_MainWindow(object):
 "	background-color: rgb(40, 44, 52);\n"
 "}\n"
 "#toggleButton:pressed {\n"
-"	background-color: rgb(80,"
-                        " 250, 123);\n"
+"	background-color: rgb(46, 125,"
+                        " 50);\n"
 "}\n"
 "\n"
 "/* Title Menu */\n"
@@ -176,8 +176,8 @@ class Ui_MainWindow(object):
 "\n"
 "/* Extra Content */\n"
 "#extraContent{\n"
-"	border-top: 3"
-                        "px solid rgb(40, 44, 52);\n"
+"	border-top: 3px soli"
+                        "d rgb(40, 44, 52);\n"
 "}\n"
 "\n"
 "/* Extra Top Menus */\n"
@@ -209,8 +209,8 @@ class Ui_MainWindow(object):
 "\n"
 "/* Top Buttons */\n"
 "#rightButtons .QPushButton { background-color: rgba(255, 255, 255, 0); border: none;  border-radius: 5px; }\n"
-"#rightButtons .QPushButton:hover { background-color: rgb(44, 49, 57); border-style: soli"
-                        "d; border-radius: 4px; }\n"
+"#rightButtons .QPushButton:hover { background-color: rgb(44, 49, 57); border-style: solid; borde"
+                        "r-radius: 4px; }\n"
 "#rightButtons .QPushButton:pressed { background-color: rgb(23, 26, 30); border-style: solid; border-radius: 4px; }\n"
 "\n"
 "/* Theme Settings */\n"
@@ -237,9 +237,9 @@ class Ui_MainWindow(object):
 "}\n"
 "#contentSettings .QPushButton:pressed {	\n"
 "	background-color: rgb(46, 125, 50);\n"
-"	color: rgb(255, 255,"
-                        " 255);\n"
-"}\n"
+"	color: rgb(255, 255, 255);\n"
+""
+                        "}\n"
 "\n"
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
 "QTableWidget */\n"
@@ -273,9 +273,9 @@ class Ui_MainWindow(object):
 "QHeaderView::section:horizontal\n"
 "{\n"
 "    border: 1px solid rgb(33, 37, 43);\n"
-"	background-color: rgb(33"
-                        ", 37, 43);\n"
-"	padding: 3px;\n"
+"	background-color: rgb(33, 37, 43);\n"
+""
+                        "	padding: 3px;\n"
 "	border-top-left-radius: 7px;\n"
 "    border-top-right-radius: 7px;\n"
 "}\n"
@@ -308,9 +308,9 @@ class Ui_MainWindow(object):
 "	border-radius: 5px;\n"
 "	padding: 10px;\n"
 "	selection-color: rgb(255, 255, 255);\n"
-"	selection-background-color: rgb(2"
-                        "55, 121, 198);\n"
-"}\n"
+"	selection-background-color: rgb(46, 125, 50);\n"
+""
+                        "}\n"
 "QPlainTextEdit  QScrollBar:vertical {\n"
 "    width: 8px;\n"
 " }\n"
@@ -347,8 +347,8 @@ class Ui_MainWindow(object):
 "    subcontrol-position: right;\n"
 "    subcontrol-origin: margin;\n"
 "}\n"
-"QScrollBar"
-                        "::sub-line:horizontal {\n"
+"QScrollBar::sub-line:horizonta"
+                        "l {\n"
 "    border: none;\n"
 "    background: rgb(55, 63, 77);\n"
 "    width: 20px;\n"
@@ -384,10 +384,10 @@ class Ui_MainWindow(object):
 "	border-bottom-left-radius: 4px;\n"
 "    border-bottom-right-radius: 4px;\n"
 "     subcontrol-position: bottom;\n"
-"     subcontrol-or"
-                        "igin: margin;\n"
+"     subcontrol-origin: margin;\n"
 " }\n"
-" QScrollBar::sub-line:vertical {\n"
+""
+                        " QScrollBar::sub-line:vertical {\n"
 "	border: none;\n"
 "    background: rgb(55, 63, 77);\n"
 "     height: 20px;\n"
@@ -419,8 +419,8 @@ class Ui_MainWindow(object):
 "QCheckBox::indicator:checked {\n"
 "    background: 3px solid rgb(52, 59, 72);\n"
 "	border: 3px solid rgb(52, 59, 72);	\n"
-"	background-imag"
-                        "e: url(:/icons/images/icons/cil-check-alt.png);\n"
+"	background-image: url(:/icons/images/ico"
+                        "ns/cil-check-alt.png);\n"
 "}\n"
 "\n"
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
@@ -454,9 +454,9 @@ class Ui_MainWindow(object):
 "}\n"
 "QComboBox::drop-down {\n"
 "	subcontrol-origin: padding;\n"
-"	subcontrol-posit"
-                        "ion: top right;\n"
-"	width: 25px; \n"
+"	subcontrol-position: top right;\n"
+"	widt"
+                        "h: 25px; \n"
 "	border-left-width: 3px;\n"
 "	border-left-color: rgba(39, 44, 54, 150);\n"
 "	border-left-style: solid;\n"
@@ -487,10 +487,10 @@ class Ui_MainWindow(object):
 "QSlider::handle:horizontal {\n"
 "    background-color: rgb(46, 125, 50);\n"
 "    border: none;\n"
-"    height: 10px;"
-                        "\n"
+"    height: 10px;\n"
 "    width: 10px;\n"
-"    margin: 0px;\n"
+"  "
+                        "  margin: 0px;\n"
 "	border-radius: 5px;\n"
 "}\n"
 "QSlider::handle:horizontal:hover {\n"
@@ -527,9 +527,9 @@ class Ui_MainWindow(object):
 "/* /////////////////////////////////////////////////////////////////////////////////////////////////\n"
 "CommandLinkButton */\n"
 "QCommandLinkButton {	\n"
+"	color: rgb(46, 125, 50);\n"
 ""
-                        "	color: rgb(46, 125, 50);\n"
-"	border-radius: 5px;\n"
+                        "	border-radius: 5px;\n"
 "	padding: 5px;\n"
 "	color: rgb(255, 170, 255);\n"
 "}\n"
@@ -1415,6 +1415,9 @@ class Ui_MainWindow(object):
         self.rollpitchosd = QWidget(self.frame_2)
         self.rollpitchosd.setObjectName(u"rollpitchosd")
         self.rollpitchosd.setGeometry(QRect(149, -1, 481, 591))
+        self.altitudeosd = QWidget(self.frame_2)
+        self.altitudeosd.setObjectName(u"altitudeosd")
+        self.altitudeosd.setGeometry(QRect(640, 100, 100, 400))
         self.frame_3 = QFrame(self.frame)
         self.frame_3.setObjectName(u"frame_3")
         self.frame_3.setGeometry(QRect(789, -1, 371, 381))
@@ -1432,10 +1435,10 @@ class Ui_MainWindow(object):
         self.InputsLabel = QLabel(self.frame_4)
         self.InputsLabel.setObjectName(u"InputsLabel")
         self.InputsLabel.setGeometry(QRect(0, 10, 371, 31))
-        font = QFont()
-        font.setBold(True)
-        font.setUnderline(True)
-        self.InputsLabel.setFont(font)
+        font5 = QFont()
+        font5.setBold(True)
+        font5.setUnderline(True)
+        self.InputsLabel.setFont(font5)
         self.InputsLabel.setAlignment(Qt.AlignCenter)
         self.PitchLabel1 = QLabel(self.frame_4)
         self.PitchLabel1.setObjectName(u"PitchLabel1")
@@ -1551,11 +1554,11 @@ class Ui_MainWindow(object):
         self.creditsLabel = QLabel(self.bottomBar)
         self.creditsLabel.setObjectName(u"creditsLabel")
         self.creditsLabel.setMaximumSize(QSize(16777215, 16))
-        font5 = QFont()
-        font5.setFamilies([u"Segoe UI"])
-        font5.setBold(False)
-        font5.setItalic(False)
-        self.creditsLabel.setFont(font5)
+        font6 = QFont()
+        font6.setFamilies([u"Segoe UI"])
+        font6.setBold(False)
+        font6.setItalic(False)
+        self.creditsLabel.setFont(font6)
         self.creditsLabel.setAlignment(Qt.AlignmentFlag.AlignLeading|Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter)
 
         self.horizontalLayout_5.addWidget(self.creditsLabel)

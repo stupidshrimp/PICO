@@ -27,6 +27,7 @@ from pico_modules.labelsmanager import LabelManager
 
 # Import the custom OSD module
 from pico_modules.rollpitch_osd import RollPitchOSD
+from pico_modules.altitude_osd import AltitudeOSD
 
 from config import load_config, save_config
 
@@ -156,6 +157,15 @@ class MainWindow(QMainWindow):
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
         self.rollpitch_osd.show()
 
+        # Altitude OSD placeholder - receives telemetry altitude values
+        self.altitude_osd = AltitudeOSD(self.ui.altitudeosd)
+        self.altitude_osd.resize(self.ui.altitudeosd.size())
+        self.altitude_osd.setAltitude(0.0)
+        self.altitude_osd.show()
+
+        # Current altitude placeholder variable; to be updated from telemetry
+        self.current_altitude = 0.0
+
 
         # TOGGLE MENU
         widgets.toggleButton.clicked.connect(lambda: UIFunctions.toggleMenu(self, True))
@@ -192,6 +202,7 @@ class MainWindow(QMainWindow):
         """
         if not self.joystick:
             self.rollpitch_osd.setRollPitch(0.0, 0.0)
+            self.altitude_osd.setAltitude(self.current_altitude)
             self.label_manager.update_labels({
                 "pitch": "N/A",
                 "roll": "N/A",
@@ -211,6 +222,7 @@ class MainWindow(QMainWindow):
 
             # Update the OSD with the same joystick data
             self.rollpitch_osd.setRollPitch(raw_roll, raw_pitch)
+            self.altitude_osd.setAltitude(self.current_altitude)
         except Exception as e:
             self.label_manager.update_labels({
                 "pitch": "Error",
@@ -218,6 +230,7 @@ class MainWindow(QMainWindow):
                 "yaw": "Error",
             })
             self.rollpitch_osd.setRollPitch(0.0, 0.0)
+            self.altitude_osd.setAltitude(self.current_altitude)
 
     def transmit_data(self):
         """
