@@ -2793,9 +2793,9 @@ background-repeat: no-repeat;</string>
                          </widget>
                          <widget class="QFrame" name="frame_4">
                           <property name="geometry">
-                           <rect>
-                            <x>789</x>
-                            <y>399</y>
+                          <rect>
+                           <x>789</x>
+                            <y>369</y>
                             <width>371</width>
                             <height>300</height>
                           </rect>
