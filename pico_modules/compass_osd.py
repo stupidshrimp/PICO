@@ -53,7 +53,9 @@ class CompassOSD(QWidget):
             x = center_x + (deg - self._yaw) * SCALE
 
             distance_to_edge = min(x, self.width() - x)
-            if distance_to_edge < FADE_ZONE:
+            if distance_to_edge <= 0:
+                alpha = 0.0
+            elif distance_to_edge < FADE_ZONE:
                 alpha = distance_to_edge / FADE_ZONE
             else:
                 alpha = 1.0
