@@ -10,5 +10,5 @@
         "baudrate": 921600,
         "packet_interval": 10
     },
-    "vtx": {"port": "", "device_index": 1}
+    "vtx": {"port": "Not connected", "device_index": 1}
 }

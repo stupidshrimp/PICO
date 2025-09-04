@@ -36,11 +36,18 @@ from config import load_config, save_config
 def validate_port(name: str, port: str) -> bool:
     """Validate that a serial port exists on the system."""
     available = [p.device for p in list_ports.comports()]
+
+    # Treat empty or explicit "Not connected" selections as no connection.
+    if not port or port.lower() == "not connected":
+        print(f"{name} port: Not connected")
+        return False
+
     if port not in available:
         print(
             f"Warning: {name} port '{port}' not found. Available ports: {', '.join(available) or 'None'}"
         )
         return False
+
     return True
 
 widgets = None
@@ -97,6 +104,7 @@ class MainWindow(QMainWindow):
             self.video_feed.start()
         else:
             print("VTX video disabled due to unavailable port.")
+            self.ui.VideoLabel.setText("Not connected")
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
@@ -367,7 +375,7 @@ class MainWindow(QMainWindow):
         widgets.stackedWidget.addWidget(self.ui.configuration_page)
 
         layout = QVBoxLayout(self.ui.configuration_page)
-        ports = [p.device for p in list_ports.comports()]
+        ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
         def add_section(title):
             section = QWidget()
@@ -460,9 +468,15 @@ class MainWindow(QMainWindow):
         vtx_layout.addLayout(vtx_port_row)
 
         # Set default selections
-        self.control_port_combo.setCurrentText(self.joystick_cfg.get("port", ""))
-        self.elrs_port_combo.setCurrentText(self.crsf_cfg.get("port", ""))
-        self.video_port_combo.setCurrentText(self.vtx_cfg.get("port", ""))
+        self.control_port_combo.setCurrentText(
+            self.joystick_cfg.get("port", "Not connected")
+        )
+        self.elrs_port_combo.setCurrentText(
+            self.crsf_cfg.get("port", "Not connected")
+        )
+        self.video_port_combo.setCurrentText(
+            self.vtx_cfg.get("port", "Not connected")
+        )
 
         # Connect signals
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
@@ -511,6 +525,7 @@ class MainWindow(QMainWindow):
             self.video_feed.start()
         else:
             self.video_feed.stop()
+            self.ui.VideoLabel.setText("Not connected")
         save_config(self.config)
 
     def on_elrs_port_selected(self, port: str):
