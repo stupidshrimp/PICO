@@ -1,10 +1,11 @@
 """Altitude tape on-screen display widget.
 
 This widget renders a vertical altitude tape similar to those seen on
-primary flight displays. It accepts altitude values (e.g., in feet or
-meters) and draws a scrolling scale with tick marks and a central readout
-showing the current altitude.  The telemetry source is expected to supply
-the altitude value; here we only provide the visual representation.
+primary flight displays. It accepts altitude values in feet and draws a
+scrolling scale with tick marks every 10 ft and numeric labels every 10
+ticks (100 ft) showing values such as ``10`` then ``20`` then ``30``.
+The telemetry source is expected to supply the altitude value; here we
+only provide the visual representation.
 """
 
 from PySide6.QtWidgets import QWidget
@@ -24,7 +25,7 @@ class AltitudeOSD(QWidget):
         Parameters
         ----------
         altitude: float
-            Altitude value in user-defined units (e.g., feet or meters).
+            Altitude value in feet.
         """
         self._altitude = altitude
         self.update()
@@ -35,9 +36,9 @@ class AltitudeOSD(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         # -------------------- Display constants -------------------- #
-        SCALE = 0.5               # Pixels per altitude unit
-        TICK_INTERVAL = 20        # Minor tick every 20 units
-        MAJOR_INTERVAL = 100      # Major tick every 100 units
+        SCALE = 0.5               # Pixels per altitude foot
+        TICK_INTERVAL = 10        # Minor tick every 10 ft
+        TICKS_PER_LABEL = 10      # Label every 10 ticks (100 ft)
         MAJOR_LEN = 20            # Length of major tick in pixels
         MINOR_LEN = 10            # Length of minor tick in pixels
         BOX_HEIGHT = 40           # Height of centre readout box
@@ -57,10 +58,12 @@ class AltitudeOSD(QWidget):
         # Draw tick marks and labels
         for alt in range(start_alt, end_alt + TICK_INTERVAL, TICK_INTERVAL):
             y = center_y + (self._altitude - alt) * SCALE
-            if alt % MAJOR_INTERVAL == 0:
+            if (alt // TICK_INTERVAL) % TICKS_PER_LABEL == 0:
                 tick_len = MAJOR_LEN
                 painter.drawLine(self.width() - tick_len, y, self.width(), y)
-                painter.drawText(self.width() - tick_len - 35, y + 4, f"{alt}")
+                painter.drawText(
+                    self.width() - tick_len - 35, y + 4, f"{alt // TICK_INTERVAL}"
+                )
             else:
                 tick_len = MINOR_LEN
                 painter.drawLine(self.width() - tick_len, y, self.width(), y)
