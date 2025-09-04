@@ -8,7 +8,7 @@ airspeed value in mph; here we only provide the visual representation.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
+from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon, QLinearGradient
 from PySide6.QtCore import Qt, QPoint
 
 
@@ -36,8 +36,8 @@ class AirspeedOSD(QWidget):
 
         # -------------------- Display constants -------------------- #
         SCALE = 4.0              # Pixels per airspeed unit (mph)
-        TICK_INTERVAL = 5        # Minor tick every 5 mph
-        MAJOR_INTERVAL = 10      # Major tick every 10 mph
+        TICK_INTERVAL = 1        # Minor tick every 1 mph
+        MAJOR_INTERVAL = 5       # Major tick every 5 mph
         MAJOR_LEN = 20           # Length of major tick in pixels
         MINOR_LEN = 10           # Length of minor tick in pixels
         BOX_HEIGHT = 40          # Height of centre readout box
@@ -54,7 +54,7 @@ class AirspeedOSD(QWidget):
         painter.setPen(pen)
         painter.setFont(QFont("Arial", 10))
 
-        # Draw tick marks and numeric labels only on major ticks
+        # Draw tick marks; label only on major ticks
         for spd in range(start_spd, end_spd + TICK_INTERVAL, TICK_INTERVAL):
             y = center_y + (self._airspeed - spd) * SCALE
 
@@ -78,4 +78,17 @@ class AirspeedOSD(QWidget):
             QPoint(self.width() - 15, center_y + 10),
         ])
         painter.drawPolygon(pointer)
+
+        # Fade edges to reduce hard cut-off
+        FADE_HEIGHT = 30
+        fade_top = QLinearGradient(0, 0, 0, FADE_HEIGHT)
+        fade_top.setColorAt(0, QColor(0, 0, 0, 255))
+        fade_top.setColorAt(1, QColor(0, 0, 0, 0))
+        painter.fillRect(0, 0, self.width(), FADE_HEIGHT, fade_top)
+
+        fade_bottom = QLinearGradient(0, self.height() - FADE_HEIGHT, 0, self.height())
+        fade_bottom.setColorAt(0, QColor(0, 0, 0, 0))
+        fade_bottom.setColorAt(1, QColor(0, 0, 0, 255))
+        painter.fillRect(0, self.height() - FADE_HEIGHT, self.width(), FADE_HEIGHT, fade_bottom)
+
         painter.end()
