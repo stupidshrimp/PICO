@@ -492,6 +492,28 @@ class MainWindow(QMainWindow):
         self.update_connection_status(
             self.vtx_status, validate_port("VTX", self.video_port_combo.currentText())
         )
+        # Ensure the port lists reflect currently connected devices
+        self.update_port_lists()
+
+    def update_port_lists(self):
+        """Refresh available serial ports and update the dropdowns."""
+        ports = ["Not connected"] + [p.device for p in list_ports.comports()]
+
+        def refresh(combo, handler):
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(ports)
+            combo.blockSignals(False)
+            if current in ports:
+                combo.setCurrentText(current)
+            else:
+                combo.setCurrentText("Not connected")
+                handler("Not connected")
+
+        refresh(self.control_port_combo, self.on_control_port_selected)
+        refresh(self.elrs_port_combo, self.on_elrs_port_selected)
+        refresh(self.video_port_combo, self.on_video_port_selected)
 
     def on_control_port_selected(self, port: str):
         """Handle selection of control system port."""
@@ -521,10 +543,11 @@ class MainWindow(QMainWindow):
         self.vtx_cfg["port"] = port
         valid = validate_port("VTX", port)
         self.update_connection_status(self.vtx_status, valid)
+        # Always stop the current feed before switching
+        self.video_feed.stop()
         if valid:
             self.video_feed.start()
         else:
-            self.video_feed.stop()
             self.ui.VideoLabel.setText("Not connected")
         save_config(self.config)
 
@@ -609,6 +632,7 @@ class MainWindow(QMainWindow):
 
         # SHOW WIDGETS PAGE
         if btnName == "btn_widgets":
+            self.update_port_lists()
             widgets.stackedWidget.setCurrentWidget(widgets.configuration_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
