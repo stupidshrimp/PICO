@@ -2731,20 +2731,7 @@ background-repeat: no-repeat;</string>
                             <string/>
                            </property>
                           </widget>
-                          <widget class="QLabel" name="label_5">
-                           <property name="geometry">
-                            <rect>
-                             <x>10</x>
-                             <y>50</y>
-                             <width>91</width>
-                             <height>21</height>
-                            </rect>
-                           </property>
-                           <property name="text">
-                            <string>Air Speed: 123</string>
-                           </property>
-                          </widget>
-                          <widget class="QLabel" name="transmitstatus1">
+                          <widget class="QLabel" name="signalStrengthALabel">
                            <property name="geometry">
                             <rect>
                              <x>630</x>
@@ -2754,22 +2741,74 @@ background-repeat: no-repeat;</string>
                             </rect>
                            </property>
                            <property name="text">
-                            <string>Transmit Status: 123</string>
+                            <string>Signal Strength A: --</string>
                            </property>
                           </widget>
-                          <widget class="QLabel" name="label_7">
+                          <widget class="QLabel" name="signalStrengthBLabel">
                            <property name="geometry">
                             <rect>
                              <x>630</x>
-                             <y>50</y>
+                             <y>40</y>
                              <width>131</width>
                              <height>21</height>
                             </rect>
                            </property>
-                          <property name="text">
-                           <string>Telemetry Status: 123</string>
-                          </property>
-                         </widget>
+                           <property name="text">
+                            <string>Signal Strength B: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="linkQualityLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>630</x>
+                             <y>70</y>
+                             <width>65</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Link Quality: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="snrLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>695</x>
+                             <y>70</y>
+                             <width>65</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>SNR: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="downlinkQualityLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>630</x>
+                             <y>90</y>
+                             <width>65</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Downlink Quality: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="downlinkSnrLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>695</x>
+                             <y>90</y>
+                             <width>65</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Downlink SNR: --</string>
+                           </property>
+                          </widget>
                          <widget class="QWidget" name="airspeedosd" native="true">
                           <property name="geometry">
                            <rect>

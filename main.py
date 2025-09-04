@@ -133,7 +133,6 @@ class MainWindow(QMainWindow):
             "pitch": self.ui.PitchLabel1,
             "roll": self.ui.RollLabel1,
             "yaw": self.ui.YawLabel1,
-            "Transmit Status": self.ui.transmitstatus1,
         }
 
         # Initialize the LabelManager with the labels
@@ -246,6 +245,37 @@ class MainWindow(QMainWindow):
         if self.current_airspeed is not None:
             self.airspeed_osd.setAirspeed(self.current_airspeed)
 
+    def classify_rssi(self, rssi):
+        if rssi >= -60:
+            return "Excellent", "green"
+        elif rssi >= -75:
+            return "Good", "green"
+        elif rssi >= -85:
+            return "Fair", "yellow"
+        elif rssi >= -95:
+            return "Weak", "orange"
+        else:
+            return "Critical", "red"
+
+    def classify_snr(self, snr):
+        if snr >= 15:
+            return "Excellent", "green"
+        elif snr >= 10:
+            return "Good", "green"
+        elif snr >= 5:
+            return "Fair", "yellow"
+        elif snr >= 0:
+            return "Weak", "orange"
+        else:
+            return "Critical", "red"
+
+    def set_label(self, label, name, value, color=None):
+        label.setText(f"{name}: {value}")
+        if color:
+            label.setStyleSheet(f"color: {color}")
+        else:
+            label.setStyleSheet("")
+
     def handle_telemetry(self, packet_type, *values) -> None:
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
         if packet_type == "attitude":
@@ -257,44 +287,51 @@ class MainWindow(QMainWindow):
             _lat, _lon, speed, _course, alt, _sats = values
             self.current_airspeed = speed
             self.current_altitude = alt
+        elif packet_type == "link_stats":
+            (
+                rssi_a,
+                rssi_b,
+                link_quality,
+                snr,
+                downlink_lq,
+                downlink_snr,
+            ) = values
+            self.set_label(
+                self.ui.linkQualityLabel, "Link Quality", f"{link_quality}%"
+            )
+            self.set_label(
+                self.ui.downlinkQualityLabel,
+                "Downlink Quality",
+                f"{downlink_lq}%",
+            )
+            cat, color = self.classify_rssi(rssi_a)
+            self.set_label(
+                self.ui.signalStrengthALabel, "Signal Strength A", cat, color
+            )
+            cat, color = self.classify_rssi(rssi_b)
+            self.set_label(
+                self.ui.signalStrengthBLabel, "Signal Strength B", cat, color
+            )
+            cat, color = self.classify_snr(snr)
+            self.set_label(self.ui.snrLabel, "SNR", cat, color)
+            cat, color = self.classify_snr(downlink_snr)
+            self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
 
     def transmit_data(self):
         """
-        Transmit CRSF packets using mapped joystick values and update transmit status.
+        Transmit CRSF packets using mapped joystick values.
         """
         if not self.joystick or not self.crsf_processor:
-            self.label_manager.update_labels({
-                "Transmit Status": "Hardware Unavailable",
-            })
             return
 
         try:
-            # Fetch mapped joystick values for transmission
             mapped_roll, mapped_pitch = self.joystick.get_mapped_values()
-
-            # Prepare CRSF channels for transmission
             channels = [1500] * 16
             channels[0] = int(mapped_roll)
             channels[1] = int(mapped_pitch)
-
-            # Send CRSF packet and get status
-            status = self.crsf_processor.update_and_send_packet(channels)
-
-            # Update Transmit Status label based on the status
-            self.label_manager.update_labels({
-                "Transmit Status": status,
-            })
-
-            # If the status indicates an error, apply a fading red animation
-            if "error" in status.lower():
-                self.label_manager.apply_error_animation("Transmit Status", self.ui.transmitstatus1)
-
+            self.crsf_processor.update_and_send_packet(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
-            self.label_manager.update_labels({
-                "Transmit Status": "Error",
-            })
-            self.label_manager.apply_error_animation("Transmit Status", self.ui.transmitstatus1)
 
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""

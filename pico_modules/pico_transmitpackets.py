@@ -231,6 +231,17 @@ class CRSFPacketProcessor:
             print(f"Downlink RSSI: {downlink_rssi} dBm")
             print(f"Downlink Link Quality: {downlink_lq}%")
             print(f"Downlink SNR: {downlink_snr} dB")
+
+            if self.telemetry_callback:
+                self.telemetry_callback(
+                    "link_stats",
+                    rssi_a,
+                    rssi_b,
+                    link_quality,
+                    snr,
+                    downlink_lq,
+                    downlink_snr,
+                )
         except Exception as e:
             print("Error decoding link statistics:", e)
 
