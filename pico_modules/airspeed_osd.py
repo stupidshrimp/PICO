@@ -35,7 +35,7 @@ class AirspeedOSD(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         # -------------------- Display constants -------------------- #
-        SCALE = 4.0              # Pixels per airspeed unit (mph)
+        SCALE = 8                # Pixels per airspeed unit (mph)
         TICK_INTERVAL = 1        # Minor tick every 1 mph
         MAJOR_INTERVAL = 5       # Major tick every 5 mph
         MAJOR_LEN = 20           # Length of major tick in pixels
