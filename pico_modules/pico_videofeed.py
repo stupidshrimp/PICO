@@ -2,7 +2,6 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QAbstractAnimation
 from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
 import cv2
-import numpy as np
 
 
 class VideoFeed:
@@ -40,8 +39,6 @@ class VideoFeed:
         if self.cap is None or not self.cap.isOpened():
             self.cap = cv2.VideoCapture(self.device_index)
             if self.cap.isOpened():
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
                 self.label.clear()  # Clear any error message
                 self.remove_opacity_effect()  # Remove opacity effect
                 self.timer.start(10)  # Update frame every 10 ms (~100 FPS)
@@ -64,35 +61,27 @@ class VideoFeed:
             if ret:
                 self.remove_opacity_effect()  # Ensure no fading effect on video feed
 
-                frame = self.deinterlace(frame)
-
-                h, w, _ = frame.shape
-                margin_x = int(w * 0.02)
-                margin_y = int(h * 0.02)
-                frame = frame[margin_y:h - margin_y, margin_x:w - margin_x]
-
-                frame = cv2.resize(frame, (1280, 960), interpolation=cv2.INTER_LINEAR)
+                # Convert the frame to RGB format for Qt
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = frame.shape
                 bytes_per_line = ch * w
                 qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-                self.label.setPixmap(QPixmap.fromImage(qt_image))
+                # Scale the QImage to fit the QLabel dimensions
+                scaled_image = qt_image.scaled(
+                    self.label.width(),
+                    self.label.height(),
+                    Qt.KeepAspectRatio
+                )
+
+                # Display the scaled image in the QLabel
+                self.label.setPixmap(QPixmap.fromImage(scaled_image))
             else:
                 # If no frame is read, stop the timer and show an error message
                 self.show_fading_text("Camera Error or Disconnected")
                 self.stop()
         else:
             self.show_fading_text("No Camera Detected")
-
-    def deinterlace(self, frame):
-        even = frame[0::2]
-        odd = frame[1::2]
-        blended = ((even.astype("float32") + odd.astype("float32")) / 2).astype("uint8")
-        deinterlaced = np.empty_like(frame)
-        deinterlaced[0::2] = blended
-        deinterlaced[1::2] = blended
-        return deinterlaced
 
     def show_fading_text(self, message):
         """
