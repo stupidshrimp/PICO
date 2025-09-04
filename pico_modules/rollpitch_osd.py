@@ -45,8 +45,9 @@ class RollPitchOSD(QWidget):
         FADE_ZONE     = 100  # Pixels from top/bottom edge to start fading
         CROSS_SIZE    = 10   # Half size of the centre cross
 
-        LONG_FRACTION  = 0.8  # Long rung as fraction of half width
-        SHORT_FRACTION = 0.4  # Short rung as fraction of half width
+        ZERO_FRACTION  = 0.6  # 0° line length as fraction of full width
+        LONG_FRACTION  = 0.4  # Long rung length as fraction of full width
+        SHORT_FRACTION = 0.2  # Short rung length as fraction of full width
 
         center_x = self.width() / 2
         center_y = self.height() / 2
@@ -65,6 +66,7 @@ class RollPitchOSD(QWidget):
 
         half_height_px = self.height() / 2
         half_width = self.width() / 2
+        zero_half_len = half_width * ZERO_FRACTION
         long_half_len = half_width * LONG_FRACTION
         short_half_len = half_width * SHORT_FRACTION
 
@@ -81,11 +83,11 @@ class RollPitchOSD(QWidget):
         for pitch_deg in range(start_pitch, end_pitch + 5, 5):
             y = (self._pitch - pitch_deg) * SCALE
 
-            # Make the zero‑degree horizon line span the widget and alternate
-            # between long and short rungs away from centre.
+            # Render a longer zero‑degree horizon line and alternate between
+            # long and short rungs away from centre.
             rung_index = int(abs(pitch_deg) / 5)
             if pitch_deg == 0:
-                half_len = half_width
+                half_len = zero_half_len
             else:
                 half_len = long_half_len if rung_index % 2 == 1 else short_half_len
 
