@@ -218,27 +218,40 @@ class MainWindow(QMainWindow):
 
 
     def update_labels(self) -> None:
-        """Update GUI labels and OSD widgets using the latest telemetry."""
+        """Update GUI labels using joystick inputs and refresh OSD widgets."""
+
+        # ------------------------------------------------------------------
+        # Joystick values update the label texts
+        # ------------------------------------------------------------------
+        joy_pitch = joy_roll = None
+        if self.joystick:
+            try:
+                joy_pitch, joy_roll = self.joystick.get_raw_values()
+            except Exception:
+                pass
+
+        if joy_pitch is None:
+            self.label_manager.update_labels(
+                {"pitch": "N/A", "roll": "N/A", "yaw": "N/A"}
+            )
+        else:
+            self.label_manager.update_labels(
+                {
+                    "pitch": f"{joy_pitch}",
+                    "roll": f"{joy_roll}",
+                    "yaw": "N/A",
+                }
+            )
+
+        # ------------------------------------------------------------------
+        # Telemetry still drives the OSD widgets
+        # ------------------------------------------------------------------
         if self.telemetry_pitch is None:
             self.rollpitch_osd.setRollPitch(0.0, 0.0)
             self.altitude_osd.setAltitude(self.current_altitude or 0.0)
             self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
-            self.label_manager.update_labels(
-                {
-                    "pitch": "N/A",
-                    "roll": "N/A",
-                    "yaw": "N/A",
-                }
-            )
             return
 
-        self.label_manager.update_labels(
-            {
-                "pitch": f"{self.telemetry_pitch:.1f}",
-                "roll": f"{self.telemetry_roll:.1f}",
-                "yaw": f"{self.telemetry_yaw:.1f}",
-            }
-        )
         self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
         if self.current_altitude is not None:
             self.altitude_osd.setAltitude(self.current_altitude)
