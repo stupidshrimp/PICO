@@ -36,8 +36,8 @@ class AirspeedOSD(QWidget):
 
         # -------------------- Display constants -------------------- #
         SCALE = 2.0              # Pixels per airspeed unit (mph)
-        TICK_INTERVAL = 5        # Minor tick every 5 mph
-        MAJOR_INTERVAL = 10      # Major tick every 10 mph
+        TICK_INTERVAL = 1        # Minor tick every 1 mph
+        MAJOR_INTERVAL = 5       # Major tick every 5 mph
         MAJOR_LEN = 20           # Length of major tick in pixels
         MINOR_LEN = 10           # Length of minor tick in pixels
         BOX_HEIGHT = 40          # Height of centre readout box
