@@ -57,13 +57,14 @@ class AirspeedOSD(QWidget):
         # Draw tick marks and labels
         for spd in range(start_spd, end_spd + TICK_INTERVAL, TICK_INTERVAL):
             y = center_y + (self._airspeed - spd) * SCALE
+
             if spd % MAJOR_INTERVAL == 0:
                 tick_len = MAJOR_LEN
-                painter.drawLine(0, y, tick_len, y)
-                painter.drawText(tick_len + 5, y + 4, f"{spd}")
             else:
                 tick_len = MINOR_LEN
-                painter.drawLine(0, y, tick_len, y)
+
+            painter.drawLine(0, y, tick_len, y)
+            painter.drawText(tick_len + 5, y + 4, f"{spd}")
 
         # Draw centre readout box
         box_top = center_y - BOX_HEIGHT / 2
