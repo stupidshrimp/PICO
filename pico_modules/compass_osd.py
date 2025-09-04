@@ -3,12 +3,12 @@
 This widget renders a horizontal heading tape similar to those found on
 modern aircraft primary flight displays.  It accepts yaw values in
 degrees and draws a scrolling compass scale with tick marks and labels.
-A triangle at the centre of the widget indicates the current heading.
+A vertical line at the centre of the widget indicates the current heading.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import QPainter, QPen, QFont, QColor
+from PySide6.QtCore import Qt
 
 
 class CompassOSD(QWidget):
@@ -85,14 +85,8 @@ class CompassOSD(QWidget):
                 painter.drawLine(x, height, x, height - MINOR_LEN)
 
         # Centre indicator showing current heading
+        # Draw a simple vertical line rather than a triangular arrow
         painter.setPen(QPen(Qt.green, 2))
-        painter.setBrush(Qt.green)
-        pointer = QPolygon([
-            QPoint(center_x, 0),
-            QPoint(center_x - 10, 10),
-            QPoint(center_x + 10, 10),
-        ])
-        painter.drawPolygon(pointer)
-        painter.drawLine(center_x, 10, center_x, height)
+        painter.drawLine(center_x, 0, center_x, height)
 
         painter.end()
