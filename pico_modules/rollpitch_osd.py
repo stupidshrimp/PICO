@@ -45,9 +45,9 @@ class RollPitchOSD(QWidget):
         FADE_ZONE     = 100  # Pixels from top/bottom edge to start fading
         CROSS_SIZE    = 10   # Half size of the centre cross
 
-        ZERO_FRACTION  = 0.6  # 0° line length as fraction of full width
-        LONG_FRACTION  = 0.4  # Long rung length as fraction of full width
-        SHORT_FRACTION = 0.2  # Short rung length as fraction of full width
+        ZERO_FRACTION  = 0.4  # 0° line length as fraction of full width
+        LONG_FRACTION  = 0.2  # Long rung length as fraction of full width
+        SHORT_FRACTION = 0.1  # Short rung length as fraction of full width
 
         center_x = self.width() / 2
         center_y = self.height() / 2
