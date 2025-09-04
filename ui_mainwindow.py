@@ -29,8 +29,8 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(1240, 662)
-        MainWindow.setMinimumSize(QSize(1240, 662))
+        MainWindow.resize(1240, 720)
+        MainWindow.setMinimumSize(QSize(1240, 720))
         self.styleSheet = QWidget(MainWindow)
         self.styleSheet.setObjectName(u"styleSheet")
         font = QFont()
@@ -1423,7 +1423,7 @@ class Ui_MainWindow(object):
         self.mapframe.setStyleSheet(u"background-color: black;")
         self.frame_4 = QFrame(self.frame)
         self.frame_4.setObjectName(u"frame_4")
-        self.frame_4.setGeometry(QRect(789, 399, 371, 260))
+        self.frame_4.setGeometry(QRect(789, 399, 371, 300))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
         self.InputsLabel = QLabel(self.frame_4)

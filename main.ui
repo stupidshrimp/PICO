@@ -8,13 +8,13 @@
     <x>0</x>
     <y>0</y>
     <width>1240</width>
-    <height>662</height>
+    <height>720</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
     <width>1240</width>
-    <height>662</height>
+    <height>720</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -2797,10 +2797,10 @@ background-repeat: no-repeat;</string>
                             <x>789</x>
                             <y>399</y>
                             <width>371</width>
-                            <height>260</height>
-                           </rect>
-                          </property>
-                          <property name="frameShape">
+                            <height>300</height>
+                          </rect>
+                         </property>
+                         <property name="frameShape">
                            <enum>QFrame::Shape::StyledPanel</enum>
                           </property>
                           <property name="frameShadow">
