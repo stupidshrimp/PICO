@@ -5,8 +5,8 @@ and pitch values.  The previous version only rendered a handful of fixed
 "V" shaped rungs and ignored the roll component, which made the horizon look
 finite and static.  The new implementation rotates the pitch ladder with the
 incoming roll value and renders enough rungs to fill the widget so it appears
-infinite.  Rungs alternate between long and short segments creating the
-classic staggered pattern used on real attitude indicators.
+infinite.  Rungs now cycle through small, medium, small and large segments
+creating a repeating pattern used on real attitude indicators.
 """
 
 from PySide6.QtWidgets import QWidget
@@ -47,9 +47,10 @@ class RollPitchOSD(QWidget):
 
         PITCH_STEP     = 2.5 # Degrees between rungs
 
-        ZERO_FRACTION  = 0.4  # 0° line length as fraction of full width
-        LONG_FRACTION  = 0.2  # Long rung length as fraction of full width
-        SHORT_FRACTION = 0.1  # Short rung length as fraction of full width
+        ZERO_FRACTION   = 0.4  # 0° line length as fraction of full width
+        LARGE_FRACTION  = 0.2  # Large rung length as fraction of full width
+        MEDIUM_FRACTION = 0.15 # Medium rung length as fraction of full width
+        SMALL_FRACTION  = 0.1  # Small rung length as fraction of full width
 
         center_x = self.width() / 2
         center_y = self.height() / 2
@@ -71,8 +72,9 @@ class RollPitchOSD(QWidget):
         half_height_px = self.height() / 2
         half_width = self.width() / 2
         zero_half_len = half_width * ZERO_FRACTION
-        long_half_len = half_width * LONG_FRACTION
-        short_half_len = half_width * SHORT_FRACTION
+        large_half_len = half_width * LARGE_FRACTION
+        medium_half_len = half_width * MEDIUM_FRACTION
+        small_half_len = half_width * SMALL_FRACTION
 
         green = QColor(0, 255, 0)
         orange = QColor(255, 165, 0)
@@ -88,13 +90,14 @@ class RollPitchOSD(QWidget):
             pitch_deg = pitch_x2 / 2.0
             y = (self._pitch - pitch_deg) * SCALE
 
-            # Render a longer zero-degree horizon line and alternate between
-            # long and short rungs away from centre.
+            # Render a longer zero-degree horizon line and apply a repeating
+            # small, medium, small, large pattern to the other rungs.
             rung_index = int(abs(pitch_x2) / 5)
             if pitch_deg == 0:
                 half_len = zero_half_len
             else:
-                half_len = long_half_len if rung_index % 2 == 0 else short_half_len
+                pattern = [small_half_len, medium_half_len, small_half_len, large_half_len]
+                half_len = pattern[(rung_index - 1) % 4]
 
             # Fade rungs near the top and bottom edges so they smoothly
             # disappear instead of abruptly ending.
