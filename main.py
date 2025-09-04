@@ -101,11 +101,10 @@ class MainWindow(QMainWindow):
         self.video_port = self.vtx_cfg.get("port", "")
         video_index = self.vtx_cfg.get("device_index", 1)
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
-        if validate_port("VTX", self.video_port):
-            self.video_feed.start()
-        else:
-            print("VTX video disabled due to unavailable port.")
-            self.ui.VideoLabel.setText("Not connected")
+        # Always start the video feed; serial port connectivity is optional
+        self.video_feed.start()
+        if not validate_port("VTX", self.video_port):
+            print("VTX port not connected; video feed started without serial control.")
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
@@ -554,12 +553,9 @@ class MainWindow(QMainWindow):
         self.vtx_cfg["port"] = port
         valid = validate_port("VTX", port)
         self.update_connection_status(self.vtx_status, valid)
-        # Always stop the current feed before switching
+        # Restart the video feed regardless of serial port status
         self.video_feed.stop()
-        if valid:
-            self.video_feed.start()
-        else:
-            self.ui.VideoLabel.setText("Not connected")
+        self.video_feed.start()
         save_config(self.config)
 
     def on_elrs_port_selected(self, port: str):
