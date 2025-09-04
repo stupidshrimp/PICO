@@ -86,6 +86,8 @@ class RollPitchOSD(QWidget):
             b = c1.blue() + (c2.blue() - c1.blue()) * t
             return QColor(int(r), int(g), int(b))
 
+        yellow = blend(green, orange, 0.5)
+
         for pitch_x2 in range(start_pitch, end_pitch + 5, 5):
             pitch_deg = pitch_x2 / 2.0
             y = (self._pitch - pitch_deg) * SCALE
@@ -108,11 +110,13 @@ class RollPitchOSD(QWidget):
                 alpha = distance_to_edge / FADE_ZONE
             else:
                 alpha = 1.0
-            if rung_index <= 7:
-                t = rung_index / 7.0
-                color = blend(green, orange, t)
+            if rung_index < 7:
+                color = green
             elif rung_index <= 14:
                 t = (rung_index - 7) / 7.0
+                color = blend(yellow, orange, t)
+            elif rung_index <= 21:
+                t = (rung_index - 14) / 7.0
                 color = blend(orange, red, t)
             else:
                 color = red
