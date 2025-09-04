@@ -29,6 +29,7 @@ from pico_modules.labelsmanager import LabelManager
 from pico_modules.rollpitch_osd import RollPitchOSD
 from pico_modules.altitude_osd import AltitudeOSD
 from pico_modules.airspeed_osd import AirspeedOSD
+from pico_modules.compass_osd import CompassOSD
 
 from config import load_config, save_config
 
@@ -179,6 +180,13 @@ class MainWindow(QMainWindow):
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
         self.rollpitch_osd.show()
 
+        # Compass OSD placeholder - receives telemetry yaw values
+        self.compass_osd = CompassOSD(self.ui.yawosd)
+        self.compass_osd.resize(self.ui.yawosd.size())
+        self.compass_osd.setYaw(0.0)
+        self.compass_osd.show()
+        self.compass_osd.raise_()
+
         # Altitude OSD placeholder - receives telemetry altitude values
         self.altitude_osd = AltitudeOSD(self.ui.altitudeosd)
         self.altitude_osd.resize(self.ui.altitudeosd.size())
@@ -258,6 +266,7 @@ class MainWindow(QMainWindow):
             self.rollpitch_osd.setRollPitch(0.0, 0.0)
             self.altitude_osd.setAltitude(self.current_altitude or 0.0)
             self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
+            self.compass_osd.setYaw(self.telemetry_yaw or 0.0)
             return
 
         self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
@@ -265,6 +274,8 @@ class MainWindow(QMainWindow):
             self.altitude_osd.setAltitude(self.current_altitude)
         if self.current_airspeed is not None:
             self.airspeed_osd.setAirspeed(self.current_airspeed)
+        if self.telemetry_yaw is not None:
+            self.compass_osd.setYaw(self.telemetry_yaw)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:

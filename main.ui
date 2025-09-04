@@ -2730,7 +2730,7 @@ background-repeat: no-repeat;</string>
                            <property name="text">
                             <string/>
                            </property>
-                          </widget>
+                         </widget>
                          <widget class="QWidget" name="airspeedosd" native="true">
                           <property name="geometry">
                            <rect>
@@ -2738,6 +2738,16 @@ background-repeat: no-repeat;</string>
                             <y>100</y>
                             <width>100</width>
                             <height>400</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="yawosd" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>149</x>
+                            <y>0</y>
+                            <width>481</width>
+                            <height>60</height>
                            </rect>
                           </property>
                          </widget>
@@ -2749,8 +2759,8 @@ background-repeat: no-repeat;</string>
                              <width>481</width>
                              <height>591</height>
                             </rect>
-                           </property>
-                          </widget>
+                          </property>
+                         </widget>
                           <widget class="QWidget" name="altitudeosd" native="true">
                            <property name="geometry">
                             <rect>
