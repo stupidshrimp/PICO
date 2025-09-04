@@ -282,6 +282,18 @@ class MainWindow(QMainWindow):
         else:
             return "Critical", "red"
 
+    def classify_quality(self, quality):
+        if quality >= 80:
+            return "Excellent", "green"
+        elif quality >= 60:
+            return "Good", "green"
+        elif quality >= 40:
+            return "Fair", "yellow"
+        elif quality >= 20:
+            return "Weak", "orange"
+        else:
+            return "Critical", "red"
+
     def set_label(self, label, name, value, color=None):
         label.setText(f"{name}: {value}")
         if color:
@@ -309,22 +321,24 @@ class MainWindow(QMainWindow):
                 downlink_lq,
                 downlink_snr,
             ) = values
+            _, color = self.classify_quality(link_quality)
             self.set_label(
-                self.ui.linkQualityLabel, "Link Quality", f"{link_quality}%"
+                self.ui.linkQualityLabel,
+                "Link quality",
+                f"{link_quality}%",
+                color,
             )
+            _, color = self.classify_quality(downlink_lq)
             self.set_label(
                 self.ui.downlinkQualityLabel,
-                "Downlink Quality",
+                "Downlink quality",
                 f"{downlink_lq}%",
+                color,
             )
             cat, color = self.classify_rssi(rssi_a)
-            self.set_label(
-                self.ui.signalStrengthALabel, "Signal Strength A", cat, color
-            )
+            self.set_label(self.ui.rssiALabel, "RSSI A", cat, color)
             cat, color = self.classify_rssi(rssi_b)
-            self.set_label(
-                self.ui.signalStrengthBLabel, "Signal Strength B", cat, color
-            )
+            self.set_label(self.ui.rssiBLabel, "RSSI B", cat, color)
             cat, color = self.classify_snr(snr)
             self.set_label(self.ui.snrLabel, "SNR", cat, color)
             cat, color = self.classify_snr(downlink_snr)
