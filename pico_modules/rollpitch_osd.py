@@ -45,6 +45,8 @@ class RollPitchOSD(QWidget):
         FADE_ZONE     = 100  # Pixels from top/bottom edge to start fading
         CROSS_SIZE    = 10   # Half size of the centre cross
 
+        PITCH_STEP     = 2.5 # Degrees between rungs
+
         ZERO_FRACTION  = 0.4  # 0° line length as fraction of full width
         LONG_FRACTION  = 0.2  # Long rung length as fraction of full width
         SHORT_FRACTION = 0.1  # Short rung length as fraction of full width
@@ -60,9 +62,11 @@ class RollPitchOSD(QWidget):
         # Determine which pitch rungs are visible.  This lets the ladder
         # appear infinite because we always draw enough lines to cover the
         # widget regardless of the current pitch value.
-        half_height_deg = (self.height() / 2) / SCALE + 5
-        start_pitch = int((self._pitch - half_height_deg) / 5) * 5
-        end_pitch   = int((self._pitch + half_height_deg) / 5) * 5
+        half_height_deg = (self.height() / 2) / SCALE + PITCH_STEP
+
+        start_pitch = int((self._pitch - half_height_deg) * 2)
+        start_pitch = start_pitch - (start_pitch % 5) - 5
+        end_pitch   = int((self._pitch + half_height_deg) * 2) + 5
 
         half_height_px = self.height() / 2
         half_width = self.width() / 2
@@ -80,16 +84,17 @@ class RollPitchOSD(QWidget):
             b = c1.blue() + (c2.blue() - c1.blue()) * t
             return QColor(int(r), int(g), int(b))
 
-        for pitch_deg in range(start_pitch, end_pitch + 5, 5):
+        for pitch_x2 in range(start_pitch, end_pitch + 5, 5):
+            pitch_deg = pitch_x2 / 2.0
             y = (self._pitch - pitch_deg) * SCALE
 
-            # Render a longer zero‑degree horizon line and alternate between
+            # Render a longer zero-degree horizon line and alternate between
             # long and short rungs away from centre.
-            rung_index = int(abs(pitch_deg) / 5)
+            rung_index = int(abs(pitch_x2) / 5)
             if pitch_deg == 0:
                 half_len = zero_half_len
             else:
-                half_len = long_half_len if rung_index % 2 == 1 else short_half_len
+                half_len = long_half_len if rung_index % 2 == 0 else short_half_len
 
             # Fade rungs near the top and bottom edges so they smoothly
             # disappear instead of abruptly ending.
