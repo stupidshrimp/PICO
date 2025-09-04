@@ -249,9 +249,14 @@ class CRSFPacketProcessor:
     def decode_gps(self, data):
         """Decode a CRSF GPS telemetry packet.
 
-        The CRSF protocol reports ground speed in km/h and altitude in
-        decimeters. Convert the speed to miles per hour and the altitude to
-        feet before invoking the telemetry callback.
+        The telemetry packet provides the aircraft's ground speed and
+        altitude.  Earlier versions of this ground station assumed the speed
+        was reported in kilometres per hour and applied a conversion factor
+        to miles per hour, which resulted in the displayed value being roughly
+        half of the actual speed.  The incoming ``speed`` value is already in
+        miles per hour, so we simply treat it as such.  The altitude is
+        transmitted in decimeters, which we convert to feet before invoking
+        the telemetry callback.
         """
         if len(data) < 18:
             print("GPS packet too short.")
@@ -263,8 +268,10 @@ class CRSFPacketProcessor:
             )
             lat = lat_raw / 1000000.0
             lon = lon_raw / 1000000.0
-            speed_kmh = speed
-            speed_mph = speed_kmh * 0.621371
+            # ``speed`` is provided in miles per hour by the telemetry source.
+            # Using it directly avoids double-conversion that previously
+            # halved the displayed value.
+            speed_mph = float(speed)
             course = course / 10.0
             alt_m = alt / 10.0
             alt_ft = alt_m * 3.28084
