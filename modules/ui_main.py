@@ -1481,6 +1481,9 @@ class Ui_MainWindow(object):
         self.downlinkSnrLabel = QLabel(self.frame_4)
         self.downlinkSnrLabel.setObjectName(u"downlinkSnrLabel")
         self.downlinkSnrLabel.setGeometry(QRect(190, 190, 150, 20))
+        self.receivedFrameFreqLabel = QLabel(self.frame_4)
+        self.receivedFrameFreqLabel.setObjectName(u"receivedFrameFreqLabel")
+        self.receivedFrameFreqLabel.setGeometry(QRect(360, 260, 200, 20))
 
         self.verticalLayout_20.addWidget(self.frame)
 
@@ -1754,6 +1757,7 @@ class Ui_MainWindow(object):
         self.snrLabel.setText(QCoreApplication.translate("MainWindow", u"SNR: --", None))
         self.downlinkQualityLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink quality: --", None))
         self.downlinkSnrLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink SNR: --", None))
+        self.receivedFrameFreqLabel.setText(QCoreApplication.translate("MainWindow", u"received frame frequency: 0 Hz", None))
         self.osdLabel.setText(QCoreApplication.translate("MainWindow", u"OSD", None))
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))

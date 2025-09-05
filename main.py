@@ -397,6 +397,10 @@ class MainWindow(QMainWindow):
         self.packet_rate_label.setText(
             f"Packets Received Rate: {self.packet_rate} Hz"
         )
+        # Mirror packet rate on the command page
+        self.ui.receivedFrameFreqLabel.setText(
+            f"received frame frequency: {self.packet_rate} Hz"
+        )
         self.packet_rate = self.packet_count
         self.packet_count = 0
 
