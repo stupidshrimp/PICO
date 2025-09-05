@@ -3015,9 +3015,9 @@ background-repeat: no-repeat;</string>
                          <widget class="QLabel" name="receivedFrameFreqLabel">
                           <property name="geometry">
                            <rect>
-                            <x>360</x>
+                            <x>350</x>
                             <y>260</y>
-                            <width>200</width>
+                            <width>220</width>
                             <height>20</height>
                            </rect>
                           </property>
