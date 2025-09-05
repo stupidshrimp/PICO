@@ -50,7 +50,9 @@ class CompassOSD(QWidget):
 
         # Draw tick marks and labels
         for deg in range(start_deg, end_deg + 1, TICK_INTERVAL):
-            x = center_x + (deg - self._yaw) * SCALE
+            # Round positions to integer pixels to avoid jittering text when
+            # the heading changes by sub-degree increments.
+            x = int(round(center_x + (deg - self._yaw) * SCALE))
 
             distance_to_edge = min(x, self.width() - x)
             if distance_to_edge <= 0:
@@ -87,6 +89,6 @@ class CompassOSD(QWidget):
         # Centre indicator showing current heading
         # Draw a simple vertical line rather than a triangular arrow
         painter.setPen(QPen(Qt.green, 2))
-        painter.drawLine(center_x, 0, center_x, height)
+        painter.drawLine(int(round(center_x)), 0, int(round(center_x)), height)
 
         painter.end()
