@@ -1483,7 +1483,7 @@ class Ui_MainWindow(object):
         self.downlinkSnrLabel.setGeometry(QRect(190, 190, 150, 20))
         self.receivedFrameFreqLabel = QLabel(self.frame_4)
         self.receivedFrameFreqLabel.setObjectName(u"receivedFrameFreqLabel")
-        self.receivedFrameFreqLabel.setGeometry(QRect(360, 260, 200, 20))
+        self.receivedFrameFreqLabel.setGeometry(QRect(10, 210, 220, 20))
 
         self.verticalLayout_20.addWidget(self.frame)
 
