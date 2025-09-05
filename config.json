@@ -10,8 +10,7 @@
         "baudrate": 921600,
         "packet_interval": 3
     },
-    "vtx": {"port": "Not connected", "device_index": 1}
-    ,
+    "vtx": {"port": "Not connected", "device_index": 1},
     "warnings": {
         "stall_airspeed": 10,
         "stall_altitude": 50,

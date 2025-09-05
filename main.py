@@ -200,7 +200,7 @@ class MainWindow(QMainWindow):
         self.compass_osd = CompassOSD(self.ui.yawosd)
         self.compass_osd.resize(self.ui.yawosd.size())
         self.compass_osd.setYaw(0.0)
-        self.compass_osd.show()
+        self.compass_osd.setVisible(self.ui.chk_compass.isChecked())
         self.compass_osd.raise_()
 
         # Altitude OSD placeholder - receives telemetry altitude values
@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
         self.ui.chk_altitude.toggled.connect(self.altitude_osd.setVisible)
         self.ui.chk_airspeed.toggled.connect(self.airspeed_osd.setVisible)
         self.ui.chk_attitude.toggled.connect(self.rollpitch_osd.setVisible)
+        self.ui.chk_compass.toggled.connect(self.compass_osd.setVisible)
 
         # TOGGLE MENU
         widgets.toggleButton.clicked.connect(lambda: UIFunctions.toggleMenu(self, True))

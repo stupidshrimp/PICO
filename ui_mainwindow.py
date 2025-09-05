@@ -1548,6 +1548,12 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_14.addWidget(self.chk_attitude)
 
+        self.chk_compass = QCheckBox(self.topMenus)
+        self.chk_compass.setObjectName(u"chk_compass")
+        self.chk_compass.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_compass)
+
 
         self.verticalLayout_13.addWidget(self.topMenus, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -1758,6 +1764,7 @@ class Ui_MainWindow(object):
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
+        self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"frick you", None))
         self.version.setText(QCoreApplication.translate("MainWindow", u"v1.0", None))
     # retranslateUi

@@ -3150,9 +3150,19 @@ background-repeat: no-repeat;</string>
                           </widget>
                          </item>
                          <item>
-                          <widget class="QCheckBox" name="chk_attitude">
+                         <widget class="QCheckBox" name="chk_attitude">
+                          <property name="text">
+                           <string>Attitude Indicator</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                         <item>
+                          <widget class="QCheckBox" name="chk_compass">
                            <property name="text">
-                            <string>Attitude Indicator</string>
+                            <string>Compass OSD</string>
                            </property>
                            <property name="checked">
                             <bool>true</bool>
