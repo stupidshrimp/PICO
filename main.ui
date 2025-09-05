@@ -3017,7 +3017,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>10</x>
-                             <y>220</y>
+                             <y>210</y>
                              <width>220</width>
                              <height>20</height>
                             </rect>
