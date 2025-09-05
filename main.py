@@ -11,8 +11,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QSlider,
     QFrame,
+    QGridLayout,
+    QPushButton,
 )
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCursor
 
 from serial.tools import list_ports
 
@@ -32,6 +35,9 @@ from pico_modules.airspeed_osd import AirspeedOSD
 from pico_modules.compass_osd import CompassOSD
 
 from config import load_config, save_config
+
+from collections import deque
+import pyqtgraph as pg
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -85,6 +91,9 @@ class MainWindow(QMainWindow):
         # Rename side tab buttons
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
+
+        # Add Data tab and associated graphs
+        self.setup_data_page()
 
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
@@ -214,6 +223,7 @@ class MainWindow(QMainWindow):
         widgets.btn_home.clicked.connect(self.buttonClick)
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
+        widgets.btn_data.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
         widgets.settingsTopBtn.clicked.connect(lambda: UIFunctions.toggleRightBox(self, True))
@@ -233,6 +243,142 @@ class MainWindow(QMainWindow):
         widgets.stackedWidget.setCurrentWidget(widgets.home)
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
+
+    def setup_data_page(self):
+        """Create the Data tab with live telemetry graphs."""
+        font = self.ui.btn_home.font()
+        self.ui.btn_data = QPushButton(self.ui.topMenu)
+        self.ui.btn_data.setObjectName("btn_data")
+        size_policy = self.ui.btn_home.sizePolicy()
+        self.ui.btn_data.setSizePolicy(size_policy)
+        self.ui.btn_data.setMinimumSize(self.ui.btn_home.minimumSize())
+        self.ui.btn_data.setFont(font)
+        self.ui.btn_data.setCursor(QCursor(Qt.PointingHandCursor))
+        self.ui.btn_data.setLayoutDirection(Qt.LeftToRight)
+        self.ui.btn_data.setStyleSheet(
+            "background-image: url(:/icons/images/icons/cil-chart-line.png);"
+        )
+        self.ui.verticalLayout_8.addWidget(self.ui.btn_data)
+        widgets.btn_data = self.ui.btn_data
+
+        # Data page widget
+        self.data_page = QWidget()
+        widgets.data_page = self.data_page
+        self.ui.stackedWidget.addWidget(self.data_page)
+
+        layout = QVBoxLayout(self.data_page)
+
+        attitude_label = QLabel("Attitude")
+        attitude_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(attitude_label)
+
+        attitude_layout = QHBoxLayout()
+        layout.addLayout(attitude_layout)
+        self.roll_plot = pg.PlotWidget()
+        self.roll_plot.setTitle("Roll")
+        attitude_layout.addWidget(self.roll_plot)
+        self.pitch_plot = pg.PlotWidget()
+        self.pitch_plot.setTitle("Pitch")
+        attitude_layout.addWidget(self.pitch_plot)
+        self.yaw_plot = pg.PlotWidget()
+        self.yaw_plot.setTitle("Yaw")
+        attitude_layout.addWidget(self.yaw_plot)
+
+        flight_label = QLabel("Flight Telemetry")
+        flight_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(flight_label)
+
+        flight_layout = QHBoxLayout()
+        layout.addLayout(flight_layout)
+        self.airspeed_plot = pg.PlotWidget()
+        self.airspeed_plot.setTitle("Air speed")
+        flight_layout.addWidget(self.airspeed_plot)
+        self.altitude_plot = pg.PlotWidget()
+        self.altitude_plot.setTitle("Altitude")
+        flight_layout.addWidget(self.altitude_plot)
+
+        signal_label = QLabel("Signal Health")
+        signal_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(signal_label)
+
+        signal_layout = QGridLayout()
+        layout.addLayout(signal_layout)
+        self.rssi_a_plot = pg.PlotWidget(); self.rssi_a_plot.setTitle("RSSI A")
+        self.rssi_b_plot = pg.PlotWidget(); self.rssi_b_plot.setTitle("RSSI B")
+        self.link_quality_plot = pg.PlotWidget(); self.link_quality_plot.setTitle("Link Quality")
+        self.downlink_quality_plot = pg.PlotWidget(); self.downlink_quality_plot.setTitle("Downlink Quality")
+        self.snr_plot = pg.PlotWidget(); self.snr_plot.setTitle("SNR")
+        self.downlink_snr_plot = pg.PlotWidget(); self.downlink_snr_plot.setTitle("Downlink SNR")
+        signal_layout.addWidget(self.rssi_a_plot, 0, 0)
+        signal_layout.addWidget(self.rssi_b_plot, 0, 1)
+        signal_layout.addWidget(self.link_quality_plot, 0, 2)
+        signal_layout.addWidget(self.downlink_quality_plot, 1, 0)
+        signal_layout.addWidget(self.snr_plot, 1, 1)
+        signal_layout.addWidget(self.downlink_snr_plot, 1, 2)
+
+        self.packet_rate_label = QLabel("Packets Received Rate: 0 Hz")
+        layout.addWidget(self.packet_rate_label)
+        layout.addStretch()
+
+        # Data storage for plots
+        max_points = 200
+        self.roll_data = deque([0] * max_points, maxlen=max_points)
+        self.pitch_data = deque([0] * max_points, maxlen=max_points)
+        self.yaw_data = deque([0] * max_points, maxlen=max_points)
+        self.airspeed_data = deque([0] * max_points, maxlen=max_points)
+        self.altitude_data = deque([0] * max_points, maxlen=max_points)
+        self.rssi_a_data = deque([0] * max_points, maxlen=max_points)
+        self.rssi_b_data = deque([0] * max_points, maxlen=max_points)
+        self.link_quality_data = deque([0] * max_points, maxlen=max_points)
+        self.downlink_quality_data = deque([0] * max_points, maxlen=max_points)
+        self.snr_data = deque([0] * max_points, maxlen=max_points)
+        self.downlink_snr_data = deque([0] * max_points, maxlen=max_points)
+
+        # Plot curves
+        self.roll_curve = self.roll_plot.plot()
+        self.pitch_curve = self.pitch_plot.plot()
+        self.yaw_curve = self.yaw_plot.plot()
+        self.airspeed_curve = self.airspeed_plot.plot()
+        self.altitude_curve = self.altitude_plot.plot()
+        self.rssi_a_curve = self.rssi_a_plot.plot()
+        self.rssi_b_curve = self.rssi_b_plot.plot()
+        self.link_quality_curve = self.link_quality_plot.plot()
+        self.downlink_quality_curve = self.downlink_quality_plot.plot()
+        self.snr_curve = self.snr_plot.plot()
+        self.downlink_snr_curve = self.downlink_snr_plot.plot()
+
+        # Timers for updating graphs and packet rate
+        self.graph_timer = QTimer(self)
+        self.graph_timer.timeout.connect(self.update_graphs)
+        self.graph_timer.start(100)
+
+        self.packet_rate = 0
+        self.packet_count = 0
+        self.packet_rate_timer = QTimer(self)
+        self.packet_rate_timer.timeout.connect(self.update_packet_rate)
+        self.packet_rate_timer.start(1000)
+
+
+    def update_graphs(self):
+        self.roll_curve.setData(self.roll_data)
+        self.pitch_curve.setData(self.pitch_data)
+        self.yaw_curve.setData(self.yaw_data)
+        self.airspeed_curve.setData(self.airspeed_data)
+        self.altitude_curve.setData(self.altitude_data)
+        self.rssi_a_curve.setData(self.rssi_a_data)
+        self.rssi_b_curve.setData(self.rssi_b_data)
+        self.link_quality_curve.setData(self.link_quality_data)
+        self.downlink_quality_curve.setData(self.downlink_quality_data)
+        self.snr_curve.setData(self.snr_data)
+        self.downlink_snr_curve.setData(self.downlink_snr_data)
+
+
+    def update_packet_rate(self):
+        self.packet_rate_label.setText(
+            f"Packets Received Rate: {self.packet_rate} Hz"
+        )
+        self.packet_rate = self.packet_count
+        self.packet_count = 0
 
     def update_labels(self) -> None:
         """Update GUI labels using joystick inputs and refresh OSD widgets."""
@@ -323,15 +469,21 @@ class MainWindow(QMainWindow):
 
     def handle_telemetry(self, packet_type, *values) -> None:
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
+        self.packet_count += 1
         if packet_type == "attitude":
             pitch, roll, yaw = values
             self.telemetry_pitch = pitch
             self.telemetry_roll = roll
             self.telemetry_yaw = yaw
+            self.pitch_data.append(pitch)
+            self.roll_data.append(roll)
+            self.yaw_data.append(yaw)
         elif packet_type == "gps":
             _lat, _lon, speed, _course, alt, _sats = values
             self.current_airspeed = speed
             self.current_altitude = alt
+            self.airspeed_data.append(speed)
+            self.altitude_data.append(alt)
         elif packet_type == "link_stats":
             (
                 rssi_a,
@@ -341,6 +493,12 @@ class MainWindow(QMainWindow):
                 downlink_lq,
                 downlink_snr,
             ) = values
+            self.rssi_a_data.append(rssi_a)
+            self.rssi_b_data.append(rssi_b)
+            self.link_quality_data.append(link_quality)
+            self.downlink_quality_data.append(downlink_lq)
+            self.snr_data.append(snr)
+            self.downlink_snr_data.append(downlink_snr)
             _, color = self.classify_quality(link_quality)
             self.set_label(
                 self.ui.linkQualityLabel,
@@ -654,6 +812,12 @@ class MainWindow(QMainWindow):
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
+
+        # SHOW DATA PAGE
+        if btnName == "btn_data":
+            widgets.stackedWidget.setCurrentWidget(widgets.data_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)

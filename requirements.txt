@@ -2,4 +2,5 @@ PySide6
 PyQt5
 pyserial
 opencv-python
+pyqtgraph
 
