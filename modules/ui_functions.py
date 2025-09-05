@@ -22,7 +22,6 @@ from main import *
 # ///////////////////////////////////////////////////////////////
 GLOBAL_STATE = False
 GLOBAL_TITLE_BAR = True
-GLOBAL_FULLSCREEN = False
 
 class UIFunctions(MainWindow):
     # MAXIMIZE/RESTORE
@@ -57,10 +56,8 @@ class UIFunctions(MainWindow):
     # FULL SCREEN TOGGLE
     # ///////////////////////////////////////////////////////////////
     def full_screen(self):
-        global GLOBAL_FULLSCREEN
-        if not GLOBAL_FULLSCREEN:
+        if not self.isFullScreen():
             self.showFullScreen()
-            GLOBAL_FULLSCREEN = True
             self.ui.appMargins.setContentsMargins(0, 0, 0, 0)
             self.ui.fullScreenAppBtn.setToolTip("Exit Full Screen")
             self.ui.fullScreenAppBtn.setIcon(QIcon(u":/icons/images/icons/cil-window-restore.png"))
@@ -70,9 +67,7 @@ class UIFunctions(MainWindow):
             self.top_grip.hide()
             self.bottom_grip.hide()
         else:
-            GLOBAL_FULLSCREEN = False
             self.showNormal()
-
             self.ui.appMargins.setContentsMargins(10, 10, 10, 10)
             self.ui.fullScreenAppBtn.setToolTip("Full Screen")
             self.ui.fullScreenAppBtn.setIcon(QIcon(u":/icons/images/icons/cil-window-maximize.png"))
