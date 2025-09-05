@@ -86,6 +86,31 @@ class MainWindow(QMainWindow):
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
 
+        # Arrange main view: video feed on the left and supporting panels on the right
+        container_layout = QHBoxLayout(self.ui.frame)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+
+        video_layout = QVBoxLayout(self.ui.frame_2)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(0)
+        video_layout.addWidget(self.ui.VideoLabel)
+        container_layout.addWidget(self.ui.frame_2, 2)
+
+        side_widget = QWidget(self.ui.frame)
+        side_layout = QVBoxLayout(side_widget)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(0)
+
+        map_layout = QVBoxLayout(self.ui.frame_3)
+        map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(0)
+        map_layout.addWidget(self.ui.mapframe)
+
+        side_layout.addWidget(self.ui.frame_3)
+        side_layout.addWidget(self.ui.frame_4)
+        container_layout.addWidget(side_widget, 1)
+
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
         # self.setAttribute(Qt.WA_TranslucentBackground)

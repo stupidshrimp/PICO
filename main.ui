@@ -2744,10 +2744,10 @@ background-repeat: no-repeat;</string>
                          <widget class="QFrame" name="frame_2">
                           <property name="geometry">
                            <rect>
-                            <x>-1</x>
-                            <y>-1</y>
-                            <width>1280</width>
-                            <height>960</height>
+                            <x>0</x>
+                            <y>50</y>
+                            <width>1067</width>
+                            <height>800</height>
                            </rect>
                           </property>
                           <property name="frameShape">
@@ -2761,8 +2761,8 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>0</x>
                              <y>0</y>
-                             <width>1280</width>
-                             <height>960</height>
+                             <width>1067</width>
+                             <height>800</height>
                             </rect>
                            </property>
                            <property name="styleSheet">
@@ -2785,7 +2785,7 @@ background-repeat: no-repeat;</string>
                          <widget class="QWidget" name="yawosd" native="true">
                           <property name="geometry">
                            <rect>
-                            <x>240</x>
+                            <x>134</x>
                             <y>0</y>
                             <width>800</width>
                             <height>60</height>
@@ -2795,20 +2795,20 @@ background-repeat: no-repeat;</string>
                          <widget class="QWidget" name="rollpitchosd" native="true">
                           <property name="geometry">
                            <rect>
-                            <x>240</x>
+                            <x>134</x>
                             <y>0</y>
                              <width>800</width>
-                             <height>960</height>
+                             <height>800</height>
                             </rect>
                           </property>
                          </widget>
                           <widget class="QWidget" name="altitudeosd" native="true">
                            <property name="geometry">
                             <rect>
-                             <x>1140</x>
-                             <y>160</y>
-                             <width>100</width>
-                             <height>400</height>
+                            <x>927</x>
+                            <y>160</y>
+                            <width>100</width>
+                            <height>400</height>
                             </rect>
                            </property>
                           </widget>
@@ -2816,10 +2816,10 @@ background-repeat: no-repeat;</string>
                          <widget class="QFrame" name="frame_3">
                           <property name="geometry">
                            <rect>
-                            <x>1298</x>
-                            <y>-1</y>
-                            <width>571</width>
-                            <height>381</height>
+                            <x>1067</x>
+                            <y>0</y>
+                            <width>533</width>
+                            <height>450</height>
                            </rect>
                           </property>
                           <property name="frameShape">
@@ -2830,12 +2830,12 @@ background-repeat: no-repeat;</string>
                           </property>
                           <widget class="QWebEngineView" name="mapframe" native="true">
                            <property name="geometry">
-                            <rect>
-                             <x>-1</x>
-                             <y>-1</y>
-                             <width>591</width>
-                             <height>381</height>
-                            </rect>
+                           <rect>
+                            <x>0</x>
+                            <y>0</y>
+                            <width>533</width>
+                            <height>450</height>
+                           </rect>
                            </property>
                            <property name="styleSheet">
                             <string notr="true">background-color: black;</string>
@@ -2845,10 +2845,10 @@ background-repeat: no-repeat;</string>
                          <widget class="QFrame" name="frame_4">
                           <property name="geometry">
                           <rect>
-                           <x>1298</x>
-                            <y>369</y>
-                            <width>571</width>
-                            <height>300</height>
+                           <x>1067</x>
+                            <y>450</y>
+                            <width>533</width>
+                            <height>450</height>
                           </rect>
                          </property>
                          <property name="frameShape">
@@ -2862,7 +2862,7 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>0</x>
                              <y>10</y>
-                             <width>571</width>
+                             <width>533</width>
                              <height>31</height>
                             </rect>
                            </property>
@@ -2923,7 +2923,7 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>0</x>
                              <y>100</y>
-                             <width>571</width>
+                             <width>533</width>
                              <height>20</height>
                             </rect>
                            </property>
