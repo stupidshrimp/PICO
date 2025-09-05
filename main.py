@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QPushButton,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QMetaObject, Slot
 from PySide6.QtGui import QCursor
 
 from serial.tools import list_ports
@@ -163,10 +163,10 @@ class MainWindow(QMainWindow):
         self.current_altitude = None
         self.current_airspeed = None
 
-        # Timer for updating labels/OSD (10ms interval, 100Hz)
-        self.label_update_timer = QTimer(self)
-        self.label_update_timer.timeout.connect(self.update_labels)
-        self.label_update_timer.start(10)
+        # Label/OSD updates are event-driven and triggered by telemetry
+        # packets to avoid unnecessary 10ms polling. When telemetry data
+        # arrives, ``handle_telemetry`` schedules ``update_labels`` via
+        # ``QMetaObject.invokeMethod`` to keep the UI responsive.
 
         # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
@@ -390,6 +390,7 @@ class MainWindow(QMainWindow):
         self.packet_rate = self.packet_count
         self.packet_count = 0
 
+    @Slot()
     def update_labels(self) -> None:
         """Update GUI labels using joystick inputs and refresh OSD widgets."""
 
@@ -531,6 +532,10 @@ class MainWindow(QMainWindow):
             self.set_label(self.ui.snrLabel, "SNR", cat, color)
             cat, color = self.classify_snr(downlink_snr)
             self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
+
+        # Schedule a label/OSD refresh on the GUI thread. This ensures that
+        # updates triggered by telemetry packets do not block the interface.
+        QMetaObject.invokeMethod(self, "update_labels", Qt.QueuedConnection)
 
     def transmit_data(self):
         """
