@@ -162,7 +162,7 @@ class MainWindow(QMainWindow):
         # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 10))
+        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 3))
 
         # Timer for reading incoming telemetry packets
         if self.crsf_processor:
@@ -417,7 +417,7 @@ class MainWindow(QMainWindow):
             QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
         )
         rf_layout.addWidget(
-            QLabel("ELRS transmitting at 250 Hz at 1:2 telemetry ratio")
+            QLabel("ELRS transmitting at 300 Hz at 1:2 telemetry ratio")
         )
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
@@ -430,7 +430,7 @@ class MainWindow(QMainWindow):
         rate_row.addWidget(QLabel("Packet Interval (ms)"))
         self.packet_interval_edit = QLineEdit()
         self.packet_interval_edit.setText(
-            str(self.crsf_cfg.get("packet_interval", 10))
+            str(self.crsf_cfg.get("packet_interval", 3))
         )
         self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
@@ -588,7 +588,7 @@ class MainWindow(QMainWindow):
         try:
             interval = int(self.packet_interval_edit.text())
         except ValueError:
-            interval = self.crsf_cfg.get("packet_interval", 10)
+            interval = self.crsf_cfg.get("packet_interval", 3)
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
         self.transmit_timer.start(interval)

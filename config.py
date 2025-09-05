@@ -12,7 +12,8 @@ DEFAULT_CONFIG = {
     "crsf": {
         "port": "COM3",
         "baudrate": 921600,
-        "packet_interval": 10,
+        # Interval in ms (~300 Hz)
+        "packet_interval": 3,
     },
     "vtx": {"port": "Not connected", "device_index": 1},
 }
