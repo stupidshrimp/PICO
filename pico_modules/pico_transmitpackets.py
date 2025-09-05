@@ -27,6 +27,11 @@ class CRSFPacketProcessor(QObject):
             Initial channel values (up to 16 channels). Defaults to ``1500`` for
             all channels.
         """
+        # Ensure the underlying QObject is initialised so that Qt signals
+        # remain valid for the lifetime of this processor.  Without this call
+        # ``telemetry_ready.emit`` can raise ``RuntimeError: Signal source has
+        # been deleted`` when packets are decoded.
+        super().__init__()
         if channels is None:
             channels = [1500] * 16  # Default channel values
 

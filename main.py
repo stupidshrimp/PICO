@@ -149,9 +149,6 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.telemetry_ready.connect(
                     lambda data: self.handle_telemetry(*data)
                 )
-                self.crsf_processor.telemetry_ready.connect(
-                    lambda _: self.update_labels()
-                )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         else:
@@ -899,9 +896,6 @@ class MainWindow(QMainWindow):
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     lambda data: self.handle_telemetry(*data)
-                )
-                self.crsf_processor.telemetry_ready.connect(
-                    lambda _: self.update_labels()
                 )
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
