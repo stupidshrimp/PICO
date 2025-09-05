@@ -1,15 +1,20 @@
 from enum import IntEnum
 import struct
-import serial
+from PySide6.QtCore import QObject, Signal, QIODevice
+from PySide6.QtSerialPort import QSerialPort
 from serial.tools import list_ports
 
-class CRSFPacketProcessor:
+class CRSFPacketProcessor(QObject):
+    """Process CRSF packets and emit telemetry via Qt signals."""
+
     CRSF_SYNC = 0xC8
+
+    telemetry_ready = Signal(object)
 
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
 
-    def __init__(self, port, baudrate=921600, channels=None, telemetry_callback=None):
+    def __init__(self, port, baudrate=921600, channels=None):
         """Initialize the CRSFPacketProcessor.
 
         Parameters
@@ -21,10 +26,6 @@ class CRSFPacketProcessor:
         channels : list, optional
             Initial channel values (up to 16 channels). Defaults to ``1500`` for
             all channels.
-        telemetry_callback : callable, optional
-            Function invoked when telemetry packets are decoded. The callback is
-            called with ``(packet_type, *values)`` where ``packet_type`` is a
-            string identifier such as ``"attitude"`` or ``"gps"``.
         """
         if channels is None:
             channels = [1500] * 16  # Default channel values
@@ -37,8 +38,7 @@ class CRSFPacketProcessor:
 
         self.serial_port = port
         self.baudrate = baudrate
-        self.serial = None  # Initialize serial connection as None
-        self.telemetry_callback = telemetry_callback
+        self.serial = None  # QSerialPort instance
 
         self.connect_serial()
 
@@ -48,9 +48,15 @@ class CRSFPacketProcessor:
         If the connection fails, it sets self.serial to None.
         """
         try:
-            self.serial = serial.Serial(self.serial_port, self.baudrate, timeout=1)
-            print(f"Connected to {self.serial_port} at {self.baudrate} baud.")
-        except serial.SerialException as e:
+            self.serial = QSerialPort(self.serial_port)
+            self.serial.setBaudRate(self.baudrate)
+            self.serial.readyRead.connect(self.read_serial_data)
+            if self.serial.open(QIODevice.ReadWrite):
+                print(f"Connected to {self.serial_port} at {self.baudrate} baud.")
+            else:
+                print(f"Failed to open serial port: {self.serial.errorString()}")
+                self.serial = None
+        except Exception as e:
             print(f"Failed to open serial port: {e}")
             self.serial = None
 
@@ -60,7 +66,7 @@ class CRSFPacketProcessor:
         Returns:
             bool: True if the serial connection is open, False otherwise.
         """
-        return self.serial and self.serial.is_open 
+        return self.serial and self.serial.isOpen()
               
     def check_usb_connection(self):
         """
@@ -123,14 +129,7 @@ class CRSFPacketProcessor:
         return result
 
     def update_and_send_packet(self, new_channels):
-        """
-        Update channel values and send the CRSF packet if the connection is valid.
-        
-        Args:
-            new_channels (list): New channel values (up to 16 channels).
-        Returns:
-            str: Status message indicating success or error.
-        """
+        """Update channel values and send the CRSF packet if the connection is valid."""
         if len(new_channels) > 16:
             raise ValueError("Maximum of 16 channels supported.")
 
@@ -153,7 +152,7 @@ class CRSFPacketProcessor:
         if self.serial:
             try:
                 packet = self.create_packet()
-                self.serial.write(packet)
+                self.serial.write(bytes(packet))
                 # Disable verbose packet transmission debug output to focus on telemetry
                 # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
                 return "Good"  # Return "Good" only if transmission is successful
@@ -167,9 +166,9 @@ class CRSFPacketProcessor:
 
     def read_serial_data(self):
         """Read available telemetry data and decode known packet types."""
-        if self.serial and self.serial.in_waiting > 0:
+        if self.serial and self.serial.bytesAvailable() > 0:
             try:
-                data = self.serial.read(self.serial.in_waiting)
+                data = bytes(self.serial.readAll())
                 if len(data) < 3:
                     return
                 packet_type = data[2]
@@ -232,8 +231,8 @@ class CRSFPacketProcessor:
             print(f"Downlink Link Quality: {downlink_lq}%")
             print(f"Downlink SNR: {downlink_snr} dB")
 
-            if self.telemetry_callback:
-                self.telemetry_callback(
+            self.telemetry_ready.emit(
+                (
                     "link_stats",
                     rssi_a,
                     rssi_b,
@@ -242,6 +241,7 @@ class CRSFPacketProcessor:
                     downlink_lq,
                     downlink_snr,
                 )
+            )
         except Exception as e:
             print("Error decoding link statistics:", e)
 
@@ -275,8 +275,9 @@ class CRSFPacketProcessor:
             course = course / 10.0
             alt_m = alt / 10.0
             alt_ft = alt_m * 3.28084
-            if self.telemetry_callback:
-                self.telemetry_callback("gps", lat, lon, speed_mph, course, alt_ft, sats)
+            self.telemetry_ready.emit(
+                ("gps", lat, lon, speed_mph, course, alt_ft, sats)
+            )
             print("--- Decoded GPS Telemetry ---")
             print(f"Latitude: {lat}")
             print(f"Longitude: {lon}")
@@ -313,8 +314,7 @@ class CRSFPacketProcessor:
             pitch /= 10
             roll /= 10
             yaw /= 10
-            if self.telemetry_callback:
-                self.telemetry_callback("attitude", pitch, roll, yaw)
+            self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
             print("--- Attitude Data (0x1E) ---")
             print(f"Pitch: {pitch}")
             print(f"Roll:  {roll}")
@@ -342,7 +342,7 @@ class CRSFPacketProcessor:
         """
         Close the serial port.
         """
-        if self.serial and self.serial.is_open:
+        if self.serial and self.serial.isOpen():
             self.serial.close()
             print("Serial port closed.")
 
