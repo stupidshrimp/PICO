@@ -3009,12 +3009,25 @@ background-repeat: no-repeat;</string>
                             </rect>
                            </property>
                            <property name="text">
-                            <string>Downlink SNR: --</string>
-                           </property>
-                          </widget>
+                           <string>Downlink SNR: --</string>
+                          </property>
+                         </widget>
+                         <widget class="QLabel" name="receivedFrameFreqLabel">
+                          <property name="geometry">
+                           <rect>
+                            <x>360</x>
+                            <y>260</y>
+                            <width>200</width>
+                            <height>20</height>
+                           </rect>
+                          </property>
+                          <property name="text">
+                           <string>received frame frequency: 0 Hz</string>
+                          </property>
                          </widget>
                         </widget>
-                       </item>
+                       </widget>
+                      </item>
                       </layout>
                      </widget>
                     </widget>
