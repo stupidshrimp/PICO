@@ -82,7 +82,15 @@ class CompassOSD(QWidget):
                     label = "W"
                 else:
                     label = f"{heading:03d}"
-                painter.drawText(x - 10, height - tick_len - 2, label)
+                # Center the label over the tick mark to prevent visual
+                # jitter when the text width changes (e.g. switching between
+                # numeric headings and cardinal letters).
+                text_width = painter.fontMetrics().horizontalAdvance(label)
+                painter.drawText(
+                    int(round(x - text_width / 2)),
+                    height - tick_len - 2,
+                    label,
+                )
             else:
                 painter.drawLine(x, height, x, height - MINOR_LEN)
 
