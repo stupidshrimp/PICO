@@ -91,6 +91,7 @@ class CompassOSD(QWidget):
                 # numeric headings and cardinal letters).
                 text_width = painter.fontMetrics().horizontalAdvance(label)
                 painter.setPen(label_pen)
+
                 painter.drawText(
                     int(round(x - text_width / 2)),
                     height - tick_len - 2,
