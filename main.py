@@ -268,20 +268,29 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(self.data_page)
 
+        title_label = QLabel("Data")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title_label)
+
         attitude_label = QLabel("Attitude")
         attitude_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(attitude_label)
 
         attitude_layout = QHBoxLayout()
-        layout.addLayout(attitude_layout)
+        layout.addLayout(attitude_layout, 1)
+        plot_height = 150
         self.roll_plot = pg.PlotWidget()
         self.roll_plot.setTitle("Roll")
+        self.roll_plot.setMinimumHeight(plot_height)
         attitude_layout.addWidget(self.roll_plot)
         self.pitch_plot = pg.PlotWidget()
         self.pitch_plot.setTitle("Pitch")
+        self.pitch_plot.setMinimumHeight(plot_height)
         attitude_layout.addWidget(self.pitch_plot)
         self.yaw_plot = pg.PlotWidget()
         self.yaw_plot.setTitle("Yaw")
+        self.yaw_plot.setMinimumHeight(plot_height)
         attitude_layout.addWidget(self.yaw_plot)
 
         flight_label = QLabel("Flight Telemetry")
@@ -289,12 +298,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(flight_label)
 
         flight_layout = QHBoxLayout()
-        layout.addLayout(flight_layout)
+        layout.addLayout(flight_layout, 1)
         self.airspeed_plot = pg.PlotWidget()
         self.airspeed_plot.setTitle("Air speed")
+        self.airspeed_plot.setMinimumHeight(plot_height)
         flight_layout.addWidget(self.airspeed_plot)
         self.altitude_plot = pg.PlotWidget()
         self.altitude_plot.setTitle("Altitude")
+        self.altitude_plot.setMinimumHeight(plot_height)
         flight_layout.addWidget(self.altitude_plot)
 
         signal_label = QLabel("Signal Health")
@@ -302,7 +313,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(signal_label)
 
         signal_layout = QGridLayout()
-        layout.addLayout(signal_layout)
+        layout.addLayout(signal_layout, 1)
         self.rssi_a_plot = pg.PlotWidget(); self.rssi_a_plot.setTitle("RSSI A")
         self.rssi_b_plot = pg.PlotWidget(); self.rssi_b_plot.setTitle("RSSI B")
         self.link_quality_plot = pg.PlotWidget(); self.link_quality_plot.setTitle("Link Quality")
@@ -318,7 +329,6 @@ class MainWindow(QMainWindow):
 
         self.packet_rate_label = QLabel("Packets Received Rate: 0 Hz")
         layout.addWidget(self.packet_rate_label)
-        layout.addStretch()
 
         # Data storage for plots
         max_points = 200
