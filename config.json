@@ -15,10 +15,10 @@
         "device_index": 1
     },
     "warnings": {
-        "stall_airspeed": 10,
+        "stall_airspeed": 20,
         "stall_altitude": 50,
-        "altitude_alarm_airspeed": 30,
-        "altitude_alarm_altitude": 20,
+        "altitude_alarm_airspeed": 20,
+        "altitude_alarm_altitude": 17,
         "roll_angle": 45
     }
 }

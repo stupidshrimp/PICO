@@ -2,7 +2,6 @@ from enum import IntEnum
 import struct
 import logging
 from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot
-=======
 
 from PySide6.QtSerialPort import QSerialPort
 from serial.tools import list_ports
