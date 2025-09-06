@@ -397,10 +397,6 @@ class CRSFPacketProcessor(QObject):
             self._thread.quit()
             self._thread.wait()
 
-    def stop(self):
-        """Public helper to stop background processing and close the port."""
-        self.close_serial()
-
     def __del__(self):
         """
         Ensure the serial port is closed on object deletion.

@@ -1084,36 +1084,11 @@ class MainWindow(QMainWindow):
         """
         Releases resources when the window is closed.
         """
-        # Stop timers to prevent any further signal emissions
-        self.transmit_timer.stop()
-        self.graph_timer.stop()
-        self.packet_rate_timer.stop()
-        for timer in self.status_timers.values():
-            timer.stop()
-
-        # Stop the video feed worker and wait for its thread to finish.
-        if self.video_feed:
-            self.video_feed.stop()
-            try:
-                self.video_feed.worker.frame_ready.disconnect()
-                self.video_feed.worker.error.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            self.video_feed.worker_thread.quit()
-            self.video_feed.worker_thread.wait()
-
-        # Stop CRSF processor and close its serial connection.
+        self.video_feed.stop()
         if self.crsf_processor:
-            try:
-                self.crsf_processor.telemetry_ready.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            self.crsf_processor.stop()
-
-        # Stop joystick handler and close its serial connection.
+            self.crsf_processor.close_serial()  # Ensure serial port is closed
         if self.joystick:
-            self.joystick.stop()
-
+            self.joystick.close_serial()
         super().closeEvent(event)
         
 if __name__ == "__main__":
