@@ -16,6 +16,7 @@ class CRSFPacketProcessor(QObject):
 
     telemetry_ready = Signal(object)
     channel_update = Signal(list)
+    error = Signal(str)
 
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
@@ -79,9 +80,11 @@ class CRSFPacketProcessor(QObject):
                 logger.error(
                     "Failed to open serial port: %s", self.serial.errorString()
                 )
+                self.error.emit(f"Failed to open serial port: {self.serial.errorString()}")
                 self.serial = None
         except Exception as e:
             logger.error("Failed to open serial port: %s", e)
+            self.error.emit(f"Failed to open serial port: {e}")
             self.serial = None
 
     def is_connected(self):
@@ -183,6 +186,7 @@ class CRSFPacketProcessor(QObject):
                 return "Good"  # Return "Good" only if transmission is successful
             except Exception as e:
                 logger.error("Failed to send packet: %s", e)
+                self.error.emit(f"Failed to send packet: {e}")
                 return f"Error: {e}"
 
         # If the serial port is not available, return an error
@@ -284,6 +288,7 @@ class CRSFPacketProcessor(QObject):
 
         except Exception as e:
             logger.error("Error reading serial data: %s", e)
+            self.error.emit(f"Error reading serial data: {e}")
 
 
     def decode_link_statistics(self, data):

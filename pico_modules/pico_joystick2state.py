@@ -3,9 +3,10 @@ import serial
 import threading
 import time
 from queue import Queue
+from PySide6.QtCore import QObject, Signal
 
 
-class JoystickRawHandler:
+class JoystickRawHandler(QObject):
     """Read raw joystick values over a serial connection.
 
     The microcontroller is expected to stream values in the format
@@ -17,7 +18,10 @@ class JoystickRawHandler:
     be adjusted live.
     """
 
+    error = Signal(str)
+
     def __init__(self, port, baudrate=9600, deadzone=0, sensitivity=100):
+        super().__init__()
         try:
             self.serial_connection = serial.Serial(port, baudrate=baudrate, timeout=1)
             print(f"Connected to joystick on {port} at {baudrate} baud.")
@@ -52,16 +56,16 @@ class JoystickRawHandler:
         """Continuously read raw lines from the serial connection."""
         while not self._stop_event.is_set():
             try:
+
                 if self.serial_connection.is_open and self.serial_connection.in_waiting > 0:
                     raw = self.serial_connection.readline().decode("utf-8").strip()
                     self.data_queue.put(raw)
                 else:
                     time.sleep(0.05)
-            except serial.SerialException as exc:
-                print(f"Serial connection error: {exc}")
-                break
-            except Exception as exc:  # pragma: no cover - serial read errors
-                print(f"Error reading serial data: {exc}")
+        except serial.SerialException as exc:
+            self.error.emit(f"Serial connection error: {exc}")
+        except Exception as exc:  # pragma: no cover - serial read errors
+            self.error.emit(f"Error reading serial data: {exc}")
 
     def stop(self):
         """Stop the reading thread and close the serial connection."""
@@ -108,7 +112,7 @@ class JoystickRawHandler:
             try:
                 self.roll, self.pitch = self._parse_line(raw_line)
             except ValueError:
-                print(f"Malformed data: {raw_line}")
+                self.error.emit(f"Malformed data: {raw_line}")
 
         return self.pitch, self.roll  # pitch first for consistency with callers
 

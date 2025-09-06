@@ -79,39 +79,42 @@ class FrameWorker(QObject):
 
     @Slot()
     def process_frame(self):
-        if not self.cap or not self.cap.isOpened():
-            self.error.emit("No Camera Detected")
-            return
+        try:
+            if not self.cap or not self.cap.isOpened():
+                self.error.emit("No Camera Detected")
+                return
 
-        ret, frame = self.cap.read()
-        if not ret:
-            self.error.emit("Camera Error or Disconnected")
-            return
+            ret, frame = self.cap.read()
+            if not ret:
+                self.error.emit("Camera Error or Disconnected")
+                return
 
-        frame = self.video_feed.deinterlace(frame)
+            frame = self.video_feed.deinterlace(frame)
 
-        h, w, _ = frame.shape
+            h, w, _ = frame.shape
 
-        # Scale the frame to fit a 1280x960 canvas while preserving the
-        # original aspect ratio. This avoids the previous 2% crop that
-        # unintentionally zoomed the image.
-        target_w, target_h = 1280, 960
-        scale = min(target_w / w, target_h / h)
-        new_w, new_h = int(w * scale), int(h * scale)
+            # Scale the frame to fit a 1280x960 canvas while preserving the
+            # original aspect ratio. This avoids the previous 2% crop that
+            # unintentionally zoomed the image.
+            target_w, target_h = 1280, 960
+            scale = min(target_w / w, target_h / h)
+            new_w, new_h = int(w * scale), int(h * scale)
 
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Center the resized frame on a black canvas so the output size
-        # remains constant without distorting the aspect ratio.
-        canvas = np.zeros((target_h, target_w, 3), dtype=frame.dtype)
-        x_off = (target_w - new_w) // 2
-        y_off = (target_h - new_h) // 2
-        canvas[y_off : y_off + new_h, x_off : x_off + new_w] = frame
-        frame = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-        self.frame_ready.emit(qt_image)
+            # Center the resized frame on a black canvas so the output size
+            # remains constant without distorting the aspect ratio.
+            canvas = np.zeros((target_h, target_w, 3), dtype=frame.dtype)
+            x_off = (target_w - new_w) // 2
+            y_off = (target_h - new_h) // 2
+            canvas[y_off : y_off + new_h, x_off : x_off + new_w] = frame
+            frame = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            h, w, ch = frame.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+            self.frame_ready.emit(qt_image)
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 class VideoFeed:
