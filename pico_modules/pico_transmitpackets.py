@@ -180,14 +180,12 @@ class CRSFPacketProcessor(QObject):
             return
 
         try:
-            # Read all currently available bytes and show their raw hexadecimal
-            # representation for debugging purposes.  This helps diagnose cases
-            # where no packets appear to be decoded by making every incoming
-            # byte visible in the terminal.
+            # Read all currently available bytes and append them to the buffer.
+            # Keeping the buffering logic centralised allows for easy decoding
+            # without producing verbose serial output.
             new_data = bytes(self.serial.readAll())
             if new_data:
-                print(f"Raw serial data: {new_data.hex()}")
-            self._rx_buffer.extend(new_data)
+                self._rx_buffer.extend(new_data)
 
             # Process packets while a complete frame is present in the buffer
             while True:
@@ -226,6 +224,8 @@ class CRSFPacketProcessor(QObject):
                     self.crc8_data(self._rx_buffer[2:frame_end - 1])
                     != self._rx_buffer[frame_end - 1]
                 ):
+                    # CRC mismatch means the packet is corrupt and cannot be parsed
+                    print("Telemetry CRC mismatch; dropping byte and resynchronising")
                     del self._rx_buffer[0]
                     continue
 
@@ -240,7 +240,6 @@ class CRSFPacketProcessor(QObject):
                 if packet_type == 0x3A:
                     continue
 
-                print(f"\n--- Received Telemetry Packet (Type: {packet_type:#04x}) ---")
                 if packet_type == 0x14:
                     self.decode_link_statistics(packet)
                 elif packet_type == 0x02:
@@ -252,20 +251,19 @@ class CRSFPacketProcessor(QObject):
                 elif packet_type == 0xF0:
                     self.decode_custom(packet)
                 else:
-                    print("Unknown telemetry packet:", packet.hex())
+                    # Unknown packet type encountered
+                    print(
+                        f"Unknown telemetry packet type 0x{packet_type:02X}: {packet.hex()}"
+                    )
 
         except Exception as e:
             print(f"Error reading serial data: {e}")
 
 
     def decode_link_statistics(self, data):
-        """Decode link statistics telemetry packet and print the info."""
-        # Link statistics packets contain ten bytes of payload following the type
-        # field.  The fields are defined in the CRSF protocol specification as:
-        #   RSSI1, RSSI2, Link quality, SNR, Active antenna, RF mode,
-        #   TX power, Downlink RSSI, Downlink link quality, Downlink SNR
+        """Decode link statistics telemetry packet and emit the info."""
         if len(data) < 13:
-            print("Link statistics packet too short.")
+            print("Link statistics packet too short")
             return
         try:
             (
@@ -281,22 +279,6 @@ class CRSFPacketProcessor(QObject):
                 downlink_snr,
             ) = struct.unpack("=bbBbBBBbBb", data[3:13])
 
-            # Map TX power enumeration to milliwatts as defined by the protocol.
-            tx_power_map = [0, 10, 25, 100, 500, 1000, 2000, 250]
-            tx_power = tx_power_map[tx_power_enum] if tx_power_enum < len(tx_power_map) else tx_power_enum
-
-            print("--- Link Statistics ---")
-            print(f"RSSI A: {rssi_a} dBm")
-            print(f"RSSI B: {rssi_b} dBm")
-            print(f"Link Quality: {link_quality}%")
-            print(f"SNR: {snr} dB")
-            print(f"Active Antenna: {active_antenna}")
-            print(f"RF Mode: {rf_mode}")
-            print(f"TX Power: {tx_power} mW")
-            print(f"Downlink RSSI: {downlink_rssi} dBm")
-            print(f"Downlink Link Quality: {downlink_lq}%")
-            print(f"Downlink SNR: {downlink_snr} dB")
-
             self.telemetry_ready.emit(
                 (
                     "link_stats",
@@ -309,23 +291,13 @@ class CRSFPacketProcessor(QObject):
                 )
             )
         except Exception as e:
-            print("Error decoding link statistics:", e)
+            print(f"Failed to parse link statistics packet: {e}")
 
 
     def decode_gps(self, data):
-        """Decode a CRSF GPS telemetry packet.
-
-        The telemetry packet provides the aircraft's ground speed and
-        altitude.  Earlier versions of this ground station assumed the speed
-        was reported in kilometres per hour and applied a conversion factor
-        to miles per hour, which resulted in the displayed value being roughly
-        half of the actual speed.  The incoming ``speed`` value is already in
-        miles per hour, so we simply treat it as such.  The altitude is
-        transmitted in decimeters, which we convert to feet before invoking
-        the telemetry callback.
-        """
+        """Decode a CRSF GPS telemetry packet."""
         if len(data) < 18:
-            print("GPS packet too short.")
+            print("GPS packet too short")
             return
         try:
             payload = data[3:18]
@@ -334,9 +306,6 @@ class CRSFPacketProcessor(QObject):
             )
             lat = lat_raw / 1000000.0
             lon = lon_raw / 1000000.0
-            # ``speed`` is provided in miles per hour by the telemetry source.
-            # Using it directly avoids double-conversion that previously
-            # halved the displayed value.
             speed_mph = float(speed)
             course = course / 10.0
             alt_m = alt / 10.0
@@ -344,36 +313,27 @@ class CRSFPacketProcessor(QObject):
             self.telemetry_ready.emit(
                 ("gps", lat, lon, speed_mph, course, alt_ft, sats)
             )
-            print("--- Decoded GPS Telemetry ---")
-            print(f"Latitude: {lat}")
-            print(f"Longitude: {lon}")
-            print(f"Speed: {speed_mph} mph")
-            print(f"Ground Course: {course}")
-            print(f"Altitude: {alt_ft} ft")
-            print(f"Satellites: {sats}")
         except Exception as e:
-            print("Error decoding GPS data:", e)
+            print(f"Failed to parse GPS packet: {e}")
 
 
     def decode_battery(self, data):
-        """Decode battery telemetry packet and print the info."""
+        """Decode battery telemetry packet."""
         if len(data) < 9:
-            print("Battery sensor packet too short.")
+            print("Battery packet too short")
             return
         try:
             voltage, current, capacity = struct.unpack("<HHH", data[3:9])
-            print("--- Battery Sensor ---")
-            print(f"Battery Voltage: {voltage / 1000.0} V")
-            print(f"Battery Current: {current / 100.0} A")
-            print(f"Capacity Used: {capacity} mAh")
+            # Decoded values are currently unused but parsing is retained
+            # to validate packet structure.
         except Exception as e:
-            print("Error decoding battery sensor data:", e)
+            print(f"Failed to parse battery packet: {e}")
 
 
     def decode_attitude(self, data):
-        """Decode an attitude telemetry packet (0x1E) and print roll, pitch and yaw."""
+        """Decode an attitude telemetry packet (0x1E)."""
         if len(data) < 9:
-            print("Attitude packet too short.")
+            print("Attitude packet too short")
             return
         try:
             pitch, roll, yaw = struct.unpack(">hhh", data[3:9])
@@ -381,27 +341,21 @@ class CRSFPacketProcessor(QObject):
             roll /= 10
             yaw /= 10
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
-            print("--- Attitude Data (0x1E) ---")
-            print(f"Pitch: {pitch}")
-            print(f"Roll:  {roll}")
-            print(f"Yaw:   {yaw}")
         except Exception as e:
-            print("Error decoding attitude data:", e)
+            print(f"Failed to parse attitude packet: {e}")
 
 
     def decode_custom(self, data):
         """Decode a custom telemetry packet (0xF0) with 16 bytes of data."""
         if len(data) < 20:
-            print("Custom telemetry packet too short.")
+            print("Custom telemetry packet too short")
             return
         try:
             payload = data[3:19]
             crc = data[19]
-            print("--- Custom Telemetry Packet (0xF0) ---")
-            print("Payload (16 bytes):", payload.hex())
-            print("CRC:", hex(crc))
+            # Custom telemetry data is parsed but not emitted.
         except Exception as e:
-            print("Error decoding custom telemetry packet:", e)
+            print(f"Failed to parse custom telemetry packet: {e}")
 
 
     def close_serial(self):
@@ -410,7 +364,6 @@ class CRSFPacketProcessor(QObject):
         """
         if self.serial and self.serial.isOpen():
             self.serial.close()
-            print("Serial port closed.")
 
     def __del__(self):
         """
