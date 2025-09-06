@@ -25,19 +25,38 @@ except Exception:
 
 
 class FrameWorker(QObject):
-    """Worker thread that captures and processes frames."""
+    """Worker thread that owns the capture device and produces frames."""
 
     frame_ready = Signal(QImage)
     error = Signal(str)
 
-    def __init__(self, video_feed):
+    def __init__(self, device_index: int, video_feed):
         super().__init__()
+        self.device_index = device_index
         self.video_feed = video_feed
+        self.cap = None
         self._timer = None
 
     @Slot()
-    def start(self):
-        """Start the periodic frame capture timer."""
+    def ensure_camera(self):
+        """Open the capture device if it is not already active."""
+        if self.cap and self.cap.isOpened():
+            return
+
+        try:
+            self.cap = cv2.VideoCapture(self.device_index)
+        except cv2.error:
+            self.cap = None
+
+        if self.cap and self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+            self.start_timer()
+        else:
+            self.cap = None
+            self.error.emit("No Camera Detected")
+
+    def start_timer(self):
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.timeout.connect(self.process_frame)
@@ -45,47 +64,54 @@ class FrameWorker(QObject):
             self._timer.start(30)
 
     @Slot()
+    def start(self):
+        """Ensure the camera is open and begin processing."""
+        self.ensure_camera()
+
+    @Slot()
     def stop(self):
-        """Stop the frame capture timer."""
+        """Stop processing frames and release the capture device."""
         if self._timer and self._timer.isActive():
             self._timer.stop()
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        self.cap = None
 
     @Slot()
     def process_frame(self):
-        cap = self.video_feed.cap
-        if cap and cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                frame = self.video_feed.deinterlace(frame)
-
-                h, w, _ = frame.shape
-
-                # Scale the frame to fit a 1280x960 canvas while preserving the
-                # original aspect ratio. This avoids the previous 2% crop that
-                # unintentionally zoomed the image.
-                target_w, target_h = 1280, 960
-                scale = min(target_w / w, target_h / h)
-                new_w, new_h = int(w * scale), int(h * scale)
-
-                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-                # Center the resized frame on a black canvas so the output size
-                # remains constant without distorting the aspect ratio.
-                canvas = np.zeros((target_h, target_w, 3), dtype=frame.dtype)
-                x_off = (target_w - new_w) // 2
-                y_off = (target_h - new_h) // 2
-                canvas[y_off : y_off + new_h, x_off : x_off + new_w] = frame
-                frame = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-                h, w, ch = frame.shape
-                bytes_per_line = ch * w
-                qt_image = QImage(
-                    frame.data, w, h, bytes_per_line, QImage.Format_RGB888
-                ).copy()
-                self.frame_ready.emit(qt_image)
-            else:
-                self.error.emit("Camera Error or Disconnected")
-        else:
+        if not self.cap or not self.cap.isOpened():
             self.error.emit("No Camera Detected")
+            return
+
+        ret, frame = self.cap.read()
+        if not ret:
+            self.error.emit("Camera Error or Disconnected")
+            return
+
+        frame = self.video_feed.deinterlace(frame)
+
+        h, w, _ = frame.shape
+
+        # Scale the frame to fit a 1280x960 canvas while preserving the
+        # original aspect ratio. This avoids the previous 2% crop that
+        # unintentionally zoomed the image.
+        target_w, target_h = 1280, 960
+        scale = min(target_w / w, target_h / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # Center the resized frame on a black canvas so the output size
+        # remains constant without distorting the aspect ratio.
+        canvas = np.zeros((target_h, target_w, 3), dtype=frame.dtype)
+        x_off = (target_w - new_w) // 2
+        y_off = (target_h - new_h) // 2
+        canvas[y_off : y_off + new_h, x_off : x_off + new_w] = frame
+        frame = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+        self.frame_ready.emit(qt_image)
 
 
 class VideoFeed:
@@ -136,12 +162,11 @@ class VideoFeed:
         self.device_index = (
             device_index if device_index is not None else self.detect_device_index()
         )
-        self.cap = None  # Camera capture object
         self.text_animation = None  # Placeholder for the text animation
 
         # Worker thread for frame processing
         self.worker_thread = QThread()
-        self.worker = FrameWorker(self)
+        self.worker = FrameWorker(self.device_index, self)
         self.worker.moveToThread(self.worker_thread)
         self.worker.frame_ready.connect(self.update_frame)
         self.worker.error.connect(self._handle_worker_error)
@@ -158,31 +183,12 @@ class VideoFeed:
         self.check_camera()
 
     def check_camera(self):
-        """Check if the selected camera is available and start the video feed."""
-        if self.cap is None or not self.cap.isOpened():
-            try:
-                self.cap = cv2.VideoCapture(self.device_index)
-            except cv2.error:
-                # Backend failed to open the device index; treat as unavailable.
-                self.cap = None
-                self.show_fading_text("No Camera Detected")
-                return
-            if self.cap.isOpened():
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
-                self.label.clear()  # Clear any error message
-                self.remove_opacity_effect()  # Remove opacity effect
-                QMetaObject.invokeMethod(self.worker, "start", Qt.QueuedConnection)
-            else:
-                # Show fading error message when no camera is detected
-                self.show_fading_text("No Camera Detected")
+        """Request the worker thread to ensure the camera is active."""
+        QMetaObject.invokeMethod(self.worker, "start", Qt.QueuedConnection)
 
     def stop(self):
         """Stop the video feed and camera checks."""
         QMetaObject.invokeMethod(self.worker, "stop", Qt.QueuedConnection)
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
-        self.cap = None  # Reset the capture object
         self.camera_check_timer.stop()
 
     @Slot(QImage)
