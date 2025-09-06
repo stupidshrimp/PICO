@@ -1,6 +1,7 @@
 import re
 import serial
 import threading
+import time
 from queue import Queue
 
 
@@ -45,12 +46,17 @@ class JoystickRawHandler:
     def _read_joystick_data(self):
         """Continuously read raw lines from the serial connection."""
         while True:
-            if self.serial_connection.in_waiting > 0:
-                try:
+            try:
+                if self.serial_connection.is_open and self.serial_connection.in_waiting > 0:
                     raw = self.serial_connection.readline().decode("utf-8").strip()
                     self.data_queue.put(raw)
-                except Exception as exc:  # pragma: no cover - serial read errors
-                    print(f"Error reading serial data: {exc}")
+                else:
+                    time.sleep(0.05)
+            except serial.SerialException as exc:
+                print(f"Serial connection error: {exc}")
+                break
+            except Exception as exc:  # pragma: no cover - serial read errors
+                print(f"Error reading serial data: {exc}")
 
     def connect_serial(self):
         """Reconnect the serial port if it has been closed."""
