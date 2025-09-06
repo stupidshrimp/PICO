@@ -15,6 +15,13 @@ import cv2
 import numpy as np
 from typing import Optional
 
+# Reduce OpenCV's log verbosity so failing device indices do not spam stderr.
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    # ``cv2.utils.logging`` may be unavailable on some builds; ignore in that case.
+    pass
+
 
 class FrameWorker(QObject):
     """Worker thread that captures and processes frames."""
@@ -63,7 +70,12 @@ class VideoFeed:
 
         available = []
         for idx in range(max_devices):
-            cap = cv2.VideoCapture(idx)
+            try:
+                cap = cv2.VideoCapture(idx)
+            except cv2.error:
+                # Some backends raise an exception for out-of-range indices.
+                # Skip any index that cannot be opened instead of crashing.
+                continue
             if cap.isOpened():
                 available.append(idx)
                 cap.release()
@@ -120,7 +132,13 @@ class VideoFeed:
     def check_camera(self):
         """Check if the selected camera is available and start the video feed."""
         if self.cap is None or not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(self.device_index)
+            try:
+                self.cap = cv2.VideoCapture(self.device_index)
+            except cv2.error:
+                # Backend failed to open the device index; treat as unavailable.
+                self.cap = None
+                self.show_fading_text("No Camera Detected")
+                return
             if self.cap.isOpened():
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
