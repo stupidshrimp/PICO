@@ -8,6 +8,7 @@ class CRSFPacketProcessor(QObject):
     """Process CRSF packets and emit telemetry via Qt signals."""
 
     CRSF_SYNC = 0xC8
+    TELEMETRY_SYNC = 0xEA  # Start byte used for telemetry frames
 
     telemetry_ready = Signal(object)
 
@@ -194,8 +195,11 @@ class CRSFPacketProcessor(QObject):
                 if len(self._rx_buffer) < 3:
                     break
 
-                # Discard bytes until sync byte is found
-                if self._rx_buffer[0] != self.CRSF_SYNC:
+                # Discard bytes until a valid device address is found.  CRSF
+                # telemetry frames use 0xEA while outbound channel frames use
+                # 0xC8.  Accept either so we can decode telemetry regardless of
+                # source.
+                if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
                     del self._rx_buffer[0]
                     continue
 
