@@ -8,6 +8,7 @@ class CRSFPacketProcessor(QObject):
     """Process CRSF packets and emit telemetry via Qt signals."""
 
     CRSF_SYNC = 0xC8
+    TELEMETRY_SYNC = 0xEA  # Start byte used for telemetry frames
 
     telemetry_ready = Signal(object)
 
@@ -179,8 +180,14 @@ class CRSFPacketProcessor(QObject):
             return
 
         try:
-            # Append all currently available bytes to the buffer
-            self._rx_buffer.extend(bytes(self.serial.readAll()))
+            # Read all currently available bytes and show their raw hexadecimal
+            # representation for debugging purposes.  This helps diagnose cases
+            # where no packets appear to be decoded by making every incoming
+            # byte visible in the terminal.
+            new_data = bytes(self.serial.readAll())
+            if new_data:
+                print(f"Raw serial data: {new_data.hex()}")
+            self._rx_buffer.extend(new_data)
 
             # Process packets while a complete frame is present in the buffer
             while True:
@@ -188,8 +195,11 @@ class CRSFPacketProcessor(QObject):
                 if len(self._rx_buffer) < 3:
                     break
 
-                # Discard bytes until sync byte is found
-                if self._rx_buffer[0] != self.CRSF_SYNC:
+                # Discard bytes until a valid device address is found.  CRSF
+                # telemetry frames use 0xEA while outbound channel frames use
+                # 0xC8.  Accept either so we can decode telemetry regardless of
+                # source.
+                if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
                     del self._rx_buffer[0]
                     continue
 
