@@ -205,8 +205,11 @@ class CRSFPacketProcessor(QObject):
 
                 # Guard against unreasonable frame lengths which indicate we are
                 # out of sync.  CRSF frames are at most 64 bytes long
-                # (including type, payload and CRC).
-                if length > 64:
+                # (including type, payload and CRC) and at minimum contain a
+                # type byte plus a CRC (``length`` >= 2).  Very short lengths can
+                # cause index errors when ``packet[2]`` is accessed, so discard
+                # the sync byte and resynchronise in that case.
+                if length < 2 or length > 64:
                     del self._rx_buffer[0]
                     continue
 
