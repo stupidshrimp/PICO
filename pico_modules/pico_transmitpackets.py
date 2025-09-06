@@ -71,7 +71,17 @@ class CRSFPacketProcessor(QObject):
         try:
             self.serial = QSerialPort(self.serial_port)
             self.serial.setBaudRate(self.baudrate)
+            self.serial.setDataBits(QSerialPort.Data8)
+            self.serial.setParity(QSerialPort.NoParity)
+            self.serial.setStopBits(QSerialPort.OneStop)
+            self.serial.setFlowControl(QSerialPort.NoFlowControl)
+            self.serial.setReadBufferSize(4096)
             self.serial.readyRead.connect(self.read_serial_data)
+            self.serial.errorOccurred.connect(
+                lambda err: logger.error(
+                    "Serial error: %s (%s)", err, self.serial.errorString()
+                )
+            )
             if self.serial.open(QIODevice.ReadWrite):
                 logger.info(
                     "Connected to %s at %s baud.", self.serial_port, self.baudrate
@@ -83,7 +93,7 @@ class CRSFPacketProcessor(QObject):
                 self.error.emit(f"Failed to open serial port: {self.serial.errorString()}")
                 self.serial = None
         except Exception as e:
-            logger.error("Failed to open serial port: %s", e)
+            logger.exception("Failed to open serial port")
             self.error.emit(f"Failed to open serial port: {e}")
             self.serial = None
 
@@ -185,7 +195,7 @@ class CRSFPacketProcessor(QObject):
                 # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
                 return "Good"  # Return "Good" only if transmission is successful
             except Exception as e:
-                logger.error("Failed to send packet: %s", e)
+                logger.exception("Failed to send packet")
                 self.error.emit(f"Failed to send packet: {e}")
                 return f"Error: {e}"
 
@@ -206,8 +216,18 @@ class CRSFPacketProcessor(QObject):
             new_data = bytes(self.serial.readAll())
             if new_data:
                 self._rx_buffer.extend(new_data)
-                # Debug: show raw telemetry bytes as they are received
-                logger.debug("Telemetry raw data: %s", new_data.hex())
+                # Prevent unbounded growth if we fall behind
+                MAX_BUF = 8192
+                if len(self._rx_buffer) > MAX_BUF:
+                    logger.warning(
+                        "RX buffer overflow (%d). Dropping to resync.",
+                        len(self._rx_buffer),
+                    )
+                    self._rx_buffer = self._rx_buffer[-512:]
+                # Debug: sample raw telemetry bytes to reduce log load
+                self._dbg_ctr = getattr(self, "_dbg_ctr", 0) + 1
+                if self._dbg_ctr % 20 == 0:
+                    logger.debug("Telemetry raw data: %s", new_data.hex())
 
             # Process packets while a complete frame is present in the buffer
             while True:
@@ -225,10 +245,9 @@ class CRSFPacketProcessor(QObject):
 
                 length = self._rx_buffer[1]
 
-                # Guard against unreasonable frame lengths which indicate we are
-                # out of sync.  CRSF frames are at most 64 bytes long
-                # (including type, payload and CRC).
-                if length > 64:
+                # Drop frames with impossible lengths (need at least type+crc = 2)
+                # and cap the maximum size to 64 bytes.
+                if length < 2 or length > 64:
                     del self._rx_buffer[0]
                     continue
 
@@ -287,7 +306,7 @@ class CRSFPacketProcessor(QObject):
                     )
 
         except Exception as e:
-            logger.error("Error reading serial data: %s", e)
+            logger.exception("Error reading serial data")
             self.error.emit(f"Error reading serial data: {e}")
 
 
@@ -295,6 +314,9 @@ class CRSFPacketProcessor(QObject):
         """Decode link statistics telemetry packet and emit the info."""
         if len(data) < 13:
             logger.warning("Link statistics packet too short")
+            return
+        if data[1] < 12:
+            logger.warning("Link stats length byte unexpected: %d", data[1])
             return
         try:
             (
@@ -321,14 +343,17 @@ class CRSFPacketProcessor(QObject):
                     downlink_snr,
                 )
             )
-        except Exception as e:
-            logger.error("Failed to parse link statistics packet: %s", e)
+        except Exception:
+            logger.exception("Failed to parse link statistics packet")
 
 
     def decode_gps(self, data):
         """Decode a CRSF GPS telemetry packet."""
         if len(data) < 18:
             logger.warning("GPS packet too short")
+            return
+        if data[1] < 17:
+            logger.warning("GPS length byte unexpected: %d", data[1])
             return
         try:
             payload = data[3:18]
@@ -344,8 +369,8 @@ class CRSFPacketProcessor(QObject):
             self.telemetry_ready.emit(
                 ("gps", lat, lon, speed_mph, course, alt_ft, sats)
             )
-        except Exception as e:
-            logger.error("Failed to parse GPS packet: %s", e)
+        except Exception:
+            logger.exception("Failed to parse GPS packet")
 
 
     def decode_battery(self, data):
@@ -353,12 +378,15 @@ class CRSFPacketProcessor(QObject):
         if len(data) < 9:
             logger.warning("Battery packet too short")
             return
+        if data[1] < 8:
+            logger.warning("Battery length byte unexpected: %d", data[1])
+            return
         try:
             voltage, current, capacity = struct.unpack("<HHH", data[3:9])
             # Decoded values are currently unused but parsing is retained
             # to validate packet structure.
-        except Exception as e:
-            logger.error("Failed to parse battery packet: %s", e)
+        except Exception:
+            logger.exception("Failed to parse battery packet")
 
 
     def decode_attitude(self, data):
@@ -366,14 +394,17 @@ class CRSFPacketProcessor(QObject):
         if len(data) < 9:
             logger.warning("Attitude packet too short")
             return
+        if data[1] < 8:
+            logger.warning("Attitude length byte unexpected: %d", data[1])
+            return
         try:
             pitch, roll, yaw = struct.unpack(">hhh", data[3:9])
             pitch /= 10
             roll /= 10
             yaw /= 10
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
-        except Exception as e:
-            logger.error("Failed to parse attitude packet: %s", e)
+        except Exception:
+            logger.exception("Failed to parse attitude packet")
 
 
     def decode_custom(self, data):
@@ -381,16 +412,24 @@ class CRSFPacketProcessor(QObject):
         if len(data) < 20:
             logger.warning("Custom telemetry packet too short")
             return
+        if data[1] < 18:
+            logger.warning("Custom telemetry length byte unexpected: %d", data[1])
+            return
         try:
             payload = data[3:19]
             crc = data[19]
             # Custom telemetry data is parsed but not emitted.
-        except Exception as e:
-            logger.error("Failed to parse custom telemetry packet: %s", e)
+        except Exception:
+            logger.exception("Failed to parse custom telemetry packet")
 
 
     def close_serial(self):
         """Close the serial port and stop the worker thread."""
+        try:
+            if self.serial:
+                self.serial.readyRead.disconnect(self.read_serial_data)
+        except Exception:
+            pass
         if self.serial and self.serial.isOpen():
             self.serial.close()
         if hasattr(self, "_thread") and self._thread.isRunning():
