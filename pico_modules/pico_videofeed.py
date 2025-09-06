@@ -41,10 +41,12 @@ class FrameWorker(QObject):
             if ret:
                 frame = self.video_feed.deinterlace(frame)
 
-                # Preserve the camera's native output without cropping or resizing
-                # to ensure the displayed frame retains the correct resolution and
-                # aspect ratio.
-                # The frame is only converted for Qt display.
+                h, w, _ = frame.shape
+                margin_x = int(w * 0.02)
+                margin_y = int(h * 0.02)
+                frame = frame[margin_y:h - margin_y, margin_x:w - margin_x]
+
+                frame = cv2.resize(frame, (1280, 960), interpolation=cv2.INTER_LINEAR)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = frame.shape
                 bytes_per_line = ch * w
@@ -87,11 +89,7 @@ class VideoFeed:
 
         return available[0] if available else 0
 
-    def __init__(
-        self,
-        VideoLabel: QLabel,
-        device_index: Optional[int] = None,
-    ):
+    def __init__(self, VideoLabel: QLabel, device_index: Optional[int] = None):
         """Initialize the video feed.
 
         Parameters
@@ -142,6 +140,8 @@ class VideoFeed:
                 self.show_fading_text("No Camera Detected")
                 return
             if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
                 self.label.clear()  # Clear any error message
                 self.remove_opacity_effect()  # Remove opacity effect
                 self.timer.start(30)  # Update frame every 30 ms (~30 FPS)
@@ -216,3 +216,4 @@ class VideoFeed:
         """Remove the opacity effect from the QLabel."""
         if hasattr(self.label, "_opacity_effect"):
             self.label.setGraphicsEffect(None)  # Remove the effect
+            del self.label._opacity_effect  # Delete the reference to free resources

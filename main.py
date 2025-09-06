@@ -125,10 +125,8 @@ class MainWindow(QMainWindow):
         preferred_index = self.vtx_cfg.get("device_index")
         video_index = VideoFeed.detect_device_index(preferred_index)
         print(f"Using video capture device index: {video_index}")
-        self.video_feed = VideoFeed(
-            self.ui.VideoLabel,
-            device_index=video_index,
-        )
+
+        self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
 
         # Start the video feed immediately. The previous implementation
         # attempted to validate a serial "port" before starting the
