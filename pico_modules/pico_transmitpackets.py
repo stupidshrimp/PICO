@@ -186,6 +186,8 @@ class CRSFPacketProcessor(QObject):
             new_data = bytes(self.serial.readAll())
             if new_data:
                 self._rx_buffer.extend(new_data)
+                # Debug: show raw telemetry bytes as they are received
+                print(f"Telemetry raw data: {new_data.hex()}")
 
             # Process packets while a complete frame is present in the buffer
             while True:
@@ -235,6 +237,10 @@ class CRSFPacketProcessor(QObject):
                 del self._rx_buffer[:frame_end]
 
                 packet_type = packet[2]
+                # Debug: log each decoded telemetry packet with its type
+                print(
+                    f"Telemetry packet 0x{packet_type:02X}: {packet.hex()}"
+                )
 
                 # Ignore parameter setting packets (0x3A)
                 if packet_type == 0x3A:
