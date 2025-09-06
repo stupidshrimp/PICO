@@ -226,25 +226,21 @@ class CRSFPacketProcessor(QObject):
 
                 packet_type = packet[2]
 
-                # Parameter setting packets (0x3A) are not telemetry and can be ignored
+                # Ignore parameter setting packets (0x3A)
                 if packet_type == 0x3A:
                     continue
 
-                # Map packet types to their corresponding decoder methods.  Using a
-                # dictionary keeps the logic compact and makes it easy to add support
-                # for new telemetry types in the future.
-                handlers = {
-                    0x14: self.decode_link_statistics,
-                    0x02: self.decode_gps,
-                    0x08: self.decode_battery,
-                    0x1E: self.decode_attitude,
-                    0xF0: self.decode_custom,
-                }
-
                 print(f"\n--- Received Telemetry Packet (Type: {packet_type:#04x}) ---")
-                handler = handlers.get(packet_type)
-                if handler:
-                    handler(packet)
+                if packet_type == 0x14:
+                    self.decode_link_statistics(packet)
+                elif packet_type == 0x02:
+                    self.decode_gps(packet)
+                elif packet_type == 0x08:
+                    self.decode_battery(packet)
+                elif packet_type == 0x1E:
+                    self.decode_attitude(packet)
+                elif packet_type == 0xF0:
+                    self.decode_custom(packet)
                 else:
                     print("Unknown telemetry packet:", packet.hex())
 
