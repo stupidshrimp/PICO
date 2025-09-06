@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
     QObject,
+    QMetaObject,
 )
 from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
 import cv2
@@ -32,6 +33,22 @@ class FrameWorker(QObject):
     def __init__(self, video_feed):
         super().__init__()
         self.video_feed = video_feed
+        self._timer = None
+
+    @Slot()
+    def start(self):
+        """Start the periodic frame capture timer."""
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self.process_frame)
+        if not self._timer.isActive():
+            self._timer.start(30)
+
+    @Slot()
+    def stop(self):
+        """Stop the frame capture timer."""
+        if self._timer and self._timer.isActive():
+            self._timer.stop()
 
     @Slot()
     def process_frame(self):
@@ -120,14 +137,12 @@ class VideoFeed:
             device_index if device_index is not None else self.detect_device_index()
         )
         self.cap = None  # Camera capture object
-        self.timer = QTimer()
         self.text_animation = None  # Placeholder for the text animation
 
         # Worker thread for frame processing
         self.worker_thread = QThread()
         self.worker = FrameWorker(self)
         self.worker.moveToThread(self.worker_thread)
-        self.timer.timeout.connect(self.worker.process_frame)
         self.worker.frame_ready.connect(self.update_frame)
         self.worker.error.connect(self._handle_worker_error)
         self.worker_thread.start()
@@ -157,14 +172,14 @@ class VideoFeed:
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
                 self.label.clear()  # Clear any error message
                 self.remove_opacity_effect()  # Remove opacity effect
-                self.timer.start(30)  # Update frame every 30 ms (~30 FPS)
+                QMetaObject.invokeMethod(self.worker, "start", Qt.QueuedConnection)
             else:
                 # Show fading error message when no camera is detected
                 self.show_fading_text("No Camera Detected")
 
     def stop(self):
         """Stop the video feed and camera checks."""
-        self.timer.stop()
+        QMetaObject.invokeMethod(self.worker, "stop", Qt.QueuedConnection)
         if self.cap and self.cap.isOpened():
             self.cap.release()
         self.cap = None  # Reset the capture object

@@ -192,7 +192,8 @@ class MainWindow(QMainWindow):
         # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 3))
+        # Throttle default packet rate to reduce GUI load
+        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 15))
 
         # --------------------------------------------------------------------
         # OSD Overlay Setup - Create and initialize the RollPitchOSD widget
