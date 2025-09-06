@@ -119,11 +119,13 @@ class MainWindow(QMainWindow):
         self.roll_alarm_start_time = None
         self.sound_players = {}
 
+
         # Initialize the video feed using a device index that prefers
         # external capture hardware over the laptop's embedded camera.
         preferred_index = self.vtx_cfg.get("device_index")
         video_index = VideoFeed.detect_device_index(preferred_index)
         print(f"Using video capture device index: {video_index}")
+
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
 
         # Start the video feed immediately. The previous implementation
