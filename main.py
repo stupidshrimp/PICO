@@ -127,6 +127,7 @@ class MainWindow(QMainWindow):
         print(f"Using video capture device index: {video_index}")
 
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
+        self.video_feed.worker.error.connect(self.handle_worker_error)
 
         # Start the video feed immediately. The previous implementation
         # attempted to validate a serial "port" before starting the
@@ -143,6 +144,7 @@ class MainWindow(QMainWindow):
                     deadzone=self.joystick_cfg.get("deadzone", 0),
                     sensitivity=self.joystick_cfg.get("sensitivity", 100),
                 )
+                self.joystick.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         else:
@@ -159,6 +161,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.telemetry_ready.connect(
                     lambda data: self.handle_telemetry(*data)
                 )
+                self.crsf_processor.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         else:
@@ -263,6 +266,11 @@ class MainWindow(QMainWindow):
         widgets.stackedWidget.setCurrentWidget(widgets.home)
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
+
+    @Slot(str)
+    def handle_worker_error(self, message: str):
+        """Handle errors emitted from worker threads."""
+        print(f"Worker error: {message}")
 
     def setup_data_page(self):
         """Create the Data tab with live telemetry graphs."""
