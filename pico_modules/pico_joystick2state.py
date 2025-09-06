@@ -34,13 +34,8 @@ class JoystickRawHandler(QObject):
         self.deadzone = deadzone  # percent
         self.sensitivity = sensitivity  # percent
 
-        # Event used to signal the reading thread to stop
-        self._stop_event = threading.Event()
-
         # Start background thread to continually read data from the serial port
-        self.reading_thread = threading.Thread(
-            target=self._read_joystick_data, daemon=True
-        )
+        self.reading_thread = threading.Thread(target=self._read_joystick_data, daemon=True)
         self.reading_thread.start()
 
     def set_deadzone(self, percent):
@@ -54,9 +49,8 @@ class JoystickRawHandler(QObject):
     # ------------------------------------------------------------------
     def _read_joystick_data(self):
         """Continuously read raw lines from the serial connection."""
-        while not self._stop_event.is_set():
-            try:
-
+        try:
+            while True:
                 if self.serial_connection.is_open and self.serial_connection.in_waiting > 0:
                     raw = self.serial_connection.readline().decode("utf-8").strip()
                     self.data_queue.put(raw)
@@ -66,13 +60,6 @@ class JoystickRawHandler(QObject):
             self.error.emit(f"Serial connection error: {exc}")
         except Exception as exc:  # pragma: no cover - serial read errors
             self.error.emit(f"Error reading serial data: {exc}")
-
-    def stop(self):
-        """Stop the reading thread and close the serial connection."""
-        self._stop_event.set()
-        self.close_serial()
-        if self.reading_thread.is_alive():
-            self.reading_thread.join()
 
     def connect_serial(self):
         """Reconnect the serial port if it has been closed."""
