@@ -111,9 +111,9 @@ class MainWindow(QMainWindow):
         self.warning_cfg = self.config.setdefault("warnings", {})
 
         # Warning system state
-        self.stall_alarm_triggered = False
-        self.altitude_alarm_triggered = False
-        self.roll_alarm_triggered = False
+        self.stall_alarm_playing = False
+        self.altitude_alarm_playing = False
+        self.roll_alarm_playing = False
         self.stall_alarm_start_time = None
         self.altitude_alarm_start_time = None
         self.roll_alarm_start_time = None
@@ -507,9 +507,14 @@ class MainWindow(QMainWindow):
         player.play()
         self.sound_players[name] = (player, output)
 
-    def play_sound_sequence(self, names):
-        """Play a sequence of warning sounds in order."""
+    def play_sound_sequence(self, names, finished_callback=None):
+        """Play a sequence of warning sounds in order.
+
+        ``finished_callback`` is called when the sequence has completed.
+        """
         if not names:
+            if finished_callback:
+                finished_callback()
             return
 
         name = names[0]
@@ -522,7 +527,10 @@ class MainWindow(QMainWindow):
         def handle_status(status):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
                 player.mediaStatusChanged.disconnect(handle_status)
-                self.play_sound_sequence(names[1:])
+                if len(names) > 1:
+                    self.play_sound_sequence(names[1:], finished_callback)
+                elif finished_callback:
+                    finished_callback()
 
         player.mediaStatusChanged.connect(handle_status)
         player.play()
@@ -546,17 +554,15 @@ class MainWindow(QMainWindow):
         ):
             if self.stall_alarm_start_time is None:
                 self.stall_alarm_start_time = now
-            elif (
-                now - self.stall_alarm_start_time > 1.0
-                and not self.stall_alarm_triggered
-            ):
+            elif now - self.stall_alarm_start_time > 1.0 and not self.stall_alarm_playing:
+                self.stall_alarm_playing = True
                 self.play_sound_sequence(
-                    ["whoopalarm", "airspeedlowarning", "airspeedlowarning"]
+                    ["whoopalarm", "airspeedlowarning", "airspeedlowarning"],
+                    finished_callback=lambda: setattr(self, "stall_alarm_playing", False),
                 )
-                self.stall_alarm_triggered = True
         else:
             self.stall_alarm_start_time = None
-            self.stall_alarm_triggered = False
+            self.stall_alarm_playing = False
 
         # Altitude warning: low altitude at high airspeed
         if (
@@ -567,29 +573,32 @@ class MainWindow(QMainWindow):
                 self.altitude_alarm_start_time = now
             elif (
                 now - self.altitude_alarm_start_time > 1.0
-                and not self.altitude_alarm_triggered
+                and not self.altitude_alarm_playing
             ):
+                self.altitude_alarm_playing = True
                 self.play_sound_sequence(
-                    ["beepalarm", "pullupwarning", "pullupwarning"]
+                    ["beepalarm", "pullupwarning", "pullupwarning"],
+                    finished_callback=lambda: setattr(
+                        self, "altitude_alarm_playing", False
+                    ),
                 )
-                self.altitude_alarm_triggered = True
         else:
             self.altitude_alarm_start_time = None
-            self.altitude_alarm_triggered = False
+            self.altitude_alarm_playing = False
 
         # Roll angle warning
         if abs(self.telemetry_roll) > self.warning_cfg.get("roll_angle", 0):
             if self.roll_alarm_start_time is None:
                 self.roll_alarm_start_time = now
-            elif (
-                now - self.roll_alarm_start_time > 1.0
-                and not self.roll_alarm_triggered
-            ):
-                self.play_sound_sequence(["downupalarm", "bankanglewarning"])
-                self.roll_alarm_triggered = True
+            elif now - self.roll_alarm_start_time > 1.0 and not self.roll_alarm_playing:
+                self.roll_alarm_playing = True
+                self.play_sound_sequence(
+                    ["downupalarm", "bankanglewarning"],
+                    finished_callback=lambda: setattr(self, "roll_alarm_playing", False),
+                )
         else:
             self.roll_alarm_start_time = None
-            self.roll_alarm_triggered = False
+            self.roll_alarm_playing = False
 
     def handle_telemetry(self, packet_type, *values) -> None:
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
