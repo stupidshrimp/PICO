@@ -13,6 +13,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
 import cv2
 import numpy as np
+from typing import Optional
 
 
 class FrameWorker(QObject):
@@ -51,7 +52,32 @@ class FrameWorker(QObject):
 
 
 class VideoFeed:
-    def __init__(self, VideoLabel: QLabel, device_index: int = 1):
+    @staticmethod
+    def detect_device_index(preferred_index: Optional[int] = None, max_devices: int = 5) -> int:
+        """Return a suitable capture device index.
+
+        If ``preferred_index`` is supplied and available it is used. Otherwise,
+        the first available index other than ``0`` (commonly the laptop's
+        embedded webcam) is returned. As a final fallback, ``0`` is used.
+        """
+
+        available = []
+        for idx in range(max_devices):
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                available.append(idx)
+                cap.release()
+
+        if preferred_index is not None and preferred_index in available:
+            return preferred_index
+
+        for idx in available:
+            if idx != 0:
+                return idx
+
+        return available[0] if available else 0
+
+    def __init__(self, VideoLabel: QLabel, device_index: Optional[int] = None):
         """Initialize the video feed.
 
         Parameters
@@ -59,12 +85,15 @@ class VideoFeed:
         VideoLabel: QLabel
             Widget where the video feed will be displayed.
         device_index: int, optional
-            Index of the capture device to open. Defaults to 1 so that the
-            laptop's integrated camera (typically index 0) is ignored.
+            Index of the capture device to open. If ``None`` the
+            :meth:`detect_device_index` helper is used which prefers external
+            devices over the laptop's integrated camera.
         """
 
         self.label = VideoLabel
-        self.device_index = device_index
+        self.device_index = (
+            device_index if device_index is not None else self.detect_device_index()
+        )
         self.cap = None  # Camera capture object
         self.timer = QTimer()
         self.text_animation = None  # Placeholder for the text animation

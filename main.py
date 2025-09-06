@@ -119,15 +119,19 @@ class MainWindow(QMainWindow):
         self.roll_alarm_start_time = None
         self.sound_players = {}
 
-        # Initialize the video feed using the configured device index
-        self.video_port = self.vtx_cfg.get("port", "")
-        video_index = self.vtx_cfg.get("device_index", 1)
+        # Initialize the video feed using a device index that prefers
+        # external capture hardware over the laptop's embedded camera.
+        preferred_index = self.vtx_cfg.get("device_index")
+        video_index = VideoFeed.detect_device_index(preferred_index)
+        print(f"Using video capture device index: {video_index}")
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
-        if validate_port("VTX", self.video_port):
-            self.video_feed.start()
-        else:
-            print("VTX video disabled due to unavailable port.")
-            self.ui.VideoLabel.setText("Not connected")
+
+        # Start the video feed immediately. The previous implementation
+        # attempted to validate a serial "port" before starting the
+        # feed, which prevented connection to USB video receivers that do
+        # not expose a serial interface. By starting unconditionally, any
+        # available capture device at ``device_index`` will be used.
+        self.video_feed.start()
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
