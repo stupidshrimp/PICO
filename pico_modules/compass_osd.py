@@ -9,7 +9,7 @@ A vertical line at the centre of the widget indicates the current heading.
 import math
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor, QFontDatabase
+from PySide6.QtGui import QPainter, QPen, QFont, QColor
 from PySide6.QtCore import Qt
 
 
@@ -18,13 +18,8 @@ class CompassOSD(QWidget):
         super().__init__(parent)
         self._yaw = 0.0
         self.setMinimumHeight(50)
-        # Use a fixed-width font so heading labels remain steady as the value
-        # changes.  Proportional fonts cause the text to shift horizontally
-        # as digits with different widths are rendered, which manifests as a
-        # distracting flicker during yaw updates.
-        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        font.setPointSize(10)
-        self._font = font
+        # Match the font used by other OSD widgets for visual consistency.
+        self._font = QFont("Arial", 10)
 
     def setYaw(self, yaw_deg: float) -> None:
         """Update the displayed yaw in degrees."""
@@ -52,8 +47,10 @@ class CompassOSD(QWidget):
         height = self.height()
 
         half_width_deg = self.width() / (2 * SCALE)
-        start_deg = int(math.floor(self._yaw - half_width_deg)) - TICK_INTERVAL
-        end_deg = int(math.ceil(self._yaw + half_width_deg)) + TICK_INTERVAL
+        start_deg = int(self._yaw - half_width_deg)
+        start_deg -= start_deg % TICK_INTERVAL
+        start_deg -= TICK_INTERVAL
+        end_deg = int(self._yaw + half_width_deg) + TICK_INTERVAL
 
         painter.setFont(self._font)
 
