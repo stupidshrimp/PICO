@@ -44,6 +44,7 @@ class CRSFPacketProcessor(QObject):
         self.serial_port = port
         self.baudrate = baudrate
         self.serial = None  # QSerialPort instance
+        self._rx_buffer = bytearray()
 
         self.connect_serial()
 
@@ -170,31 +171,53 @@ class CRSFPacketProcessor(QObject):
 
 
     def read_serial_data(self):
-        """Read available telemetry data and decode known packet types."""
-        if self.serial and self.serial.bytesAvailable() > 0:
-            try:
-                data = bytes(self.serial.readAll())
-                if len(data) < 3:
-                    return
-                packet_type = data[2]
-                # Ignore parameter settings packets
+        """Read all available telemetry data and decode every packet in the buffer."""
+        if not (self.serial and self.serial.bytesAvailable() > 0):
+            return
+
+        try:
+            # Accumulate new bytes in a persistent buffer
+            self._rx_buffer.extend(self.serial.readAll())
+
+            # Process all complete frames in the buffer
+            while True:
+                # Minimum frame is address + length + type + CRC (payload can be 1 byte)
+                if len(self._rx_buffer) < 5:
+                    break
+
+                # Synchronise to the CRSF sync byte
+                if self._rx_buffer[0] != self.CRSF_SYNC:
+                    self._rx_buffer.pop(0)
+                    continue
+
+                frame_len = self._rx_buffer[1]
+                total_len = frame_len + 2  # include sync and length fields
+                if len(self._rx_buffer) < total_len:
+                    # Wait for more data
+                    break
+
+                frame = bytes(self._rx_buffer[:total_len])
+                del self._rx_buffer[:total_len]
+
+                packet_type = frame[2]
                 if packet_type == 0x3A:
-                    return
+                    continue  # Ignore parameter settings packets
+
                 print(f"\n--- Received Telemetry Packet (Type: {packet_type:#04x}) ---")
                 if packet_type == 0x14:
-                    self.decode_link_statistics(data)
+                    self.decode_link_statistics(frame)
                 elif packet_type == 0x02:
-                    self.decode_gps(data)
+                    self.decode_gps(frame)
                 elif packet_type == 0x08:
-                    self.decode_battery(data)
+                    self.decode_battery(frame)
                 elif packet_type == 0x1E:
-                    self.decode_attitude(data)
+                    self.decode_attitude(frame)
                 elif packet_type == 0xF0:
-                    self.decode_custom(data)
+                    self.decode_custom(frame)
                 else:
-                    print("Unknown telemetry packet:", data.hex())
-            except Exception as e:
-                print(f"Error reading serial data: {e}")
+                    print("Unknown telemetry packet:", frame.hex())
+        except Exception as e:
+            print(f"Error reading serial data: {e}")
 
 
     def decode_link_statistics(self, data):
