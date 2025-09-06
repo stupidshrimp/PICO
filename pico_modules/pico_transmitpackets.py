@@ -1,7 +1,9 @@
 from enum import IntEnum
 import struct
 import logging
-from PySide6.QtCore import QObject, Signal, QIODevice
+
+from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot
+
 from PySide6.QtSerialPort import QSerialPort
 from serial.tools import list_ports
 
@@ -14,6 +16,7 @@ class CRSFPacketProcessor(QObject):
     TELEMETRY_SYNC = 0xEA  # Start byte used for telemetry frames
 
     telemetry_ready = Signal(object)
+    channel_update = Signal(list)
 
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
@@ -53,13 +56,18 @@ class CRSFPacketProcessor(QObject):
         # every packet instead of only the first one in each serial read.
         self._rx_buffer = bytearray()
 
-        self.connect_serial()
+        # Move telemetry processing off the GUI thread.  The processor lives in
+        # its own QThread where serial I/O and packet decoding occur so video
+        # rendering remains responsive even when telemetry arrives rapidly.
+        self._thread = QThread()
+        self.moveToThread(self._thread)
+        self._thread.started.connect(self.connect_serial)
+        self.channel_update.connect(self.update_and_send_packet)
+        self._thread.start()
 
+    @Slot()
     def connect_serial(self):
-        """
-        Attempts to connect to the specified serial port.
-        If the connection fails, it sets self.serial to None.
-        """
+        """Attempt to connect to the specified serial port in the worker thread."""
         try:
             self.serial = QSerialPort(self.serial_port)
             self.serial.setBaudRate(self.baudrate)
@@ -145,6 +153,7 @@ class CRSFPacketProcessor(QObject):
         result.append(self.crc8_data(result[2:]))  # Append CRC
         return result
 
+    @Slot(list)
     def update_and_send_packet(self, new_channels):
         """Update channel values and send the CRSF packet if the connection is valid."""
         if len(new_channels) > 16:
@@ -181,6 +190,7 @@ class CRSFPacketProcessor(QObject):
         return "Error"
 
 
+    @Slot()
     def read_serial_data(self):
         """Read available telemetry data and decode all received packets."""
         if not self.serial or self.serial.bytesAvailable() <= 0:
@@ -376,11 +386,12 @@ class CRSFPacketProcessor(QObject):
 
 
     def close_serial(self):
-        """
-        Close the serial port.
-        """
+        """Close the serial port and stop the worker thread."""
         if self.serial and self.serial.isOpen():
             self.serial.close()
+        if hasattr(self, "_thread") and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait()
 
     def __del__(self):
         """

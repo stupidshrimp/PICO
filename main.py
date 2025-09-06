@@ -678,7 +678,7 @@ class MainWindow(QMainWindow):
             channels = [1500] * 16
             channels[0] = int(mapped_roll)
             channels[1] = int(mapped_pitch)
-            self.crsf_processor.update_and_send_packet(channels)
+            self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
 
