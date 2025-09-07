@@ -48,7 +48,8 @@ class CRSFPacketProcessor(QObject):
         # Pad the provided channels to 16 if fewer are given
         self.channels = channels + [1500] * (16 - len(channels))
 
-        self.serial_port = port
+        port_info = QSerialPortInfo(port)
+        self.serial_port = port_info.systemLocation() or port
         self.baudrate = baudrate
         self.serial = None  # QSerialPort instance
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
@@ -136,7 +137,7 @@ class CRSFPacketProcessor(QObject):
 
         self._last_port_check = now
         try:
-            available_ports = [p.portName() for p in QSerialPortInfo.availablePorts()]
+            available_ports = [p.systemLocation() for p in QSerialPortInfo.availablePorts()]
         except Exception as exc:  # pragma: no cover - platform dependent
             logger.warning("Failed to enumerate serial ports: %s", exc)
             return True
