@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=self.crsf_cfg.get("port"),
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    use_pyserial=self.crsf_cfg.get("use_pyserial", False),
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -1007,11 +1008,18 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             try:
                 thread = self.crsf_processor._thread
-                QMetaObject.invokeMethod(
-                    self.crsf_processor, "close_serial", Qt.BlockingQueuedConnection
-                )
-                thread.quit()
-                thread.wait()
+                if getattr(self.crsf_processor, "use_pyserial", False):
+                    self.crsf_processor.close_serial()
+                    if thread.is_alive():
+                        thread.join(timeout=1)
+                else:
+                    QMetaObject.invokeMethod(
+                        self.crsf_processor,
+                        "close_serial",
+                        Qt.BlockingQueuedConnection,
+                    )
+                    thread.quit()
+                    thread.wait()
             except Exception:
                 pass
             self.crsf_processor = None
@@ -1020,6 +1028,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=port,
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    use_pyserial=self.crsf_cfg.get("use_pyserial", False),
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper

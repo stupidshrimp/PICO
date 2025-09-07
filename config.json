@@ -8,7 +8,8 @@
     "crsf": {
         "port": "COM4",
         "baudrate": 921600,
-        "packet_interval": 3
+        "packet_interval": 3,
+        "use_pyserial": false
     },
     "vtx": {
         "device_index": 1
