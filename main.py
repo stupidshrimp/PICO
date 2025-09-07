@@ -967,7 +967,7 @@ class MainWindow(QMainWindow):
         self.joystick_cfg["port"] = port
         if self.joystick:
             try:
-                self.joystick.close_serial()
+                self.joystick.close()
             except Exception:
                 pass
             self.joystick = None
@@ -1126,7 +1126,7 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.close_serial()  # Ensure serial port is closed
         if self.joystick:
-            self.joystick.close_serial()
+            self.joystick.close()
         super().closeEvent(event)
         
 if __name__ == "__main__":
