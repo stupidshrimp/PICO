@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from . import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(1600, 900)
-        MainWindow.setMinimumSize(QSize(1600, 900))
+        MainWindow.resize(1600, 1000)
+        MainWindow.setMinimumSize(QSize(1600, 1000))
         self.styleSheet = QWidget(MainWindow)
         self.styleSheet.setObjectName(u"styleSheet")
         font = QFont()
@@ -642,6 +642,13 @@ class Ui_MainWindow(object):
         self.toggleButton.setStyleSheet(u"background-image: url(:/icons/images/icons/icon_menu.png);")
 
         self.verticalLayout_4.addWidget(self.toggleButton)
+
+        self.videoSpacer = QWidget(self.toggleBox)
+        self.videoSpacer.setObjectName(u"videoSpacer")
+        self.videoSpacer.setMinimumSize(QSize(0, 100))
+        self.videoSpacer.setMaximumSize(QSize(16777215, 100))
+
+        self.verticalLayout_4.addWidget(self.videoSpacer)
 
 
         self.verticalMenuLayout.addWidget(self.toggleBox)
@@ -1406,6 +1413,7 @@ class Ui_MainWindow(object):
         self.frame.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame.setFrameShadow(QFrame.Shadow.Raised)
         self.frame.setLineWidth(0)
+        self.frame.setMinimumSize(QSize(0, 720))
         self.frame_2 = QFrame(self.frame)
         self.frame_2.setObjectName(u"frame_2")
         self.frame_2.setGeometry(QRect(-1, -1, 960, 720))
@@ -1484,6 +1492,13 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_20.addWidget(self.frame)
 
+        self.commandVideoSpacer = QWidget(self.new_page)
+        self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
+        self.commandVideoSpacer.setMinimumSize(QSize(0, 100))
+        self.commandVideoSpacer.setMaximumSize(QSize(16777215, 100))
+
+        self.verticalLayout_20.addWidget(self.commandVideoSpacer)
+
         self.stackedWidget.addWidget(self.new_page)
 
         self.verticalLayout_15.addWidget(self.stackedWidget)
@@ -1547,6 +1562,12 @@ class Ui_MainWindow(object):
         self.chk_attitude.setChecked(True)
 
         self.verticalLayout_14.addWidget(self.chk_attitude)
+
+        self.chk_compass = QCheckBox(self.topMenus)
+        self.chk_compass.setObjectName(u"chk_compass")
+        self.chk_compass.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_compass)
 
 
         self.verticalLayout_13.addWidget(self.topMenus, 0, Qt.AlignmentFlag.AlignTop)
@@ -1758,6 +1779,7 @@ class Ui_MainWindow(object):
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
+        self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"frick you", None))
         self.version.setText(QCoreApplication.translate("MainWindow", u"v1.0", None))
     # retranslateUi

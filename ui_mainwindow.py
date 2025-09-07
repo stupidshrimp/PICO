@@ -29,8 +29,8 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(1600, 900)
-        MainWindow.setMinimumSize(QSize(1600, 900))
+        MainWindow.resize(1600, 1000)
+        MainWindow.setMinimumSize(QSize(1600, 1000))
         self.styleSheet = QWidget(MainWindow)
         self.styleSheet.setObjectName(u"styleSheet")
         font = QFont()
@@ -642,6 +642,13 @@ class Ui_MainWindow(object):
         self.toggleButton.setStyleSheet(u"background-image: url(:/icons/images/icons/icon_menu.png);")
 
         self.verticalLayout_4.addWidget(self.toggleButton)
+
+        self.videoSpacer = QWidget(self.toggleBox)
+        self.videoSpacer.setObjectName(u"videoSpacer")
+        self.videoSpacer.setMinimumSize(QSize(0, 100))
+        self.videoSpacer.setMaximumSize(QSize(16777215, 100))
+
+        self.verticalLayout_4.addWidget(self.videoSpacer)
 
 
         self.verticalMenuLayout.addWidget(self.toggleBox)
@@ -1406,6 +1413,7 @@ class Ui_MainWindow(object):
         self.frame.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame.setFrameShadow(QFrame.Shadow.Raised)
         self.frame.setLineWidth(0)
+        self.frame.setMinimumSize(QSize(0, 720))
         self.frame_2 = QFrame(self.frame)
         self.frame_2.setObjectName(u"frame_2")
         self.frame_2.setGeometry(QRect(-1, -1, 960, 720))
@@ -1482,8 +1490,14 @@ class Ui_MainWindow(object):
         self.downlinkSnrLabel.setObjectName(u"downlinkSnrLabel")
         self.downlinkSnrLabel.setGeometry(QRect(190, 190, 150, 20))
 
-
         self.verticalLayout_20.addWidget(self.frame)
+
+        self.commandVideoSpacer = QWidget(self.new_page)
+        self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
+        self.commandVideoSpacer.setMinimumSize(QSize(0, 100))
+        self.commandVideoSpacer.setMaximumSize(QSize(16777215, 100))
+
+        self.verticalLayout_20.addWidget(self.commandVideoSpacer)
 
         self.stackedWidget.addWidget(self.new_page)
 
