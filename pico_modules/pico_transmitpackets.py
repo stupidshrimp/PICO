@@ -1,6 +1,7 @@
 from enum import IntEnum
 import struct
 import logging
+import time
 from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot
 
 from PySide6.QtSerialPort import QSerialPort
@@ -65,6 +66,15 @@ class CRSFPacketProcessor(QObject):
         self.channel_update.connect(self.update_and_send_packet)
         self._thread.start()
 
+        # Track the last time we queried the OS for available serial ports.
+        # Enumerating ports on Windows is relatively expensive and, on some
+        # systems, can even trigger access-violation crashes if performed in
+        # rapid succession from multiple threads.  Throttling these checks to
+        # at most once per second avoids the problematic behaviour while still
+        # providing timely detection of disconnects.
+        self._last_port_check = 0.0
+        self._port_check_interval = 1.0  # seconds
+
     @Slot()
     def connect_serial(self):
         """Attempt to connect to the specified serial port in the worker thread."""
@@ -111,7 +121,20 @@ class CRSFPacketProcessor(QObject):
         Returns:
             bool: True if the USB device is connected, False otherwise.
         """
-        available_ports = [port.device for port in list_ports.comports()]
+        # To avoid repeated calls into ``list_ports`` (which on Windows can crash
+        # if executed too frequently from secondary threads) we only enumerate
+        # ports if a minimum interval has elapsed since the previous check.
+        now = time.monotonic()
+        if now - self._last_port_check < self._port_check_interval:
+            return True
+
+        self._last_port_check = now
+        try:
+            available_ports = [port.device for port in list_ports.comports()]
+        except Exception as exc:  # pragma: no cover - platform dependent
+            logger.warning("Failed to enumerate serial ports: %s", exc)
+            return True
+
         return self.serial_port in available_ports
     
   
