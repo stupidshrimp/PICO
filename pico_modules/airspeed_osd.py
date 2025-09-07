@@ -89,14 +89,17 @@ class AirspeedOSD(QWidget):
 
         # Fade edges to reduce hard cut-off
         FADE_HEIGHT = 30
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+
         fade_top = QLinearGradient(0, 0, 0, FADE_HEIGHT)
-        fade_top.setColorAt(0, QColor(0, 0, 0, 255))
-        fade_top.setColorAt(1, QColor(0, 0, 0, 0))
+        fade_top.setColorAt(0, QColor(0, 0, 0, 0))
+        fade_top.setColorAt(1, QColor(0, 0, 0, 255))
         painter.fillRect(0, 0, self.width(), FADE_HEIGHT, fade_top)
 
         fade_bottom = QLinearGradient(0, self.height() - FADE_HEIGHT, 0, self.height())
-        fade_bottom.setColorAt(0, QColor(0, 0, 0, 0))
-        fade_bottom.setColorAt(1, QColor(0, 0, 0, 255))
+        fade_bottom.setColorAt(0, QColor(0, 0, 0, 255))
+        fade_bottom.setColorAt(1, QColor(0, 0, 0, 0))
         painter.fillRect(0, self.height() - FADE_HEIGHT, self.width(), FADE_HEIGHT, fade_bottom)
 
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()
