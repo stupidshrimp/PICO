@@ -8,12 +8,18 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-import faulthandler, sys
-faulthandler.enable()
+import faulthandler, sys, atexit
+
+# Ensure that fatal errors and unhandled exceptions are written to the log
+_logfile = open("debug.log", "a")
+faulthandler.enable(_logfile)
 
 def log_uncaught_exceptions(exctype, value, tb):
+    """Log any uncaught exceptions to debug.log."""
     logging.critical("Uncaught exception", exc_info=(exctype, value, tb))
+
 sys.excepthook = log_uncaught_exceptions
+atexit.register(_logfile.close)
 
 from PySide6.QtWidgets import (
     QApplication,
