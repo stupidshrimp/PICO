@@ -127,11 +127,12 @@ class MainWindow(QMainWindow):
         self.sound_players = {}
 
 
-        # Initialize the video feed using a device index that prefers
-        # external capture hardware over the laptop's embedded camera.
-        preferred_index = self.vtx_cfg.get("device_index")
-        video_index = VideoFeed.detect_device_index(preferred_index)
-        print(f"Using video capture device index: {video_index}")
+        # Initialize the video feed with a fixed device index of 1. This
+        # corresponds to the external VTX capture device rather than the
+        # laptop's internal webcam. If the device is unavailable the
+        # ``VideoFeed`` worker will emit a "Not connected" status.
+        video_index = 1
+        print("Using fixed video capture device index: 1")
 
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
         self.video_feed.worker.error.connect(self.handle_worker_error)
@@ -795,15 +796,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(sens_row)
         add_separator()
 
-        # VTX settings
+        # VTX settings (video receiver is treated as a camera device, so no
+        # serial port configuration is required)
         vtx_layout, self.vtx_status = add_section("VTX System Settings")
-        vtx_port_row = QHBoxLayout()
-        vtx_port_row.addWidget(QLabel("Port"))
-        self.video_port_combo = QComboBox()
-        self.video_port_combo.addItems(ports)
-        vtx_port_row.addWidget(self.video_port_combo)
-        vtx_layout.addLayout(vtx_port_row)
-
         add_separator()
 
         # Warning system settings
@@ -878,13 +873,8 @@ class MainWindow(QMainWindow):
         self.elrs_port_combo.setCurrentText(
             self.crsf_cfg.get("port", "Not connected")
         )
-        self.video_port_combo.setCurrentText(
-            self.vtx_cfg.get("port", "Not connected")
-        )
-
         # Connect signals
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
-        self.video_port_combo.currentTextChanged.connect(self.on_video_port_selected)
         self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
         self.packet_interval_edit.editingFinished.connect(self.on_packet_interval_changed)
         self.deadzone_slider.valueChanged.connect(self.on_deadzone_changed)
@@ -898,9 +888,8 @@ class MainWindow(QMainWindow):
         # Initial connection status
         self.update_connection_status(self.control_status, self.joystick is not None)
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
-        self.update_connection_status(
-            self.vtx_status, validate_port("VTX", self.video_port_combo.currentText())
-        )
+        # Video connection status is derived from the video feed itself
+        self.update_connection_status(self.vtx_status, False)
         # Ensure the port lists reflect currently connected devices
         self.update_port_lists()
 
@@ -922,7 +911,7 @@ class MainWindow(QMainWindow):
 
         refresh(self.control_port_combo, self.on_control_port_selected)
         refresh(self.elrs_port_combo, self.on_elrs_port_selected)
-        refresh(self.video_port_combo, self.on_video_port_selected)
+        # Video receiver uses a fixed device index; no port list to refresh
 
     def on_control_port_selected(self, port: str):
         """Handle selection of control system port."""
@@ -944,20 +933,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         self.update_connection_status(self.control_status, self.joystick is not None)
-        save_config(self.config)
-
-    def on_video_port_selected(self, port: str):
-        """Handle selection of video transmitter port."""
-        self.video_port = port
-        self.vtx_cfg["port"] = port
-        valid = validate_port("VTX", port)
-        self.update_connection_status(self.vtx_status, valid)
-        # Always stop the current feed before switching
-        self.video_feed.stop()
-        if valid:
-            self.video_feed.start()
-        else:
-            self.ui.VideoLabel.setText("Not connected")
         save_config(self.config)
 
     def on_elrs_port_selected(self, port: str):
