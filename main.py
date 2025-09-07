@@ -1006,7 +1006,12 @@ class MainWindow(QMainWindow):
         self.crsf_cfg["port"] = port
         if self.crsf_processor:
             try:
-                self.crsf_processor.close_serial()
+                thread = self.crsf_processor._thread
+                QMetaObject.invokeMethod(
+                    self.crsf_processor, "close_serial", Qt.BlockingQueuedConnection
+                )
+                thread.quit()
+                thread.wait()
             except Exception:
                 pass
             self.crsf_processor = None
@@ -1139,9 +1144,14 @@ class MainWindow(QMainWindow):
         """
         Releases resources when the window is closed.
         """
-        self.video_feed.stop()
+        self.video_feed.shutdown()
         if self.crsf_processor:
-            self.crsf_processor.close_serial()  # Ensure serial port is closed
+            thread = self.crsf_processor._thread
+            QMetaObject.invokeMethod(
+                self.crsf_processor, "close_serial", Qt.BlockingQueuedConnection
+            )
+            thread.quit()
+            thread.wait()
         if self.joystick:
             self.joystick.close()
         super().closeEvent(event)

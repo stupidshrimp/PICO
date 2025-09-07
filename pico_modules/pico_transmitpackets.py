@@ -2,7 +2,7 @@ from enum import IntEnum
 import struct
 import logging
 import time
-from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot
+from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot, QMetaObject, Qt
 
 from PySide6.QtSerialPort import QSerialPort
 from serial.tools import list_ports
@@ -87,11 +87,7 @@ class CRSFPacketProcessor(QObject):
             self.serial.setFlowControl(QSerialPort.NoFlowControl)
             self.serial.setReadBufferSize(4096)
             self.serial.readyRead.connect(self.read_serial_data)
-            self.serial.errorOccurred.connect(
-                lambda err: logger.error(
-                    "Serial error: %s (%s)", err, self.serial.errorString()
-                )
-            )
+            self.serial.errorOccurred.connect(self._handle_serial_error)
             if self.serial.open(QIODevice.ReadWrite):
                 print(
                     f"Connected to {self.serial_port} at {self.baudrate} baud."
@@ -107,6 +103,14 @@ class CRSFPacketProcessor(QObject):
             self.error.emit(f"Failed to open serial port: {e}")
             self.serial = None
 
+    @Slot(QSerialPort.SerialPortError)
+    def _handle_serial_error(self, err):
+        """Log serial port errors, ignoring harmless NoError signals."""
+        if err == QSerialPort.SerialPortError.NoError:
+            return
+        logger.error("Serial error: %s (%s)", err, self.serial.errorString())
+
+    @Slot(result=bool)
     def is_connected(self):
         """
         Checks if the serial connection is active and open.
@@ -114,7 +118,8 @@ class CRSFPacketProcessor(QObject):
             bool: True if the serial connection is open, False otherwise.
         """
         return self.serial and self.serial.isOpen()
-              
+
+    @Slot(result=bool)
     def check_usb_connection(self):
         """
         Checks if the specified USB device is connected by scanning available ports.
@@ -433,22 +438,26 @@ class CRSFPacketProcessor(QObject):
             logger.exception("Failed to parse custom telemetry packet")
 
 
+    @Slot()
     def close_serial(self):
-        """Close the serial port and stop the worker thread."""
+        """Close the serial port in the worker thread."""
         try:
             if self.serial:
-                self.serial.readyRead.disconnect(self.read_serial_data)
+                try:
+                    self.serial.readyRead.disconnect(self.read_serial_data)
+                except Exception:
+                    pass
+                if self.serial.isOpen():
+                    self.serial.close()
+        finally:
+            self.serial = None
+
+    def __del__(self):  # pragma: no cover - defensive finaliser
+        try:
+            QMetaObject.invokeMethod(self, "close_serial", Qt.QueuedConnection)
+            if hasattr(self, "_thread") and self._thread.isRunning():
+                self._thread.quit()
+                self._thread.wait()
         except Exception:
             pass
-        if self.serial and self.serial.isOpen():
-            self.serial.close()
-        if hasattr(self, "_thread") and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
-
-    def __del__(self):
-        """
-        Ensure the serial port is closed on object deletion.
-        """
-        self.close_serial()
 

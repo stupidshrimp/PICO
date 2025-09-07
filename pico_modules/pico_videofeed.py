@@ -185,6 +185,13 @@ class VideoFeed:
         QMetaObject.invokeMethod(self.worker, "stop", Qt.QueuedConnection)
         self.camera_check_timer.stop()
 
+    def shutdown(self):
+        """Completely stop the worker thread and release resources."""
+        self.stop()
+        if self.worker_thread.isRunning():
+            self.worker_thread.quit()
+            self.worker_thread.wait()
+
     @Slot(QImage)
     def update_frame(self, image: QImage):
         """Updates the video feed on the QLabel with a processed frame."""
