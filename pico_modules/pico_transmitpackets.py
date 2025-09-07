@@ -2,11 +2,9 @@ from enum import IntEnum
 import struct
 import logging
 import time
-import threading
-
 from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot, QMetaObject, Qt
+
 from PySide6.QtSerialPort import QSerialPort
-import serial
 from serial.tools import list_ports
 
 logger = logging.getLogger(__name__)
@@ -24,7 +22,7 @@ class CRSFPacketProcessor(QObject):
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
 
-    def __init__(self, port, baudrate=921600, channels=None, use_pyserial=False):
+    def __init__(self, port, baudrate=921600, channels=None):
         """Initialize the CRSFPacketProcessor.
 
         Parameters
@@ -53,30 +51,20 @@ class CRSFPacketProcessor(QObject):
 
         self.serial_port = port
         self.baudrate = baudrate
-        self.use_pyserial = use_pyserial
-        self.serial = None
+        self.serial = None  # QSerialPort instance
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
         # every packet instead of only the first one in each serial read.
         self._rx_buffer = bytearray()
 
-        # Channel updates trigger packet transmission in both modes.
+        # Move telemetry processing off the GUI thread.  The processor lives in
+        # its own QThread where serial I/O and packet decoding occur so video
+        # rendering remains responsive even when telemetry arrives rapidly.
+        self._thread = QThread()
+        self.moveToThread(self._thread)
+        self._thread.started.connect(self.connect_serial)
         self.channel_update.connect(self.update_and_send_packet)
-
-        if self.use_pyserial:
-            # Run serial I/O in a pure Python thread when using pyserial.
-            self._stop_event = threading.Event()
-            self._thread = threading.Thread(target=self._serial_worker, daemon=True)
-            self._thread.start()
-        else:
-            # Move telemetry processing off the GUI thread.  The processor lives
-            # in its own QThread where serial I/O and packet decoding occur so
-            # video rendering remains responsive even when telemetry arrives
-            # rapidly.
-            self._thread = QThread()
-            self.moveToThread(self._thread)
-            self._thread.started.connect(self.connect_serial)
-            self._thread.start()
+        self._thread.start()
 
         # Track the last time we queried the OS for available serial ports.
         # Enumerating ports on Windows is relatively expensive and, on some
@@ -90,9 +78,6 @@ class CRSFPacketProcessor(QObject):
     @Slot()
     def connect_serial(self):
         """Attempt to connect to the specified serial port in the worker thread."""
-        if self.use_pyserial:
-            # pyserial connections are handled in the Python worker thread.
-            return
         try:
             self.serial = QSerialPort(self.serial_port)
             self.serial.setBaudRate(self.baudrate)
@@ -125,40 +110,6 @@ class CRSFPacketProcessor(QObject):
             return
         logger.error("Serial error: %s (%s)", err, self.serial.errorString())
 
-    def _serial_worker(self):
-        """Background thread handling pyserial communication."""
-        while not getattr(self, "_stop_event", threading.Event()).is_set():
-            if not self.serial or not self.serial.is_open:
-                try:
-                    self.serial = serial.Serial(
-                        self.serial_port, self.baudrate, timeout=0
-                    )
-                    print(
-                        f"Connected to {self.serial_port} at {self.baudrate} baud."
-                    )
-                except Exception as e:  # pragma: no cover - hardware dependent
-                    logger.exception("Failed to open serial port")
-                    self.error.emit(f"Failed to open serial port: {e}")
-                    time.sleep(1)
-                    continue
-
-            try:
-                new_data = self.serial.read(self.serial.in_waiting or 1)
-                if new_data:
-                    self._rx_buffer.extend(new_data)
-                    self._process_rx_buffer()
-            except Exception as e:  # pragma: no cover - hardware dependent
-                logger.exception("Error reading serial data")
-                self.error.emit(f"Error reading serial data: {e}")
-                try:
-                    self.serial.close()
-                except Exception:
-                    pass
-                self.serial = None
-                time.sleep(1)
-
-            time.sleep(0.01)
-
     @Slot(result=bool)
     def is_connected(self):
         """
@@ -166,9 +117,7 @@ class CRSFPacketProcessor(QObject):
         Returns:
             bool: True if the serial connection is open, False otherwise.
         """
-        if self.use_pyserial:
-            return bool(self.serial and self.serial.is_open)
-        return bool(self.serial and self.serial.isOpen())
+        return self.serial and self.serial.isOpen()
 
     @Slot(result=bool)
     def check_usb_connection(self):
@@ -285,94 +234,95 @@ class CRSFPacketProcessor(QObject):
     @Slot()
     def read_serial_data(self):
         """Read available telemetry data and decode all received packets."""
-        if self.use_pyserial or not self.serial or self.serial.bytesAvailable() <= 0:
+        if not self.serial or self.serial.bytesAvailable() <= 0:
             return
 
         try:
             # Read all currently available bytes and append them to the buffer.
+            # Keeping the buffering logic centralised allows for easy decoding
+            # without producing verbose serial output.
             new_data = bytes(self.serial.readAll())
             if new_data:
                 self._rx_buffer.extend(new_data)
-                self._process_rx_buffer()
+                # Prevent unbounded growth if we fall behind
+                MAX_BUF = 8192
+                if len(self._rx_buffer) > MAX_BUF:
+                    logger.warning(
+                        "RX buffer overflow (%d). Dropping to resync.",
+                        len(self._rx_buffer),
+                    )
+                    self._rx_buffer = self._rx_buffer[-512:]
+
+            # Process packets while a complete frame is present in the buffer
+            while True:
+                # Need at least sync, length and type
+                if len(self._rx_buffer) < 3:
+                    break
+
+                # Discard bytes until a valid device address is found.  CRSF
+                # telemetry frames use 0xEA while outbound channel frames use
+                # 0xC8.  Accept either so we can decode telemetry regardless of
+                # source.
+                if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
+                    del self._rx_buffer[0]
+                    continue
+
+                length = self._rx_buffer[1]
+
+                # Drop frames with impossible lengths (need at least type+crc = 2)
+                # and cap the maximum size to 64 bytes.
+                if length < 2 or length > 64:
+                    del self._rx_buffer[0]
+                    continue
+
+                frame_end = length + 2  # sync + length + payload + crc
+
+
+                # Wait for the rest of the frame if it's not all here yet
+                if len(self._rx_buffer) < frame_end:
+                    break
+
+                # Verify the CRC before decoding.  If it doesn't match we
+                # discard only the sync byte and try again, which helps us
+                # resynchronise with the stream when bytes are dropped.
+                if (
+                    self.crc8_data(self._rx_buffer[2:frame_end - 1])
+                    != self._rx_buffer[frame_end - 1]
+                ):
+                    # CRC mismatch means the packet is corrupt and cannot be parsed
+                    del self._rx_buffer[0]
+                    continue
+
+
+                # Extract complete packet and remove from buffer
+                packet = bytes(self._rx_buffer[:frame_end])
+                del self._rx_buffer[:frame_end]
+
+                packet_type = packet[2]
+
+                # Ignore parameter setting packets (0x3A)
+                if packet_type == 0x3A:
+                    continue
+
+                # Telemetry packets are processed without verbose debug logging
+
+                if packet_type == 0x14:
+                    self.decode_link_statistics(packet)
+                elif packet_type == 0x02:
+                    self.decode_gps(packet)
+                elif packet_type == 0x08:
+                    self.decode_battery(packet)
+                elif packet_type == 0x1E:
+                    self.decode_attitude(packet)
+                elif packet_type == 0xF0:
+                    self.decode_custom(packet)
+                else:
+                    # Unknown packet type encountered
+                    pass
+
         except Exception as e:
             logger.exception("Error reading serial data")
             self.error.emit(f"Error reading serial data: {e}")
-
-    def _process_rx_buffer(self):
-        """Decode any complete packets stored in the RX buffer."""
-        # Prevent unbounded growth if we fall behind
-        MAX_BUF = 8192
-        if len(self._rx_buffer) > MAX_BUF:
-            logger.warning(
-                "RX buffer overflow (%d). Dropping to resync.",
-                len(self._rx_buffer),
-            )
-            self._rx_buffer = self._rx_buffer[-512:]
-
-        # Process packets while a complete frame is present in the buffer
-        while True:
-            # Need at least sync, length and type
-            if len(self._rx_buffer) < 3:
-                break
-
-            # Discard bytes until a valid device address is found.  CRSF
-            # telemetry frames use 0xEA while outbound channel frames use
-            # 0xC8.  Accept either so we can decode telemetry regardless of
-            # source.
-            if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
-                del self._rx_buffer[0]
-                continue
-
-            length = self._rx_buffer[1]
-
-            # Drop frames with impossible lengths (need at least type+crc = 2)
-            # and cap the maximum size to 64 bytes.
-            if length < 2 or length > 64:
-                del self._rx_buffer[0]
-                continue
-
-            frame_end = length + 2  # sync + length + payload + crc
-
-            # Wait for the rest of the frame if it's not all here yet
-            if len(self._rx_buffer) < frame_end:
-                break
-
-            # Verify the CRC before decoding.  If it doesn't match we
-            # discard only the sync byte and try again, which helps us
-            # resynchronise with the stream when bytes are dropped.
-            if (
-                self.crc8_data(self._rx_buffer[2:frame_end - 1])
-                != self._rx_buffer[frame_end - 1]
-            ):
-                # CRC mismatch means the packet is corrupt and cannot be parsed
-                del self._rx_buffer[0]
-                continue
-
-            # Extract complete packet and remove from buffer
-            packet = bytes(self._rx_buffer[:frame_end])
-            del self._rx_buffer[:frame_end]
-
-            packet_type = packet[2]
-
-            # Ignore parameter setting packets (0x3A)
-            if packet_type == 0x3A:
-                continue
-
-            # Telemetry packets are processed without verbose debug logging
-
-            if packet_type == 0x14:
-                self.decode_link_statistics(packet)
-            elif packet_type == 0x02:
-                self.decode_gps(packet)
-            elif packet_type == 0x08:
-                self.decode_battery(packet)
-            elif packet_type == 0x1E:
-                self.decode_attitude(packet)
-            elif packet_type == 0xF0:
-                self.decode_custom(packet)
-            else:
-                # Unknown packet type encountered
-                pass
 
 
     def decode_link_statistics(self, data):
@@ -497,30 +447,17 @@ class CRSFPacketProcessor(QObject):
                     self.serial.readyRead.disconnect(self.read_serial_data)
                 except Exception:
                     pass
-                try:
-                    is_open = (
-                        self.serial.is_open if self.use_pyserial else self.serial.isOpen()
-                    )
-                except Exception:
-                    is_open = False
-                if is_open:
+                if self.serial.isOpen():
                     self.serial.close()
         finally:
             self.serial = None
-            if self.use_pyserial and hasattr(self, "_stop_event"):
-                self._stop_event.set()
 
     def __del__(self):  # pragma: no cover - defensive finaliser
         try:
-            if self.use_pyserial:
-                self.close_serial()
-                if hasattr(self, "_thread") and self._thread.is_alive():
-                    self._thread.join(timeout=1)
-            else:
-                QMetaObject.invokeMethod(self, "close_serial", Qt.QueuedConnection)
-                if hasattr(self, "_thread") and self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait()
+            QMetaObject.invokeMethod(self, "close_serial", Qt.QueuedConnection)
+            if hasattr(self, "_thread") and self._thread.isRunning():
+                self._thread.quit()
+                self._thread.wait()
         except Exception:
             pass
 
