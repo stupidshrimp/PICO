@@ -69,7 +69,9 @@ class AirspeedOSD(QWidget):
             y = center_y + (self._airspeed - spd) * SCALE
 
             distance_to_edge = min(y, self.height() - y)
-            if distance_to_edge < FADE_HEIGHT:
+            if distance_to_edge <= 0:
+                alpha = 0.0
+            elif distance_to_edge < FADE_HEIGHT:
                 alpha = distance_to_edge / FADE_HEIGHT
             else:
                 alpha = 1.0
