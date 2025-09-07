@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QPushButton,
+    QMessageBox,
 )
 from PySide6.QtCore import Qt, QTimer, QMetaObject, Slot
 from PySide6.QtGui import QCursor
@@ -295,7 +296,8 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def handle_worker_error(self, message: str):
         """Handle errors emitted from worker threads."""
-        print(f"Worker error: {message}")
+        logging.error("Worker error: %s", message)
+        QMessageBox.critical(self, "Worker Error", message)
 
     def setup_data_page(self):
         """Create the Data tab with live telemetry graphs."""
