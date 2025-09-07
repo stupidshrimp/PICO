@@ -83,6 +83,8 @@ class FrameWorker(QObject):
         try:
             if not self.cap or not self.cap.isOpened():
                 self.error.emit("Not connected")
+                if self._timer and self._timer.isActive():
+                    self._timer.stop()
                 return
 
             ret, frame = self.cap.read()

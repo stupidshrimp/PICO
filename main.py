@@ -125,6 +125,10 @@ class MainWindow(QMainWindow):
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
 
+        # Track last worker error to prevent dialog spam
+        self._last_error_message = None
+        self._last_error_time = 0
+
         # Warning system state
         self.stall_alarm_playing = False
         self.altitude_alarm_playing = False
@@ -297,7 +301,14 @@ class MainWindow(QMainWindow):
     def handle_worker_error(self, message: str):
         """Handle errors emitted from worker threads."""
         logging.error("Worker error: %s", message)
-        QMessageBox.critical(self, "Worker Error", message)
+        now = time.time()
+        if (
+            message != self._last_error_message
+            or now - self._last_error_time > 2
+        ):
+            self._last_error_message = message
+            self._last_error_time = now
+            QMessageBox.critical(self, "Worker Error", message)
 
     def setup_data_page(self):
         """Create the Data tab with live telemetry graphs."""
