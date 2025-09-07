@@ -8,7 +8,7 @@ airspeed value in mph; here we only provide the visual representation.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon, QLinearGradient
+from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
 
 
@@ -19,6 +19,8 @@ class AirspeedOSD(QWidget):
         self._initialized = False
         self._smoothing = 0.2  # Weight for new samples
         self.setMinimumWidth(80)
+        # Allow the widget to blend with anything behind it
+        self.setAttribute(Qt.WA_TranslucentBackground)
 
     def setAirspeed(self, airspeed: float) -> None:
         """Update the displayed airspeed.
@@ -58,13 +60,23 @@ class AirspeedOSD(QWidget):
         ) - TICK_INTERVAL
         end_spd = int(self._airspeed + half_height_units) + TICK_INTERVAL
 
-        pen = QPen(Qt.green, 2)
-        painter.setPen(pen)
         painter.setFont(QFont("Arial", 10))
 
-        # Draw tick marks; label only on major ticks
+        FADE_HEIGHT = 30  # Pixels from top/bottom edge to start fading
+
+        # Draw tick marks and labels with alpha fade near the edges
         for spd in range(start_spd, end_spd + TICK_INTERVAL, TICK_INTERVAL):
             y = center_y + (self._airspeed - spd) * SCALE
+
+            distance_to_edge = min(y, self.height() - y)
+            if distance_to_edge < FADE_HEIGHT:
+                alpha = distance_to_edge / FADE_HEIGHT
+            else:
+                alpha = 1.0
+            color = QColor(0, 255, 0)
+            color.setAlphaF(alpha)
+            pen = QPen(color, 2)
+            painter.setPen(pen)
 
             if spd % MAJOR_INTERVAL == 0:
                 painter.drawLine(0, y, MAJOR_LEN, y)
@@ -73,6 +85,7 @@ class AirspeedOSD(QWidget):
                 painter.drawLine(0, y, MINOR_LEN, y)
 
         # Draw centre readout box
+        painter.setPen(QPen(Qt.green, 2))
         box_top = center_y - BOX_HEIGHT / 2
         painter.fillRect(0, box_top, self.width(), BOX_HEIGHT, QColor(0, 0, 0, 180))
         painter.drawRect(0, box_top, self.width() - 1, BOX_HEIGHT - 1)
@@ -80,6 +93,7 @@ class AirspeedOSD(QWidget):
 
         # Draw pointer triangle to right of readout box
         painter.setBrush(Qt.green)
+        painter.setPen(QPen(Qt.green, 2))
         pointer = QPolygon([
             QPoint(self.width(), center_y),
             QPoint(self.width() - 15, center_y - 10),
@@ -87,19 +101,4 @@ class AirspeedOSD(QWidget):
         ])
         painter.drawPolygon(pointer)
 
-        # Fade edges to reduce hard cut-off
-        FADE_HEIGHT = 30
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-
-        fade_top = QLinearGradient(0, 0, 0, FADE_HEIGHT)
-        fade_top.setColorAt(0, QColor(0, 0, 0, 0))
-        fade_top.setColorAt(1, QColor(0, 0, 0, 255))
-        painter.fillRect(0, 0, self.width(), FADE_HEIGHT, fade_top)
-
-        fade_bottom = QLinearGradient(0, self.height() - FADE_HEIGHT, 0, self.height())
-        fade_bottom.setColorAt(0, QColor(0, 0, 0, 255))
-        fade_bottom.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.fillRect(0, self.height() - FADE_HEIGHT, self.width(), FADE_HEIGHT, fade_bottom)
-
-        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()

@@ -9,7 +9,7 @@ altitude value; here we only provide the visual representation.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon, QLinearGradient
+from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
 
 
@@ -20,6 +20,8 @@ class AltitudeOSD(QWidget):
         self._initialized = False
         self._smoothing = 0.2  # Weight for new samples
         self.setMinimumWidth(80)
+        # Allow the widget to blend with anything behind it
+        self.setAttribute(Qt.WA_TranslucentBackground)
 
     def setAltitude(self, altitude: float) -> None:
         """Update the displayed altitude.
@@ -60,13 +62,24 @@ class AltitudeOSD(QWidget):
         ) - TICK_INTERVAL
         end_alt = int(self._altitude + half_height_units) + TICK_INTERVAL
 
-        pen = QPen(Qt.green, 2)
-        painter.setPen(pen)
         painter.setFont(QFont("Arial", 10))
 
-        # Draw tick marks and labels
+        FADE_HEIGHT = 30  # Pixels from top/bottom edge to start fading
+
+        # Draw tick marks and labels with alpha fade near the edges
         for alt in range(start_alt, end_alt + TICK_INTERVAL, TICK_INTERVAL):
             y = center_y + (self._altitude - alt) * SCALE
+
+            distance_to_edge = min(y, self.height() - y)
+            if distance_to_edge < FADE_HEIGHT:
+                alpha = distance_to_edge / FADE_HEIGHT
+            else:
+                alpha = 1.0
+            color = QColor(0, 255, 0)
+            color.setAlphaF(alpha)
+            pen = QPen(color, 2)
+            painter.setPen(pen)
+
             if (alt // TICK_INTERVAL) % TICKS_PER_LABEL == 0:
                 tick_len = MAJOR_LEN
                 painter.drawLine(self.width() - tick_len, y, self.width(), y)
@@ -78,6 +91,7 @@ class AltitudeOSD(QWidget):
                 painter.drawLine(self.width() - tick_len, y, self.width(), y)
 
         # Draw centre readout box
+        painter.setPen(QPen(Qt.green, 2))
         box_top = center_y - BOX_HEIGHT / 2
         painter.fillRect(0, box_top, self.width(), BOX_HEIGHT, QColor(0, 0, 0, 180))
         painter.drawRect(0, box_top, self.width() - 1, BOX_HEIGHT - 1)
@@ -85,6 +99,7 @@ class AltitudeOSD(QWidget):
 
         # Draw pointer triangle to left of readout box
         painter.setBrush(Qt.green)
+        painter.setPen(QPen(Qt.green, 2))
         pointer = QPolygon([
             QPoint(0, center_y),
             QPoint(15, center_y - 10),
@@ -92,19 +107,4 @@ class AltitudeOSD(QWidget):
         ])
         painter.drawPolygon(pointer)
 
-        # Fade edges to reduce hard cut-off
-        FADE_HEIGHT = 30
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-
-        fade_top = QLinearGradient(0, 0, 0, FADE_HEIGHT)
-        fade_top.setColorAt(0, QColor(0, 0, 0, 0))
-        fade_top.setColorAt(1, QColor(0, 0, 0, 255))
-        painter.fillRect(0, 0, self.width(), FADE_HEIGHT, fade_top)
-
-        fade_bottom = QLinearGradient(0, self.height() - FADE_HEIGHT, 0, self.height())
-        fade_bottom.setColorAt(0, QColor(0, 0, 0, 255))
-        fade_bottom.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.fillRect(0, self.height() - FADE_HEIGHT, self.width(), FADE_HEIGHT, fade_bottom)
-
-        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()
