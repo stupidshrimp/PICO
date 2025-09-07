@@ -50,7 +50,6 @@ from pico_modules.pico_videofeed import VideoFeed
 from pico_modules.pico_joystick2state import JoystickRawHandler
 from pico_modules.pico_transmitpackets import CRSFPacketProcessor
 
-from pico_modules.labelsmanager import LabelManager
 
 # Import the custom OSD module
 from pico_modules.rollpitch_osd import RollPitchOSD
@@ -206,15 +205,19 @@ class MainWindow(QMainWindow):
         # Setup configuration page for COM port selections
         self.setup_configuration_page()
 
-        # Create a dictionary of QLabel references for LabelManager
-        labels = {
-            "pitch": self.ui.PitchLabel1,
-            "roll": self.ui.RollLabel1,
-            "yaw": self.ui.YawLabel1,
-        }
+        # Control input indicator widgets
+        self.roll_indicator = AxisIndicator(Qt.Horizontal, self.ui.roll_input)
+        self.roll_indicator.resize(self.ui.roll_input.size())
+        self.roll_indicator.show()
 
-        # Initialize the LabelManager with the labels
-        self.label_manager = LabelManager(labels)
+        self.pitch_indicator = AxisIndicator(Qt.Vertical, self.ui.pitch_input)
+        self.pitch_indicator.resize(self.ui.pitch_input.size())
+        self.pitch_indicator.show()
+
+        self.yaw_indicator = AxisIndicator(Qt.Horizontal, self.ui.yaw_input)
+        self.yaw_indicator.resize(self.ui.yaw_input.size())
+        self.yaw_indicator.show()
+        self.yaw_indicator.setValue(0.0)
 
         # Variables updated from telemetry packets
         self.telemetry_pitch = None
@@ -478,17 +481,13 @@ class MainWindow(QMainWindow):
                 pass
 
         if joy_pitch is None:
-            self.label_manager.update_labels(
-                {"pitch": "N/A", "roll": "N/A", "yaw": "N/A"}
-            )
+            self.roll_indicator.setValue(0.0)
+            self.pitch_indicator.setValue(0.0)
         else:
-            self.label_manager.update_labels(
-                {
-                    "pitch": f"{joy_pitch}",
-                    "roll": f"{joy_roll}",
-                    "yaw": "N/A",
-                }
-            )
+            roll_norm = (joy_roll - 512) / 512
+            pitch_norm = (joy_pitch - 512) / 512
+            self.roll_indicator.setValue(roll_norm)
+            self.pitch_indicator.setValue(pitch_norm)
 
         # ------------------------------------------------------------------
         # Telemetry still drives the OSD widgets
