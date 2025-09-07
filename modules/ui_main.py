@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from . import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(1600, 900)
-        MainWindow.setMinimumSize(QSize(1600, 900))
+        MainWindow.resize(1600, 1000)
+        MainWindow.setMinimumSize(QSize(1600, 1000))
         self.styleSheet = QWidget(MainWindow)
         self.styleSheet.setObjectName(u"styleSheet")
         font = QFont()
@@ -1406,15 +1406,20 @@ class Ui_MainWindow(object):
         self.frame.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame.setFrameShadow(QFrame.Shadow.Raised)
         self.frame.setLineWidth(0)
+        self.frame.setMinimumSize(QSize(0, 820))
         self.frame_2 = QFrame(self.frame)
         self.frame_2.setObjectName(u"frame_2")
-        self.frame_2.setGeometry(QRect(-1, -1, 960, 720))
+        self.frame_2.setGeometry(QRect(-1, -1, 960, 820))
         self.frame_2.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_2.setFrameShadow(QFrame.Shadow.Raised)
         self.VideoLabel = QLabel(self.frame_2)
         self.VideoLabel.setObjectName(u"VideoLabel")
         self.VideoLabel.setGeometry(QRect(0, 0, 960, 720))
         self.VideoLabel.setStyleSheet(u"background-color: black;")
+        self.videoSpacer = QWidget(self.frame_2)
+        self.videoSpacer.setObjectName(u"videoSpacer")
+        self.videoSpacer.setGeometry(QRect(0, 720, 960, 100))
+        self.videoSpacer.setStyleSheet(u"background-color: black;")
         self.airspeedosd = QWidget(self.frame_2)
         self.airspeedosd.setObjectName(u"airspeedosd")
         self.airspeedosd.setGeometry(QRect(30, 120, 75, 300))
@@ -1547,6 +1552,12 @@ class Ui_MainWindow(object):
         self.chk_attitude.setChecked(True)
 
         self.verticalLayout_14.addWidget(self.chk_attitude)
+
+        self.chk_compass = QCheckBox(self.topMenus)
+        self.chk_compass.setObjectName(u"chk_compass")
+        self.chk_compass.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_compass)
 
 
         self.verticalLayout_13.addWidget(self.topMenus, 0, Qt.AlignmentFlag.AlignTop)
@@ -1758,6 +1769,7 @@ class Ui_MainWindow(object):
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
+        self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"frick you", None))
         self.version.setText(QCoreApplication.translate("MainWindow", u"v1.0", None))
     # retranslateUi
