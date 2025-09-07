@@ -125,7 +125,15 @@ class MainWindow(QMainWindow):
         self.altitude_alarm_start_time = None
         self.roll_alarm_start_time = None
         self.sound_players = {}
+        self.last_attitude_packet_time = None
+        self.attitude_first_received_time = None
+        self.attitude_connected = False
 
+        self.attitude_monitor_timer = QTimer(self)
+        self.attitude_monitor_timer.timeout.connect(
+            self.check_attitude_connection
+        )
+        self.attitude_monitor_timer.start(200)
 
         # Initialize the video feed by scanning for an available capture
         # device. ``detect_device_index`` prefers the external VTX at index 1
@@ -561,6 +569,24 @@ class MainWindow(QMainWindow):
         player.play()
         self.sound_players[name] = (player, output)
 
+    def check_attitude_connection(self):
+        """Monitor attitude packet reception and play connection sounds."""
+        now = time.monotonic()
+        if self.attitude_connected:
+            if (
+                self.last_attitude_packet_time is None
+                or now - self.last_attitude_packet_time > 1.0
+            ):
+                self.attitude_connected = False
+                self.play_sound_sequence(["disconnectedalarm"])
+                self.attitude_first_received_time = None
+        else:
+            if (
+                self.last_attitude_packet_time is None
+                or now - self.last_attitude_packet_time > 1.0
+            ):
+                self.attitude_first_received_time = None
+
     def check_warnings(self):
         """Evaluate telemetry values against configured thresholds and play alarms."""
         if (
@@ -635,7 +661,19 @@ class MainWindow(QMainWindow):
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
         print(f"Telemetry {packet_type}: {values}")
         self.packet_count += 1
+        now = time.monotonic()
         if packet_type == "attitude":
+            self.last_attitude_packet_time = now
+            if not self.attitude_connected:
+                if self.attitude_first_received_time is None:
+                    self.attitude_first_received_time = now
+                elif now - self.attitude_first_received_time >= 1.0:
+                    self.attitude_connected = True
+                    self.attitude_first_received_time = None
+                    self.play_sound_sequence(["connectedalarm"])
+            else:
+                self.attitude_first_received_time = None
+
             pitch, roll, yaw = values
             self.telemetry_pitch = pitch
             self.telemetry_roll = roll
