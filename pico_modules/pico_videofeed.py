@@ -188,14 +188,12 @@ class VideoFeed:
         """Updates the video feed on the QLabel with a processed frame."""
         if image is not None:
             self.remove_opacity_effect()  # Ensure no fading effect on video feed
-            # Only scale the frame down if it exceeds the QLabel's dimensions.
-            # Avoiding upscaling prevents the video from appearing artificially
-            # zoomed and preserves the original quality of the feed.
-            if image.width() > self.label.width() or image.height() > self.label.height():
-                image = image.scaled(
-                    self.label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-            self.label.setPixmap(QPixmap.fromImage(image))
+            scaled = image.scaled(
+                self.label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            # Scale the frame to the QLabel's dimensions to avoid cropping that
+            # makes the video appear zoomed in.
+            self.label.setPixmap(QPixmap.fromImage(scaled))
 
     @Slot(str)
     def _handle_worker_error(self, message: str):
