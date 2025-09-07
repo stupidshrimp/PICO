@@ -49,8 +49,9 @@ class FrameWorker(QObject):
             self.cap = None
 
         if self.cap and self.cap.isOpened():
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+            # Avoid forcing a fixed resolution which could crop or zoom the
+            # incoming video.  Using the device's default resolution preserves
+            # the original field of view.
             self.start_timer()
         else:
             self.cap = None
@@ -91,24 +92,11 @@ class FrameWorker(QObject):
 
             frame = self.video_feed.deinterlace(frame)
 
-            h, w, _ = frame.shape
-
-            # Scale the frame to fit a 1280x960 canvas while preserving the
-            # original aspect ratio. This avoids the previous 2% crop that
-            # unintentionally zoomed the image.
-            target_w, target_h = 1280, 960
-            scale = min(target_w / w, target_h / h)
-            new_w, new_h = int(w * scale), int(h * scale)
-
-            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-            # Center the resized frame on a black canvas so the output size
-            # remains constant without distorting the aspect ratio.
-            canvas = np.zeros((target_h, target_w, 3), dtype=frame.dtype)
-            x_off = (target_w - new_w) // 2
-            y_off = (target_h - new_h) // 2
-            canvas[y_off : y_off + new_h, x_off : x_off + new_w] = frame
-            frame = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            # Convert the frame without imposing a fixed output size so the
+            # full field of view from the capture device is preserved.  Any
+            # necessary scaling to fit the display widget is handled in
+            # ``update_frame``.
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame.shape
             bytes_per_line = ch * w
             qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
