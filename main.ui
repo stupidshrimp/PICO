@@ -2754,7 +2754,9 @@ background-repeat: no-repeat;</string>
                          <property name="minimumSize">
                           <size>
                            <width>0</width>
-                           <height>940</height>
+
+                           <height>720</height>
+
                           </size>
                          </property>
                          <widget class="QFrame" name="frame_2">
@@ -2860,13 +2862,13 @@ background-repeat: no-repeat;</string>
                          </widget>
                          <widget class="QFrame" name="frame_4">
                           <property name="geometry">
-                           <rect>
-                            <x>0</x>
-                            <y>720</y>
-                            <width>960</width>
-                            <height>220</height>
-                           </rect>
-                          </property>
+                          <rect>
+                           <x>978</x>
+                            <y>369</y>
+                            <width>571</width>
+                            <height>300</height>
+                          </rect>
+                         </property>
                          <property name="frameShape">
                            <enum>QFrame::Shape::StyledPanel</enum>
                           </property>
@@ -2878,7 +2880,7 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>0</x>
                              <y>10</y>
-                             <width>960</width>
+                             <width>571</width>
                              <height>31</height>
                             </rect>
                            </property>
@@ -2895,42 +2897,51 @@ background-repeat: no-repeat;</string>
                             <set>Qt::AlignCenter</set>
                            </property>
                           </widget>
-                          <widget class="QWidget" name="roll_input" native="true">
+                          <widget class="QLabel" name="PitchLabel1">
                            <property name="geometry">
                             <rect>
                              <x>10</x>
-                             <y>40</y>
-                             <width>400</width>
-                             <height>40</height>
+                             <y>50</y>
+                             <width>81</width>
+                             <height>31</height>
                             </rect>
                            </property>
-                          </widget>
-                          <widget class="QWidget" name="pitch_input" native="true">
-                           <property name="geometry">
-                            <rect>
-                             <x>430</x>
-                             <y>10</y>
-                             <width>40</width>
-                             <height>100</height>
-                            </rect>
+                           <property name="text">
+                            <string>Pitch: 123</string>
                            </property>
                           </widget>
-                          <widget class="QWidget" name="yaw_input" native="true">
+                          <widget class="QLabel" name="RollLabel1">
                            <property name="geometry">
                             <rect>
-                             <x>490</x>
-                             <y>40</y>
-                             <width>400</width>
-                             <height>40</height>
+                             <x>110</x>
+                             <y>50</y>
+                             <width>81</width>
+                             <height>31</height>
                             </rect>
+                           </property>
+                           <property name="text">
+                            <string>Roll: 123</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="YawLabel1">
+                           <property name="geometry">
+                            <rect>
+                             <x>200</x>
+                             <y>50</y>
+                             <width>81</width>
+                             <height>31</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Yaw: 123</string>
                            </property>
                           </widget>
                           <widget class="QLabel" name="signalHealthTitle">
                            <property name="geometry">
                             <rect>
                              <x>0</x>
-                             <y>110</y>
-                             <width>960</width>
+                             <y>100</y>
+                             <width>571</width>
                              <height>20</height>
                             </rect>
                            </property>
