@@ -278,14 +278,15 @@ class CRSFPacketProcessor(QObject):
                 del self._rx_buffer[:frame_end]
 
                 packet_type = packet[2]
-                # Debug: log each decoded telemetry packet with its type
-                logger.debug(
-                    "Telemetry packet 0x%02X: %s", packet_type, packet.hex()
-                )
 
                 # Ignore parameter setting packets (0x3A)
                 if packet_type == 0x3A:
                     continue
+
+                # Debug: log each decoded telemetry packet with its type
+                logger.debug(
+                    "Telemetry packet 0x%02X: %s", packet_type, packet.hex()
+                )
 
                 if packet_type == 0x14:
                     self.decode_link_statistics(packet)
