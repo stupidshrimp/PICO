@@ -1,12 +1,19 @@
-import sys
 import os
 import time
 import logging
 
 logging.basicConfig(
+    filename="debug.log",
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+
+import faulthandler, sys
+faulthandler.enable()
+
+def log_uncaught_exceptions(exctype, value, tb):
+    logging.critical("Uncaught exception", exc_info=(exctype, value, tb))
+sys.excepthook = log_uncaught_exceptions
 
 from PySide6.QtWidgets import (
     QApplication,
