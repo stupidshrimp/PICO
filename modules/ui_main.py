@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from . import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -1414,20 +1414,15 @@ class Ui_MainWindow(object):
         self.frame.setFrameShadow(QFrame.Shadow.Raised)
         self.frame.setLineWidth(0)
         self.frame.setMinimumSize(QSize(0, 720))
-
         self.frame_2 = QFrame(self.frame)
         self.frame_2.setObjectName(u"frame_2")
-        self.frame_2.setGeometry(QRect(-1, -1, 960, 820))
+        self.frame_2.setGeometry(QRect(-1, -1, 960, 720))
         self.frame_2.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_2.setFrameShadow(QFrame.Shadow.Raised)
         self.VideoLabel = QLabel(self.frame_2)
         self.VideoLabel.setObjectName(u"VideoLabel")
         self.VideoLabel.setGeometry(QRect(0, 0, 960, 720))
         self.VideoLabel.setStyleSheet(u"background-color: black;")
-        self.videoSpacer = QWidget(self.frame_2)
-        self.videoSpacer.setObjectName(u"videoSpacer")
-        self.videoSpacer.setGeometry(QRect(0, 720, 960, 100))
-        self.videoSpacer.setStyleSheet(u"background-color: black;")
         self.airspeedosd = QWidget(self.frame_2)
         self.airspeedosd.setObjectName(u"airspeedosd")
         self.airspeedosd.setGeometry(QRect(30, 120, 75, 300))
