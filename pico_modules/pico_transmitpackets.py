@@ -4,8 +4,7 @@ import logging
 import time
 from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot, QMetaObject, Qt
 
-from PySide6.QtSerialPort import QSerialPort
-from serial.tools import list_ports
+from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +125,18 @@ class CRSFPacketProcessor(QObject):
         Returns:
             bool: True if the USB device is connected, False otherwise.
         """
-        # To avoid repeated calls into ``list_ports`` (which on Windows can crash
-        # if executed too frequently from secondary threads) we only enumerate
-        # ports if a minimum interval has elapsed since the previous check.
+        # To avoid repeated calls into ``QSerialPortInfo.availablePorts`` we only
+        # enumerate ports if a minimum interval has elapsed since the previous
+        # check.  Using Qt's own enumeration avoids crashes observed with
+        # ``serial.tools.list_ports`` on Windows when called from worker
+        # threads.
         now = time.monotonic()
         if now - self._last_port_check < self._port_check_interval:
             return True
 
         self._last_port_check = now
         try:
-            available_ports = [port.device for port in list_ports.comports()]
+            available_ports = [p.portName() for p in QSerialPortInfo.availablePorts()]
         except Exception as exc:  # pragma: no cover - platform dependent
             logger.warning("Failed to enumerate serial ports: %s", exc)
             return True
