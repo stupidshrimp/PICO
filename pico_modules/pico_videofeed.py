@@ -119,22 +119,34 @@ class FrameWorker(QObject):
 
 class VideoFeed:
     @staticmethod
-    def detect_device_index(preferred_index: Optional[int] = None) -> Optional[int]:
-        """Return ``1`` if that video device is available, otherwise ``None``.
+    def detect_device_index(preferred_index: int = 1, max_index: int = 5) -> Optional[int]:
+        """Return the first available video capture device index.
 
-        The ground station expects the VTX to appear as camera device index 1.
-        No fallback to other indices is performed.
+        Parameters
+        ----------
+        preferred_index: int, optional
+            Index probed first. Defaults to ``1`` to prefer the external VTX
+            capture device.
+        max_index: int, optional
+            Upper bound (exclusive) for probing additional indices.
+
+        Returns
+        -------
+        Optional[int]
+            Index of the first usable capture device, or ``None`` if no device
+            could be opened.
         """
 
-        index = 1 if preferred_index is None else preferred_index
-        try:
-            cap = cv2.VideoCapture(index)
-            if cap.isOpened():
+        indices = [preferred_index] + [i for i in range(max_index) if i != preferred_index]
+        for index in indices:
+            try:
+                cap = cv2.VideoCapture(index)
+                if cap.isOpened():
+                    cap.release()
+                    return index
                 cap.release()
-                return index
-            cap.release()
-        except cv2.error:
-            pass
+            except cv2.error:
+                continue
         return None
 
     def __init__(self, VideoLabel: QLabel, device_index: Optional[int] = None):

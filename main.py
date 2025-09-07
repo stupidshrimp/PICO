@@ -127,12 +127,14 @@ class MainWindow(QMainWindow):
         self.sound_players = {}
 
 
-        # Initialize the video feed with a fixed device index of 1. This
-        # corresponds to the external VTX capture device rather than the
-        # laptop's internal webcam. If the device is unavailable the
-        # ``VideoFeed`` worker will emit a "Not connected" status.
-        video_index = 1
-        print("Using fixed video capture device index: 1")
+        # Initialize the video feed by scanning for an available capture
+        # device. ``detect_device_index`` prefers the external VTX at index 1
+        # but falls back to other indices if needed.
+        video_index = VideoFeed.detect_device_index()
+        if video_index is not None:
+            print(f"Using video capture device index: {video_index}")
+        else:
+            print("No video capture device found; feed will remain disconnected.")
 
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
         self.video_feed.worker.error.connect(self.handle_worker_error)
