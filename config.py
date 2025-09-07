@@ -15,7 +15,7 @@ DEFAULT_CONFIG = {
         # Interval in ms (~300 Hz)
         "packet_interval": 3,
     },
-    "vtx": {"port": "Not connected", "device_index": 1},
+    "vtx": {"device_index": 1},
     "warnings": {
         # Trigger when airspeed < stall_airspeed and altitude > stall_altitude
         "stall_airspeed": 10,

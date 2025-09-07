@@ -54,7 +54,7 @@ class FrameWorker(QObject):
             self.start_timer()
         else:
             self.cap = None
-            self.error.emit("No Camera Detected")
+            self.error.emit("Not connected")
 
     def start_timer(self):
         if self._timer is None:
@@ -81,7 +81,7 @@ class FrameWorker(QObject):
     def process_frame(self):
         try:
             if not self.cap or not self.cap.isOpened():
-                self.error.emit("No Camera Detected")
+                self.error.emit("Not connected")
                 return
 
             ret, frame = self.cap.read()
@@ -119,34 +119,23 @@ class FrameWorker(QObject):
 
 class VideoFeed:
     @staticmethod
-    def detect_device_index(preferred_index: Optional[int] = None, max_devices: int = 5) -> int:
-        """Return a suitable capture device index.
+    def detect_device_index(preferred_index: Optional[int] = None) -> Optional[int]:
+        """Return ``1`` if that video device is available, otherwise ``None``.
 
-        If ``preferred_index`` is supplied and available it is used. Otherwise,
-        the first available index other than ``0`` (commonly the laptop's
-        embedded webcam) is returned. As a final fallback, ``0`` is used.
+        The ground station expects the VTX to appear as camera device index 1.
+        No fallback to other indices is performed.
         """
 
-        available = []
-        for idx in range(max_devices):
-            try:
-                cap = cv2.VideoCapture(idx)
-            except cv2.error:
-                # Some backends raise an exception for out-of-range indices.
-                # Skip any index that cannot be opened instead of crashing.
-                continue
+        index = 1 if preferred_index is None else preferred_index
+        try:
+            cap = cv2.VideoCapture(index)
             if cap.isOpened():
-                available.append(idx)
                 cap.release()
-
-        if preferred_index is not None and preferred_index in available:
-            return preferred_index
-
-        for idx in available:
-            if idx != 0:
-                return idx
-
-        return available[0] if available else 0
+                return index
+            cap.release()
+        except cv2.error:
+            pass
+        return None
 
     def __init__(self, VideoLabel: QLabel, device_index: Optional[int] = None):
         """Initialize the video feed.
