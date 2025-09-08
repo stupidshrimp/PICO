@@ -7,6 +7,8 @@ the current airspeed. The telemetry source is expected to supply the
 airspeed value in mph; here we only provide the visual representation.
 """
 
+import math
+
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
@@ -30,6 +32,8 @@ class AirspeedOSD(QWidget):
         airspeed: float
             Airspeed value in miles per hour.
         """
+        if airspeed is None or not math.isfinite(airspeed):
+            return
         if not self._initialized:
             self._airspeed = airspeed
             self._initialized = True

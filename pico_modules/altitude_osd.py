@@ -8,6 +8,8 @@ the current altitude. The telemetry source is expected to supply the
 altitude value; here we only provide the visual representation.
 """
 
+import math
+
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
@@ -31,6 +33,8 @@ class AltitudeOSD(QWidget):
         altitude: float
             Altitude value in feet.
         """
+        if altitude is None or not math.isfinite(altitude):
+            return
         if not self._initialized:
             self._altitude = altitude
             self._initialized = True
