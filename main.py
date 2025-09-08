@@ -307,6 +307,13 @@ class MainWindow(QMainWindow):
     def handle_worker_error(self, message: str):
         """Handle errors emitted from worker threads."""
         logging.error("Worker error: %s", message)
+        # Suppress repetitive pop-ups for camera availability checks; the
+        # VideoFeed class already overlays these messages on the feed. Showing
+        # a QMessageBox for every check forces the user to constantly dismiss
+        # the dialog, which is disruptive when a camera is disconnected.
+        if message in {"Not connected", "Camera Error or Disconnected"}:
+            return
+
         now = time.time()
         if (
             message != self._last_error_message
