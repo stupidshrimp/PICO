@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Map</title>
+  <link rel="stylesheet" href="maplibre-gl.css" />
+  <style>
+    html, body, #map { height:100%; margin:0; }
+    #missing { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:#fff; padding:1em; border:1px solid #ccc; display:none; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="missing">Offline tiles not found in /map.</div>
+<script src="maplibre-gl.js"></script>
+<script src="pmtiles.js"></script>
+<script>
+(async function() {
+  const params = new URLSearchParams(window.location.search);
+  const lat = parseFloat(params.get('lat')) || 0;
+  const lon = parseFloat(params.get('lon')) || 0;
+  const zoom = parseFloat(params.get('zoom')) || 2;
+
+  try {
+    const res = await fetch('naip.pmtiles', {method: 'HEAD'});
+    if (!res.ok) throw new Error('missing');
+  } catch (err) {
+    document.getElementById('missing').style.display = 'block';
+    return;
+  }
+
+  const protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', protocol.tile);
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        satellite: {
+          type: 'raster',
+          tiles: ['pmtiles://map/naip.pmtiles'],
+          tileSize: 256
+        }
+      },
+      layers: [{
+        id: 'satellite',
+        type: 'raster',
+        source: 'satellite'
+      }]
+    },
+    center: [lon, lat],
+    zoom: zoom
+  });
+
+  const marker = new maplibregl.Marker({color: 'red'}).setLngLat([lon, lat]).addTo(map);
+  const trail = {
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: [[lon, lat]] }
+  };
+
+  map.on('load', () => {
+    map.addSource('path', { type: 'geojson', data: trail });
+    map.addLayer({ id: 'path', type: 'line', source: 'path', paint: { 'line-color': '#f00', 'line-width': 2 } });
+  });
+
+  window.updateMarker = function(lat, lon) {
+    const coord = [lon, lat];
+    marker.setLngLat(coord);
+    trail.geometry.coordinates.push(coord);
+    const src = map.getSource('path');
+    if (src) src.setData(trail);
+  };
+})();
+</script>
+</body>
+</html>

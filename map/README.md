@@ -1,9 +1,11 @@
 # Map assets
 
-This directory holds third-party files required to display the map completely offline. Copy the following files into this directory:
-- `leaflet.js` and `leaflet.css`
-- `mbtiles.js`
-- `sql-wasm.js` and `sql-wasm.wasm`
-- `map1.mbtiles` (the tile database)
+This directory holds third-party files required to display the map completely offline.
+Copy the following files into this directory:
 
-The application uses the MBTiles database exclusively and will not fetch tiles from the internet. If these files are missing, the map area will be blank.
+- `maplibre-gl.js` and `maplibre-gl.css` – MapLibre GL library
+- `pmtiles.js` – Protomaps PMTiles reader
+- `naip.pmtiles` – raster tiles bundle
+
+The application uses the `naip.pmtiles` database exclusively and will not fetch tiles
+from the internet. If this file is missing, the map area will show an error message.

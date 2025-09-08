@@ -26,6 +26,11 @@ DEFAULT_CONFIG = {
         # Trigger when |roll| > roll_angle
         "roll_angle": 45,
     },
+    "map": {
+        # Initial center [lat, lon] and zoom level for the offline map
+        "center": [0, 0],
+        "zoom": 2,
+    },
 }
 
 def load_config(path: str = "config.json"):

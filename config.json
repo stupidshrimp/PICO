@@ -19,5 +19,9 @@
         "altitude_alarm_airspeed": 20,
         "altitude_alarm_altitude": 17,
         "roll_angle": 45
+    },
+    "map": {
+        "center": [0, 0],
+        "zoom": 2
     }
 }

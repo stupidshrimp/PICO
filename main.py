@@ -1,6 +1,9 @@
 import os
 import time
 import logging
+import threading
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from functools import partial
 
 logging.basicConfig(
     filename="debug.log",
@@ -20,6 +23,15 @@ def log_uncaught_exceptions(exctype, value, tb):
 
 sys.excepthook = log_uncaught_exceptions
 atexit.register(_logfile.close)
+
+
+def start_static_server():
+    """Start a tiny HTTP server to serve local map assets."""
+    web_dir = os.path.dirname(__file__)
+    handler = partial(SimpleHTTPRequestHandler, directory=web_dir)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -117,10 +129,20 @@ class MainWindow(QMainWindow):
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
 
-        # Load GPS map into the command tab
-        map_file = os.path.join(os.path.dirname(__file__), "map", "map.html")
+        # Load configuration early so map defaults are available
+        self.config = load_config()
+        self.map_cfg = self.config.setdefault("map", {"center": [0, 0], "zoom": 2})
+
+        # Start local static server and load the map over HTTP
+        self.httpd = start_static_server()
+        port = self.httpd.server_address[1]
+        lat, lon = self.map_cfg.get("center", [0, 0])
+        zoom = self.map_cfg.get("zoom", 2)
+        map_url = QUrl(
+            f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
+        )
         self.map_view = self.ui.mapframe
-        self.map_view.setUrl(QUrl.fromLocalFile(os.path.abspath(map_file)))
+        self.map_view.setUrl(map_url)
 
         # Add Data tab and associated graphs
         self.setup_data_page()
@@ -128,8 +150,6 @@ class MainWindow(QMainWindow):
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
         # self.setAttribute(Qt.WA_TranslucentBackground)
-
-        self.config = load_config()
 
         # Configuration sections
         self.joystick_cfg = self.config.setdefault("joystick", {})
@@ -1214,6 +1234,8 @@ class MainWindow(QMainWindow):
             thread.wait()
         if self.joystick:
             self.joystick.close()
+        if hasattr(self, "httpd"):
+            self.httpd.shutdown()
         super().closeEvent(event)
         
 if __name__ == "__main__":
