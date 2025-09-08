@@ -2818,21 +2818,73 @@ background-repeat: no-repeat;</string>
                            </rect>
                           </property>
                          </widget>
-                          <widget class="QWidget" name="altitudeosd" native="true">
-                           <property name="geometry">
-                            <rect>
-                             <x>855</x>
-                             <y>120</y>
-                             <width>75</width>
-                             <height>300</height>
-                            </rect>
-                           </property>
-                          </widget>
+                         <widget class="QWidget" name="altitudeosd" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>855</x>
+                            <y>120</y>
+                            <width>75</width>
+                            <height>300</height>
+                           </rect>
+                          </property>
                          </widget>
+                         <widget class="QLabel" name="InputsLabel">
+                          <property name="geometry">
+                           <rect>
+                            <x>0</x>
+                            <y>630</y>
+                            <width>200</width>
+                            <height>20</height>
+                           </rect>
+                          </property>
+                          <property name="font">
+                           <font>
+                            <bold>true</bold>
+                            <underline>true</underline>
+                           </font>
+                          </property>
+                          <property name="text">
+                           <string>Control Inputs</string>
+                          </property>
+                          <property name="alignment">
+                           <set>Qt::AlignCenter</set>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="pitchInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>10</x>
+                            <y>650</y>
+                            <width>15</width>
+                            <height>60</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="rollInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>40</x>
+                            <y>680</y>
+                            <width>60</width>
+                            <height>15</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="yawInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>110</x>
+                            <y>680</y>
+                            <width>60</width>
+                            <height>15</height>
+                           </rect>
+                          </property>
+                         </widget>
+                        </widget>
                          <widget class="QFrame" name="frame_3">
                          <property name="geometry">
-                           <rect>
-                            <x>978</x>
+                          <rect>
+                           <x>978</x>
                             <y>-1</y>
                             <width>571</width>
                             <height>381</height>
@@ -2873,65 +2925,13 @@ background-repeat: no-repeat;</string>
                           <property name="frameShadow">
                            <enum>QFrame::Shadow::Raised</enum>
                           </property>
-                          <widget class="QLabel" name="InputsLabel">
+                          <widget class="QLabel" name="signalHealthTitle">
                            <property name="geometry">
                             <rect>
                              <x>0</x>
                              <y>10</y>
                              <width>571</width>
                              <height>31</height>
-                            </rect>
-                           </property>
-                           <property name="font">
-                            <font>
-                             <bold>true</bold>
-                             <underline>true</underline>
-                            </font>
-                           </property>
-                           <property name="text">
-                            <string>Control Inputs</string>
-                           </property>
-                           <property name="alignment">
-                            <set>Qt::AlignCenter</set>
-                           </property>
-                          </widget>
-                          <widget class="QWidget" name="pitchInput" native="true">
-                           <property name="geometry">
-                            <rect>
-                             <x>10</x>
-                             <y>50</y>
-                             <width>20</width>
-                             <height>100</height>
-                            </rect>
-                           </property>
-                          </widget>
-                          <widget class="QWidget" name="rollInput" native="true">
-                           <property name="geometry">
-                            <rect>
-                             <x>40</x>
-                             <y>50</y>
-                             <width>100</width>
-                             <height>20</height>
-                            </rect>
-                           </property>
-                          </widget>
-                          <widget class="QWidget" name="yawInput" native="true">
-                           <property name="geometry">
-                            <rect>
-                             <x>150</x>
-                             <y>50</y>
-                             <width>100</width>
-                             <height>20</height>
-                            </rect>
-                           </property>
-                          </widget>
-                          <widget class="QLabel" name="signalHealthTitle">
-                           <property name="geometry">
-                            <rect>
-                             <x>0</x>
-                             <y>260</y>
-                             <width>571</width>
-                             <height>20</height>
                             </rect>
                            </property>
                            <property name="font">
@@ -2951,7 +2951,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>10</x>
-                             <y>290</y>
+                             <y>50</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
@@ -2964,7 +2964,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>190</x>
-                             <y>290</y>
+                             <y>50</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
@@ -2977,7 +2977,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>10</x>
-                             <y>320</y>
+                             <y>80</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
@@ -2990,7 +2990,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>190</x>
-                             <y>320</y>
+                             <y>80</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
@@ -3003,7 +3003,7 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>10</x>
-                             <y>350</y>
+                             <y>110</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
@@ -3016,16 +3016,16 @@ background-repeat: no-repeat;</string>
                            <property name="geometry">
                             <rect>
                              <x>190</x>
-                             <y>350</y>
+                             <y>110</y>
                              <width>150</width>
                              <height>20</height>
                             </rect>
                            </property>
                            <property name="text">
-                           <string>Downlink SNR: --</string>
-                          </property>
+                            <string>Downlink SNR: --</string>
+                           </property>
+                          </widget>
                          </widget>
-                        </widget>
                        </widget>
                         </item>
                         <item>
