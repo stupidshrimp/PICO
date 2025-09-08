@@ -243,9 +243,16 @@ class MainWindow(QMainWindow):
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
         self.throttle_percent = 0
+        self.target_throttle_percent = 0
         self.throttle_indicator = ThrottleWidget(self.ui.throttleInput)
         self.throttle_indicator.resize(self.ui.throttleInput.size())
         self.throttle_indicator.show()
+
+        # Timer used to ramp the throttle toward its target value
+        self.throttle_ramp_timer = QTimer(self)
+        self.throttle_ramp_timer.timeout.connect(self.update_throttle)
+        # Update roughly 20 times a second
+        self.throttle_ramp_timer.start(50)
 
         # Variables updated from telemetry packets
         self.telemetry_pitch = None
@@ -556,11 +563,25 @@ class MainWindow(QMainWindow):
             Qt.Key_F: 100,
         }
         if event.key() in mapping:
-            self.throttle_percent = mapping[event.key()]
-            self.throttle_indicator.setValue(self.throttle_percent)
+            self.target_throttle_percent = mapping[event.key()]
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def update_throttle(self):
+        """Gradually move the throttle toward its target value."""
+        if self.throttle_percent == self.target_throttle_percent:
+            return
+        step = 5
+        if self.throttle_percent < self.target_throttle_percent:
+            self.throttle_percent = min(
+                self.throttle_percent + step, self.target_throttle_percent
+            )
+        else:
+            self.throttle_percent = max(
+                self.throttle_percent - step, self.target_throttle_percent
+            )
+        self.throttle_indicator.setValue(self.throttle_percent)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:
