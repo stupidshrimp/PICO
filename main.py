@@ -117,6 +117,11 @@ class MainWindow(QMainWindow):
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
 
+        # Load GPS map into the command tab
+        map_file = os.path.join(os.path.dirname(__file__), "map", "map.html")
+        self.map_view = self.ui.mapframe
+        self.map_view.setUrl(QUrl.fromLocalFile(os.path.abspath(map_file)))
+
         # Add Data tab and associated graphs
         self.setup_data_page()
 
@@ -417,15 +422,6 @@ class MainWindow(QMainWindow):
 
         self.packet_rate_label = QLabel("Packets Received Rate: 0 Hz")
         layout.addWidget(self.packet_rate_label)
-
-        map_label = QLabel("GPS Map")
-        map_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(map_label)
-        self.map_view = QWebEngineView()
-        self.map_view.setMinimumHeight(300)
-        map_file = os.path.join(os.path.dirname(__file__), "map", "map.html")
-        self.map_view.setUrl(QUrl.fromLocalFile(os.path.abspath(map_file)))
-        layout.addWidget(self.map_view, 1)
 
         # Data storage for plots
         max_points = 200

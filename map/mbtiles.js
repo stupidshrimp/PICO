@@ -14,32 +14,52 @@
       L.TileLayer.prototype.initialize.call(this, url, options);
       this._url = url;
       this._db = null;
+      this._ready = false;
+      this._error = null;
       this._initDatabase();
     },
 
     _initDatabase: function(){
       var self = this;
       if (typeof initSqlJs === 'undefined') {
-        console.error('sql.js not loaded');
+        var err = new Error('sql.js not loaded');
+        console.error(err.message);
+        self._error = err;
+        self.fire('databaseloaded', { error: err });
         return;
       }
-      initSqlJs({ locateFile: function(file){ return file; } }).then(function(SQL){
-        fetch(self._url).then(function(res){ return res.arrayBuffer(); }).then(function(buf){
-          self._db = new SQL.Database(new Uint8Array(buf));
-          self._ready = true;
-          self.fire('databaseloaded');
-        }).catch(function(err){
-          console.error('Failed to load MBTiles', err);
+      initSqlJs({ locateFile: function(file){ return file; } })
+        .then(function(SQL){
+          fetch(self._url)
+            .then(function(res){ return res.arrayBuffer(); })
+            .then(function(buf){
+              self._db = new SQL.Database(new Uint8Array(buf));
+              self._ready = true;
+              self.fire('databaseloaded');
+            })
+            .catch(function(err){
+              console.error('Failed to load MBTiles', err);
+              self._error = err;
+              self.fire('databaseloaded', { error: err });
+            });
+        })
+        .catch(function(err){
+          console.error('Failed to init sql.js', err);
+          self._error = err;
+          self.fire('databaseloaded', { error: err });
         });
-      });
     },
 
     createTile: function(coords, done){
       var tile = document.createElement('img');
       var self = this;
       if (!this._ready) {
-        this.once('databaseloaded', function(){
-          self._setTileSrc(tile, coords, done);
+        this.once('databaseloaded', function(e){
+          if (self._ready) {
+            self._setTileSrc(tile, coords, done);
+          } else {
+            done(self._error || e.error || new Error('Database failed to load'), tile);
+          }
         });
       } else {
         self._setTileSrc(tile, coords, done);
