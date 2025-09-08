@@ -44,6 +44,7 @@ from PySide6.QtCore import QUrl
 from serial.tools import list_ports
 
 from modules import *
+from ui_mainwindow import Ui_MainWindow
 from widgets import *
 from widgets.input_line import InputLine
 from widgets.throttle_widget import ThrottleWidget
