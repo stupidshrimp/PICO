@@ -53,7 +53,9 @@
     createTile: function(coords, done){
       var tile = document.createElement('img');
       var self = this;
-      if (!this._ready) {
+      if (this._error) {
+        done(this._error, tile);
+      } else if (!this._ready) {
         this.once('databaseloaded', function(e){
           if (self._ready) {
             self._setTileSrc(tile, coords, done);
