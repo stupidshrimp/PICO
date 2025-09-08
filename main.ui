@@ -2754,7 +2754,7 @@ background-repeat: no-repeat;</string>
                          <property name="minimumSize">
                           <size>
                            <width>0</width>
-                           <height>1100</height>
+                           <height>720</height>
                           </size>
                          </property>
                          <widget class="QFrame" name="frame_2">
@@ -2860,16 +2860,16 @@ background-repeat: no-repeat;</string>
                          </widget>
                          <widget class="QFrame" name="frame_4">
                           <property name="geometry">
-                          <rect>
-                           <x>0</x>
-                            <y>720</y>
+                           <rect>
+                            <x>978</x>
+                            <y>381</y>
                             <width>571</width>
-                            <height>380</height>
-                          </rect>
-                         </property>
-                         <property name="frameShape">
-                           <enum>QFrame::Shape::StyledPanel</enum>
+                            <height>339</height>
+                           </rect>
                           </property>
+                         <property name="frameShape">
+                          <enum>QFrame::Shape::StyledPanel</enum>
+                         </property>
                           <property name="frameShadow">
                            <enum>QFrame::Shadow::Raised</enum>
                           </property>
@@ -2900,28 +2900,28 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>10</x>
                              <y>50</y>
-                             <width>41</width>
-                             <height>200</height>
+                             <width>20</width>
+                             <height>100</height>
                             </rect>
                            </property>
                           </widget>
                           <widget class="QWidget" name="rollInput" native="true">
                            <property name="geometry">
                             <rect>
-                             <x>70</x>
-                             <y>90</y>
-                             <width>300</width>
-                             <height>41</height>
+                             <x>40</x>
+                             <y>50</y>
+                             <width>100</width>
+                             <height>20</height>
                             </rect>
                            </property>
                           </widget>
                           <widget class="QWidget" name="yawInput" native="true">
                            <property name="geometry">
                             <rect>
-                             <x>70</x>
-                             <y>150</y>
-                             <width>300</width>
-                             <height>41</height>
+                             <x>150</x>
+                             <y>50</y>
+                             <width>100</width>
+                             <height>20</height>
                             </rect>
                            </property>
                           </widget>
