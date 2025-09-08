@@ -36,10 +36,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, QTimer, QMetaObject, Slot
+from PySide6.QtCore import Qt, QTimer, QMetaObject, Slot, QUrl
+from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtGui import QCursor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtCore import QUrl
 
 from serial.tools import list_ports
 
@@ -226,6 +226,8 @@ class MainWindow(QMainWindow):
         self.telemetry_pitch = None
         self.telemetry_roll = None
         self.telemetry_yaw = None
+        self.gps_lat = None
+        self.gps_lon = None
         self.current_altitude = None
         self.current_airspeed = None
 
@@ -415,6 +417,15 @@ class MainWindow(QMainWindow):
 
         self.packet_rate_label = QLabel("Packets Received Rate: 0 Hz")
         layout.addWidget(self.packet_rate_label)
+
+        map_label = QLabel("GPS Map")
+        map_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(map_label)
+        self.map_view = QWebEngineView()
+        self.map_view.setMinimumHeight(300)
+        map_file = os.path.join(os.path.dirname(__file__), "map", "map.html")
+        self.map_view.setUrl(QUrl.fromLocalFile(os.path.abspath(map_file)))
+        layout.addWidget(self.map_view, 1)
 
         # Data storage for plots
         max_points = 200
@@ -736,11 +747,17 @@ class MainWindow(QMainWindow):
             self.roll_data.append(roll)
             self.yaw_data.append(yaw)
         elif packet_type == "gps":
-            _lat, _lon, speed, _course, alt, _sats = values
+            lat, lon, speed, _course, alt, _sats = values
+            self.gps_lat = lat
+            self.gps_lon = lon
             self.current_airspeed = speed
             self.current_altitude = alt
             self.airspeed_data.append(speed)
             self.altitude_data.append(alt)
+            if hasattr(self, "map_view"):
+                self.map_view.page().runJavaScript(
+                    f"updateMarker({lat}, {lon});"
+                )
         elif packet_type == "link_stats":
             (
                 rssi_a,
