@@ -2826,68 +2826,6 @@ background-repeat: no-repeat;</string>
                             <width>75</width>
                             <height>300</height>
                            </rect>
-                          </property>
-                         </widget>
-                         <widget class="QLabel" name="InputsLabel">
-                          <property name="geometry">
-                           <rect>
-                            <x>0</x>
-                            <y>630</y>
-                            <width>200</width>
-                            <height>20</height>
-                           </rect>
-                          </property>
-                          <property name="font">
-                           <font>
-                            <bold>true</bold>
-                            <underline>true</underline>
-                           </font>
-                          </property>
-                          <property name="text">
-                           <string>Control Inputs</string>
-                          </property>
-                          <property name="alignment">
-                           <set>Qt::AlignCenter</set>
-                          </property>
-                         </widget>
-                         <widget class="QWidget" name="pitchInput" native="true">
-                          <property name="geometry">
-                           <rect>
-                            <x>10</x>
-                            <y>650</y>
-                            <width>15</width>
-                            <height>60</height>
-                           </rect>
-                          </property>
-                         </widget>
-                         <widget class="QWidget" name="rollInput" native="true">
-                          <property name="geometry">
-                           <rect>
-                            <x>40</x>
-                            <y>680</y>
-                            <width>60</width>
-                            <height>15</height>
-                           </rect>
-                          </property>
-                         </widget>
-                        <widget class="QWidget" name="yawInput" native="true">
-                         <property name="geometry">
-                          <rect>
-                           <x>110</x>
-                           <y>680</y>
-                           <width>60</width>
-                           <height>15</height>
-                          </rect>
-                         </property>
-                        </widget>
-                        <widget class="QWidget" name="throttleInput" native="true">
-                         <property name="geometry">
-                          <rect>
-                           <x>175</x>
-                           <y>650</y>
-                           <width>15</width>
-                           <height>60</height>
-                          </rect>
                          </property>
                         </widget>
                        </widget>
@@ -3039,21 +2977,83 @@ background-repeat: no-repeat;</string>
                        </widget>
                         </item>
                         <item>
-                         <widget class="QWidget" name="commandVideoSpacer" native="true">
-                          <property name="minimumSize">
-                           <size>
-                            <width>0</width>
-                            <height>100</height>
-                           </size>
+                        <widget class="QWidget" name="commandVideoSpacer" native="true">
+                         <property name="minimumSize">
+                          <size>
+                           <width>0</width>
+                           <height>100</height>
+                          </size>
+                         </property>
+                         <property name="maximumSize">
+                          <size>
+                           <width>16777215</width>
+                           <height>100</height>
+                          </size>
+                         </property>
+                         <widget class="QLabel" name="InputsLabel">
+                          <property name="geometry">
+                           <rect>
+                            <x>0</x>
+                            <y>0</y>
+                            <width>200</width>
+                            <height>20</height>
+                           </rect>
                           </property>
-                          <property name="maximumSize">
-                           <size>
-                            <width>16777215</width>
-                            <height>100</height>
-                           </size>
+                          <property name="font">
+                           <font>
+                            <bold>true</bold>
+                            <underline>true</underline>
+                           </font>
+                          </property>
+                          <property name="text">
+                           <string>Control Inputs</string>
+                          </property>
+                          <property name="alignment">
+                           <set>Qt::AlignCenter</set>
                           </property>
                          </widget>
-                        </item>
+                         <widget class="QWidget" name="pitchInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>10</x>
+                            <y>20</y>
+                            <width>15</width>
+                            <height>60</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="rollInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>40</x>
+                            <y>50</y>
+                            <width>60</width>
+                            <height>15</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="yawInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>110</x>
+                            <y>50</y>
+                            <width>60</width>
+                            <height>15</height>
+                           </rect>
+                          </property>
+                         </widget>
+                         <widget class="QWidget" name="throttleInput" native="true">
+                          <property name="geometry">
+                           <rect>
+                            <x>175</x>
+                            <y>20</y>
+                            <width>15</width>
+                            <height>60</height>
+                           </rect>
+                          </property>
+                         </widget>
+                        </widget>
+                       </item>
                         </layout>
                        </widget>
                     </widget>
