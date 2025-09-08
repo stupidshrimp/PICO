@@ -843,8 +843,13 @@ class MainWindow(QMainWindow):
             QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
         )
         rf_layout.addWidget(
-            QLabel("ELRS transmitting at 300 Hz at 1:2 telemetry ratio")
+            QLabel(
+                "ELRS firmware set to 250 Hz packet rate with telemetry reporting rate of 75 Hz (13 ms)."
+            )
         )
+        self.pico_rate_label = QLabel()
+        rf_layout.addWidget(self.pico_rate_label)
+        self.update_pico_rate_label()
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
         self.elrs_port_combo = QComboBox()
@@ -1071,7 +1076,15 @@ class MainWindow(QMainWindow):
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
         self.transmit_timer.start(interval)
+        self.update_pico_rate_label()
         save_config(self.config)
+
+    def update_pico_rate_label(self):
+        interval = self.crsf_cfg.get("packet_interval", 3)
+        freq = 0
+        if interval:
+            freq = 1000 / interval
+        self.pico_rate_label.setText(f"PICO writing packets at {freq:.0f} Hz.")
 
     def on_deadzone_changed(self, value: int):
         self.joystick_cfg["deadzone"] = value
