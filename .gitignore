@@ -26,9 +26,3 @@ dist/
 .DS_Store
 Thumbs.db
 *.mbtiles
-# Offline map dependencies
-map/leaflet.js
-map/leaflet.css
-map/mbtiles.js
-map/sql-wasm.js
-map/sql-wasm.wasm
