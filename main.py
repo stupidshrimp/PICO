@@ -46,6 +46,7 @@ from serial.tools import list_ports
 from modules import *
 from widgets import *
 from widgets.input_line import InputLine
+from widgets.throttle_widget import ThrottleWidget
 
 from pico_modules.pico_videofeed import VideoFeed
 from pico_modules.pico_joystick2state import JoystickRawHandler
@@ -215,6 +216,10 @@ class MainWindow(QMainWindow):
         self.yaw_indicator = InputLine(Qt.Horizontal, self.ui.yawInput)
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
+        self.throttle_percent = 0
+        self.throttle_indicator = ThrottleWidget(self.ui.throttleInput)
+        self.throttle_indicator.resize(self.ui.throttleInput.size())
+        self.throttle_indicator.show()
 
         # Variables updated from telemetry packets
         self.telemetry_pitch = None
@@ -494,6 +499,7 @@ class MainWindow(QMainWindow):
             self.pitch_indicator.setValue(norm_pitch)
             self.roll_indicator.setValue(norm_roll)
             self.yaw_indicator.setValue(0)
+        self.throttle_indicator.setValue(self.throttle_percent)
 
         # ------------------------------------------------------------------
         # Telemetry still drives the OSD widgets
@@ -512,6 +518,21 @@ class MainWindow(QMainWindow):
             self.airspeed_osd.setAirspeed(self.current_airspeed)
         if self.telemetry_yaw is not None:
             self.compass_osd.setYaw(self.telemetry_yaw)
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt override naming
+        mapping = {
+            Qt.Key_Space: 0,
+            Qt.Key_A: 25,
+            Qt.Key_S: 50,
+            Qt.Key_D: 75,
+            Qt.Key_F: 100,
+        }
+        if event.key() in mapping:
+            self.throttle_percent = mapping[event.key()]
+            self.throttle_indicator.setValue(self.throttle_percent)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:
@@ -766,14 +787,20 @@ class MainWindow(QMainWindow):
         """
         Transmit CRSF packets using mapped joystick values.
         """
-        if not self.joystick or not self.crsf_processor:
+        if not self.crsf_processor:
             return
 
+        channels = [1500] * 16
+        if self.joystick:
+            try:
+                mapped_roll, mapped_pitch = self.joystick.get_mapped_values()
+                channels[0] = int(mapped_roll)
+                channels[1] = int(mapped_pitch)
+            except Exception as e:
+                print(f"Error during transmission: {e}")
+        throttle_value = 1000 + int((self.throttle_percent / 100) * 1000)
+        channels[2] = int(throttle_value)
         try:
-            mapped_roll, mapped_pitch = self.joystick.get_mapped_values()
-            channels = [1500] * 16
-            channels[0] = int(mapped_roll)
-            channels[1] = int(mapped_pitch)
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
