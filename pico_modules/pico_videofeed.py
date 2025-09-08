@@ -111,7 +111,7 @@ class FrameWorker(QObject):
             self.error.emit(str(exc))
 
 
-class VideoFeed:
+class VideoFeed(QObject):
     @staticmethod
     def detect_device_index(preferred_index: int = 1, max_index: int = 5) -> Optional[int]:
         """Return the first available video capture device index.
@@ -161,6 +161,7 @@ class VideoFeed:
             devices and skips the laptop's integrated webcam.
         """
 
+        super().__init__()
         self.label = VideoLabel
         self.device_index = (
             device_index if device_index is not None else self.detect_device_index()

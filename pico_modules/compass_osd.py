@@ -25,6 +25,8 @@ class CompassOSD(QWidget):
 
     def setYaw(self, yaw_deg: float) -> None:
         """Update the displayed yaw in degrees."""
+        if yaw_deg is None or not math.isfinite(yaw_deg):
+            return
         if not self._initialized:
             self._yaw = yaw_deg % 360.0
             self._initialized = True

@@ -9,6 +9,8 @@ infinite.  Rungs now cycle through small, medium, small and large segments
 creating a repeating pattern used on real attitude indicators.
 """
 
+import math
+
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QColor
 from PySide6.QtCore import Qt
@@ -32,6 +34,13 @@ class RollPitchOSD(QWidget):
         pitch_deg : float
             Pitch angle in degrees.
         """
+        if (
+            roll_deg is None
+            or pitch_deg is None
+            or not math.isfinite(roll_deg)
+            or not math.isfinite(pitch_deg)
+        ):
+            return
         if not self._initialized:
             self._roll = roll_deg
             self._pitch = pitch_deg
