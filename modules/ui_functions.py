@@ -14,16 +14,34 @@
 #
 # ///////////////////////////////////////////////////////////////
 
-# MAIN FILE
+# QT MODULES
 # ///////////////////////////////////////////////////////////////
-from main import *
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QParallelAnimationGroup,
+    QPropertyAnimation,
+    QTimer,
+    Qt,
+)
+from PySide6.QtGui import QIcon, QColor
+from PySide6.QtWidgets import (
+    QGraphicsDropShadowEffect,
+    QPushButton,
+    QSizeGrip,
+)
+
+# APP SETTINGS AND CUSTOM WIDGETS
+# ///////////////////////////////////////////////////////////////
+from .app_settings import Settings
+from widgets.custom_grips import CustomGrip
 
 # GLOBALS
 # ///////////////////////////////////////////////////////////////
 GLOBAL_STATE = False
 GLOBAL_TITLE_BAR = True
 
-class UIFunctions(MainWindow):
+class UIFunctions:
     # MAXIMIZE/RESTORE
     # ///////////////////////////////////////////////////////////////
     def maximize_restore(self):
