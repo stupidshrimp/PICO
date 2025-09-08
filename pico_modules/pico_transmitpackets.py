@@ -198,39 +198,49 @@ class CRSFPacketProcessor(QObject):
     @Slot(list)
     def update_and_send_packet(self, new_channels):
         """Update channel values and send the CRSF packet if the connection is valid."""
-        if len(new_channels) > 16:
-            raise ValueError("Maximum of 16 channels supported.")
+        try:
+            if len(new_channels) > 16:
+                logger.warning(
+                    "Received %d channel values; truncating to 16", len(new_channels)
+                )
+                new_channels = new_channels[:16]
 
-        # Update channel values and pad to 16 channels if necessary
-        self.channels = new_channels + [1500] * (16 - len(new_channels))
+            # Update channel values and pad to 16 channels if necessary
+            self.channels = new_channels + [1500] * (16 - len(new_channels))
 
-        # Check USB connection
-        if not self.check_usb_connection():
-            #print("USB device disconnected.")
-            return "Error"
-
-        # Check serial connection
-        if not self.is_connected():
-            logger.warning("Serial port not connected. Attempting to reconnect...")
-            self.connect_serial()
-            if not self.is_connected():
+            # Check USB connection
+            if not self.check_usb_connection():
                 return "Error"
 
-        # If connected, attempt to transmit packets
-        if self.serial:
-            try:
-                packet = self.create_packet()
-                self.serial.write(bytes(packet))
-                # Disable verbose packet transmission debug output to focus on telemetry
-                # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
-                return "Good"  # Return "Good" only if transmission is successful
-            except Exception as e:
-                logger.exception("Failed to send packet")
-                self.error.emit(f"Failed to send packet: {e}")
-                return f"Error: {e}"
+            # Check serial connection
+            if not self.is_connected():
+                logger.warning(
+                    "Serial port not connected. Attempting to reconnect..."
+                )
+                self.connect_serial()
+                if not self.is_connected():
+                    return "Error"
 
-        # If the serial port is not available, return an error
-        return "Error"
+            # If connected, attempt to transmit packets
+            if self.serial:
+                try:
+                    packet = self.create_packet()
+                    self.serial.write(bytes(packet))
+                    # Disable verbose packet transmission debug output to focus on telemetry
+                    # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
+                    return "Good"  # Return "Good" only if transmission is successful
+                except Exception as e:
+                    logger.exception("Failed to send packet")
+                    self.error.emit(f"Failed to send packet: {e}")
+                    return f"Error: {e}"
+
+            # If the serial port is not available, return an error
+            return "Error"
+
+        except Exception as exc:  # Ensure worker thread stays alive
+            logger.exception("Exception in update_and_send_packet")
+            self.error.emit(f"Failed to update/send packet: {exc}")
+            return f"Error: {exc}"
 
 
     @Slot()
