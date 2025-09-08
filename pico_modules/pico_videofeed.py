@@ -43,6 +43,10 @@ class FrameWorker(QObject):
         if self.cap and self.cap.isOpened():
             return
 
+        if self.device_index in (None, ""):
+            self.error.emit("Not connected")
+            return
+
         try:
             self.cap = cv2.VideoCapture(self.device_index)
         except cv2.error:
