@@ -2870,17 +2870,27 @@ background-repeat: no-repeat;</string>
                            </rect>
                           </property>
                          </widget>
-                         <widget class="QWidget" name="yawInput" native="true">
-                          <property name="geometry">
-                           <rect>
-                            <x>110</x>
-                            <y>680</y>
-                            <width>60</width>
-                            <height>15</height>
-                           </rect>
-                          </property>
-                         </widget>
+                        <widget class="QWidget" name="yawInput" native="true">
+                         <property name="geometry">
+                          <rect>
+                           <x>110</x>
+                           <y>680</y>
+                           <width>60</width>
+                           <height>15</height>
+                          </rect>
+                         </property>
                         </widget>
+                        <widget class="QWidget" name="throttleInput" native="true">
+                         <property name="geometry">
+                          <rect>
+                           <x>175</x>
+                           <y>650</y>
+                           <width>15</width>
+                           <height>60</height>
+                          </rect>
+                         </property>
+                        </widget>
+                       </widget>
                          <widget class="QFrame" name="frame_3">
                          <property name="geometry">
                           <rect>
