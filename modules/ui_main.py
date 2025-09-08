@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget)
-from . import resources_rc
+import resources_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -1435,23 +1435,6 @@ class Ui_MainWindow(object):
         self.altitudeosd = QWidget(self.frame_2)
         self.altitudeosd.setObjectName(u"altitudeosd")
         self.altitudeosd.setGeometry(QRect(855, 120, 75, 300))
-        self.InputsLabel = QLabel(self.frame_2)
-        self.InputsLabel.setObjectName(u"InputsLabel")
-        self.InputsLabel.setGeometry(QRect(0, 630, 200, 20))
-        font5 = QFont()
-        font5.setBold(True)
-        font5.setUnderline(True)
-        self.InputsLabel.setFont(font5)
-        self.InputsLabel.setAlignment(Qt.AlignCenter)
-        self.pitchInput = QWidget(self.frame_2)
-        self.pitchInput.setObjectName(u"pitchInput")
-        self.pitchInput.setGeometry(QRect(10, 650, 15, 60))
-        self.rollInput = QWidget(self.frame_2)
-        self.rollInput.setObjectName(u"rollInput")
-        self.rollInput.setGeometry(QRect(40, 680, 60, 15))
-        self.yawInput = QWidget(self.frame_2)
-        self.yawInput.setObjectName(u"yawInput")
-        self.yawInput.setGeometry(QRect(110, 680, 60, 15))
         self.frame_3 = QFrame(self.frame)
         self.frame_3.setObjectName(u"frame_3")
         self.frame_3.setGeometry(QRect(978, -1, 571, 381))
@@ -1469,6 +1452,9 @@ class Ui_MainWindow(object):
         self.signalHealthTitle = QLabel(self.frame_4)
         self.signalHealthTitle.setObjectName(u"signalHealthTitle")
         self.signalHealthTitle.setGeometry(QRect(0, 10, 571, 31))
+        font5 = QFont()
+        font5.setBold(True)
+        font5.setUnderline(True)
         self.signalHealthTitle.setFont(font5)
         self.signalHealthTitle.setAlignment(Qt.AlignCenter)
         self.rssiALabel = QLabel(self.frame_4)
@@ -1496,6 +1482,23 @@ class Ui_MainWindow(object):
         self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
         self.commandVideoSpacer.setMinimumSize(QSize(0, 100))
         self.commandVideoSpacer.setMaximumSize(QSize(16777215, 100))
+        self.InputsLabel = QLabel(self.commandVideoSpacer)
+        self.InputsLabel.setObjectName(u"InputsLabel")
+        self.InputsLabel.setGeometry(QRect(0, 0, 200, 20))
+        self.InputsLabel.setFont(font5)
+        self.InputsLabel.setAlignment(Qt.AlignCenter)
+        self.pitchInput = QWidget(self.commandVideoSpacer)
+        self.pitchInput.setObjectName(u"pitchInput")
+        self.pitchInput.setGeometry(QRect(10, 20, 15, 60))
+        self.rollInput = QWidget(self.commandVideoSpacer)
+        self.rollInput.setObjectName(u"rollInput")
+        self.rollInput.setGeometry(QRect(40, 50, 60, 15))
+        self.yawInput = QWidget(self.commandVideoSpacer)
+        self.yawInput.setObjectName(u"yawInput")
+        self.yawInput.setGeometry(QRect(110, 50, 60, 15))
+        self.throttleInput = QWidget(self.commandVideoSpacer)
+        self.throttleInput.setObjectName(u"throttleInput")
+        self.throttleInput.setGeometry(QRect(175, 20, 15, 60))
 
         self.verticalLayout_20.addWidget(self.commandVideoSpacer)
 
@@ -1764,7 +1767,6 @@ class Ui_MainWindow(object):
         self.tableWidget.setSortingEnabled(__sortingEnabled)
 
         self.VideoLabel.setText("")
-        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
         self.signalHealthTitle.setText(QCoreApplication.translate("MainWindow", u"Signal health", None))
         self.rssiALabel.setText(QCoreApplication.translate("MainWindow", u"RSSI A: --", None))
         self.rssiBLabel.setText(QCoreApplication.translate("MainWindow", u"RSSI B: --", None))
@@ -1772,6 +1774,7 @@ class Ui_MainWindow(object):
         self.snrLabel.setText(QCoreApplication.translate("MainWindow", u"SNR: --", None))
         self.downlinkQualityLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink quality: --", None))
         self.downlinkSnrLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink SNR: --", None))
+        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
         self.osdLabel.setText(QCoreApplication.translate("MainWindow", u"OSD", None))
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
