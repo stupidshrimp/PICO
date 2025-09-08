@@ -1241,6 +1241,15 @@ class MainWindow(QMainWindow):
         if event.buttons() == Qt.LeftButton:
             self.dragPos = event.globalPosition().toPoint()
 
+    def cleanup(self):
+        """Clean up peripheral resources if they exist."""
+        if self.joystick:
+            self.joystick.close()
+            self.joystick = None
+        if getattr(self, "httpd", None):
+            self.httpd.shutdown()
+            self.httpd = None
+
     def closeEvent(self, event):
         """
         Releases resources when the window is closed.
@@ -1253,14 +1262,16 @@ class MainWindow(QMainWindow):
             )
             thread.quit()
             thread.wait()
-        if self.joystick:
-            self.joystick.close()
-        if hasattr(self, "httpd"):
-            self.httpd.shutdown()
+        self.cleanup()
         super().closeEvent(event)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    app.aboutToQuit.connect(window.cleanup)
+    try:
+        exit_code = app.exec()
+    finally:
+        window.cleanup()
+    sys.exit(exit_code)
