@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import threading
+import re
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
@@ -25,10 +26,76 @@ sys.excepthook = log_uncaught_exceptions
 atexit.register(_logfile.close)
 
 
+class RangeRequestHandler(SimpleHTTPRequestHandler):
+    """HTTP handler that adds Content-Length and Range support."""
+
+    def send_head(self):
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().send_head()
+
+        ctype = self.guess_type(path)
+        try:
+            f = open(path, "rb")
+        except OSError:
+            self.send_error(404, "File not found")
+            return None
+
+        fs = os.fstat(f.fileno())
+        total_length = fs.st_size
+        start = 0
+        end = total_length - 1
+        if "Range" in self.headers:
+            m = re.match(r"bytes=(\d+)-(\d+)?", self.headers["Range"])
+            if m:
+                start = int(m.group(1))
+                if m.group(2):
+                    end = min(int(m.group(2)), end)
+                length = end - start + 1
+                f.seek(start)
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total_length}")
+            else:
+                length = total_length
+                self.send_response(200)
+        else:
+            length = total_length
+            self.send_response(200)
+
+        self.send_header("Content-type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+        self.end_headers()
+        self._range_length = length
+        return f
+
+    def do_GET(self):
+        f = self.send_head()
+        if f:
+            try:
+                self.copyfile_range(f, self.wfile, self._range_length)
+            finally:
+                f.close()
+
+    def do_HEAD(self):
+        f = self.send_head()
+        if f:
+            f.close()
+
+    def copyfile_range(self, source, output, length, bufsize=64 * 1024):
+        while length > 0:
+            chunk = source.read(min(bufsize, length))
+            if not chunk:
+                break
+            output.write(chunk)
+            length -= len(chunk)
+
+
 def start_static_server():
     """Start a tiny HTTP server to serve local map assets."""
     web_dir = os.path.dirname(__file__)
-    handler = partial(SimpleHTTPRequestHandler, directory=web_dir)
+    handler = partial(RangeRequestHandler, directory=web_dir)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
