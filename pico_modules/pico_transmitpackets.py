@@ -398,8 +398,10 @@ class CRSFPacketProcessor(QObject):
             alt_m = alt_raw - 1000
             alt_ft = alt_m * 3.28084
 
+            # Emit altitude before airspeed so the main application receives
+            # values in the expected order (lat, lon, alt, course, speed, sats).
             self.telemetry_ready.emit(
-                ("gps", lat, lon, speed_mph, course, alt_ft, sats)
+                ("gps", lat, lon, alt_ft, course, speed_mph, sats)
             )
         except Exception:
             logger.exception("Failed to parse GPS packet")

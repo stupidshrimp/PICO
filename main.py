@@ -802,13 +802,13 @@ class MainWindow(QMainWindow):
             self.roll_data.append(roll)
             self.yaw_data.append(yaw)
         elif packet_type == "gps":
-            lat, lon, speed, _course, alt, _sats = values
+            lat, lon, alt, _course, speed, _sats = values
             self.gps_lat = lat
             self.gps_lon = lon
-            self.current_airspeed = speed
             self.current_altitude = alt
-            self.airspeed_data.append(speed)
+            self.current_airspeed = speed
             self.altitude_data.append(alt)
+            self.airspeed_data.append(speed)
             if hasattr(self, "map_view"):
                 self.map_view.page().runJavaScript(
                     f"updateMarker({lat}, {lon});"
