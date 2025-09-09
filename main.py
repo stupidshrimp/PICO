@@ -162,13 +162,6 @@ class MainWindow(QMainWindow):
         self.map_view = self.ui.mapframe
         self.map_view.setUrl(map_url)
 
-        # Track map loading state so JavaScript calls don't fail before the
-        # page is ready. ``updateMarker`` is defined inside ``index.html`` and
-        # attempting to call it before the page finishes loading results in
-        # ``ReferenceError: updateMarker is not defined`` in the console.
-        self._map_loaded = False
-        self.map_view.loadFinished.connect(self._on_map_loaded)
-
         # Add Data tab and associated graphs
         self.setup_data_page()
 
@@ -513,9 +506,6 @@ class MainWindow(QMainWindow):
         self.packet_rate_timer.timeout.connect(self.update_packet_rate)
         self.packet_rate_timer.start(1000)
 
-    def _on_map_loaded(self, ok: bool) -> None:
-        """Callback invoked when the embedded map finishes loading."""
-        self._map_loaded = ok
 
     def update_graphs(self):
         self.roll_curve.setData(self.roll_data)
@@ -812,16 +802,14 @@ class MainWindow(QMainWindow):
             self.roll_data.append(roll)
             self.yaw_data.append(yaw)
         elif packet_type == "gps":
-            lat, lon, speed, course, alt, sats = values
+            lat, lon, speed, _course, alt, _sats = values
             self.gps_lat = lat
             self.gps_lon = lon
-            self.gps_course = course
-            self.gps_sats = sats
             self.current_airspeed = speed
             self.current_altitude = alt
             self.airspeed_data.append(speed)
             self.altitude_data.append(alt)
-            if getattr(self, "_map_loaded", False):
+            if hasattr(self, "map_view"):
                 self.map_view.page().runJavaScript(
                     f"updateMarker({lat}, {lon});"
                 )

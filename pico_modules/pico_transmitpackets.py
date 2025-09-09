@@ -376,10 +376,10 @@ class CRSFPacketProcessor(QObject):
 
     def decode_gps(self, data):
         """Decode a CRSF GPS telemetry packet."""
-        if len(data) < 19:
+        if len(data) < 18:
             logger.warning("GPS packet too short")
             return
-        if data[1] < 16:
+        if data[1] < 17:
             logger.warning("GPS length byte unexpected: %d", data[1])
             return
         try:
@@ -387,11 +387,11 @@ class CRSFPacketProcessor(QObject):
             lat_raw, lon_raw, speed, course, alt, sats = struct.unpack(
                 ">iiHHHB", payload
             )
-            lat = lat_raw / 10000000.0
-            lon = lon_raw / 10000000.0
-            speed_mph = (speed * 100 - 50) / 36.0
-            course = course / 100.0
-            alt_m = alt - 1000
+            lat = lat_raw / 1000000.0
+            lon = lon_raw / 1000000.0
+            speed_mph = float(speed)
+            course = course / 10.0
+            alt_m = alt / 10.0
             alt_ft = alt_m * 3.28084
             self.telemetry_ready.emit(
                 ("gps", lat, lon, speed_mph, course, alt_ft, sats)
