@@ -114,10 +114,6 @@ class CustomGrip(QWidget):
             if disable_color:
                 self.wi.rightgrip.setStyleSheet("background: transparent")
 
-
-    def mouseReleaseEvent(self, event):
-        self.mousePos = None
-
     def resizeEvent(self, event):
         if hasattr(self.wi, 'container_top'):
             self.wi.container_top.setGeometry(0, 0, self.width(), 10)
