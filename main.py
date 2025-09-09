@@ -802,11 +802,11 @@ class MainWindow(QMainWindow):
             self.roll_data.append(roll)
             self.yaw_data.append(yaw)
         elif packet_type == "gps":
-            lat, lon, alt, _course, speed, _sats = values
+            lat, lon, speed, _course, alt, _sats = values
             self.gps_lat = lat
             self.gps_lon = lon
-            self.current_altitude = alt
             self.current_airspeed = speed
+            self.current_altitude = alt
             self.altitude_data.append(alt)
             self.airspeed_data.append(speed)
             if hasattr(self, "map_view"):
