@@ -384,18 +384,25 @@ class CRSFPacketProcessor(QObject):
             return
         try:
             payload = data[3:18]
-            lat_raw, lon_raw, speed, course, alt, sats = struct.unpack(
+            lat_raw, lon_raw, speed_raw, course_raw, alt_raw, sats = struct.unpack(
                 ">iiHHHB", payload
             )
-            lat = lat_raw / 1000000.0
-            lon = lon_raw / 1000000.0
-            speed_mph = float(speed)
-            course = course / 10.0
-            alt_m = alt / 10.0
+
+            # FC sends latitude/longitude in degrees scaled by 1e7
+            lat = lat_raw / 10000000.0
+            lon = lon_raw / 10000000.0
+
+            # Speed encoded as (speed * 36 + 50) / 100.
+            # Reverse the transform to recover metres/second then convert to mph.
+            speed_mps = (speed_raw * 100 - 50) / 36.0
+            speed_mph = speed_mps * 2.23694
+
+            # Course in centi-degrees and altitude in metres with +1000 offset
+            course = course_raw / 100.0
+            alt_m = alt_raw - 1000
             alt_ft = alt_m * 3.28084
-            self.telemetry_ready.emit(
-                ("gps", lat, lon, speed_mph, course, alt_ft, sats)
-            )
+
+            self.telemetry_ready.emit(("gps", lat, lon, speed_mph, course, alt_ft, sats))
         except Exception:
             logger.exception("Failed to parse GPS packet")
 
