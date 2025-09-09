@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QSizeGrip,
 )
 
+import logging
+
 # APP SETTINGS AND CUSTOM WIDGETS
 # ///////////////////////////////////////////////////////////////
 from .app_settings import Settings
@@ -250,8 +252,13 @@ class UIFunctions:
     # ///////////////////////////////////////////////////////////////
     def theme(self, file, useCustomTheme):
         if useCustomTheme:
-            str = open(file, 'r').read()
-            self.ui.styleSheet.setStyleSheet(str)
+            try:
+                with open(file, 'r') as f:
+                    style = f.read()
+            except FileNotFoundError:
+                logging.error("Theme file not found: %s", file)
+            else:
+                self.ui.styleSheet.setStyleSheet(style)
 
     # START - GUI DEFINITIONS
     # ///////////////////////////////////////////////////////////////
