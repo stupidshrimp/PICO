@@ -32,6 +32,17 @@
   const protocol = new pmtiles.Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
 
+  const p = new pmtiles.PMTiles('map1.pmtiles');
+  protocol.add(p);
+  const header = await p.getHeader();
+  let tileSize = 256;
+  try {
+    const metadata = await p.getMetadata();
+    tileSize = metadata.tileSize || metadata.tilesize || tileSize;
+  } catch (err) {
+    // ignore missing metadata
+  }
+
   const map = new maplibregl.Map({
     container: 'map',
     style: {
@@ -40,7 +51,8 @@
         satellite: {
           type: 'raster',
           url: 'pmtiles://map1.pmtiles',
-          tileSize: 256
+          tileSize: tileSize,
+          maxzoom: header.maxZoom
         }
       },
       layers: [{
