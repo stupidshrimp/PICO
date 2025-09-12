@@ -218,16 +218,28 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.map_cfg = self.config.setdefault("map", {"center": [0, 0], "zoom": 2})
 
-        # Start local static server and load the map over HTTP
-        self.httpd = start_static_server()
-        port = self.httpd.server_address[1]
-        lat, lon = self.map_cfg.get("center", [0, 0])
-        zoom = self.map_cfg.get("zoom", 2)
-        map_url = QUrl(
-            f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
-        )
+        # Start local static server and load the map over HTTP, but only if the
+        # offline tile archive exists. Otherwise warn the user that the map will
+        # be blank.
         self.map_view = self.ui.mapframe
-        self.map_view.setUrl(map_url)
+        map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
+        if not os.path.exists(map_file):
+            self.httpd = None
+            QMessageBox.warning(
+                self,
+                "Missing map tiles",
+                "Offline map tiles 'map1.pmtiles' not found in the map directory."
+                " The GPS map will remain blank.",
+            )
+        else:
+            self.httpd = start_static_server()
+            port = self.httpd.server_address[1]
+            lat, lon = self.map_cfg.get("center", [0, 0])
+            zoom = self.map_cfg.get("zoom", 2)
+            map_url = QUrl(
+                f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
+            )
+            self.map_view.setUrl(map_url)
 
         # Add Data tab and associated graphs
         self.setup_data_page()
