@@ -1381,43 +1381,25 @@ class MainWindow(QMainWindow):
             widgets.stackedWidget.setCurrentWidget(widgets.home)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
-            # Resume video feed and pause data timers
-            self.video_feed.start()
-            self.graph_timer.stop()
-            self.packet_rate_timer.stop()
 
         # SHOW WIDGETS PAGE
-        elif btnName == "btn_widgets":
+        if btnName == "btn_widgets":
             self.update_port_lists()
             widgets.stackedWidget.setCurrentWidget(widgets.configuration_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
-            # Pause video feed and data timers
-            self.video_feed.stop()
-            self.graph_timer.stop()
-            self.packet_rate_timer.stop()
 
         # SHOW NEW PAGE
-        elif btnName == "btn_new":
+        if btnName == "btn_new":
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
-            # Pause video feed and data timers
-            self.video_feed.stop()
-            self.graph_timer.stop()
-            self.packet_rate_timer.stop()
 
         # SHOW DATA PAGE
-        elif btnName == "btn_data":
+        if btnName == "btn_data":
             widgets.stackedWidget.setCurrentWidget(widgets.data_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
-            # Stop video feed and start data timers
-            self.video_feed.stop()
-            if not self.graph_timer.isActive():
-                self.graph_timer.start(100)
-            if not self.packet_rate_timer.isActive():
-                self.packet_rate_timer.start(1000)
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
