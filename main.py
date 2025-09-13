@@ -183,6 +183,9 @@ def validate_port(name: str, port: str) -> bool:
 
 widgets = None
 
+# Temporarily disable the GPS map to troubleshoot memory usage
+MAP_ENABLED = False
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -220,32 +223,34 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.map_cfg = self.config.setdefault("map", {"center": [0, 0], "zoom": 2})
 
-        # Start local static server and load the map over HTTP, but only if the
-        # offline tile archive exists. Otherwise warn the user that the map will
-        # be blank.
-        self.map_view = self.ui.mapframe
-        map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
-        if not os.path.exists(map_file):
-            self.httpd = None
-            QMessageBox.warning(
-                self,
-                "Missing map tiles",
-                "Offline map tiles 'map1.pmtiles' not found in the map directory."
-                " The GPS map will remain blank.",
-            )
+        # Optionally start the local map server and load the map if enabled
+        self.httpd = None
+        if MAP_ENABLED:
+            self.map_view = self.ui.mapframe
+            map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
+            if not os.path.exists(map_file):
+                QMessageBox.warning(
+                    self,
+                    "Missing map tiles",
+                    "Offline map tiles 'map1.pmtiles' not found in the map directory."
+                    " The GPS map will remain blank.",
+                )
+            else:
+                self.httpd = start_static_server()
+                port = self.httpd.server_address[1]
+                lat, lon = self.map_cfg.get("center", [0, 0])
+                zoom = self.map_cfg.get("zoom", 2)
+                map_url = QUrl(
+                    f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
+                )
+                self.map_view.setUrl(map_url)
+                # Disable WebEngine HTTP caching to limit memory usage from map tiles
+                profile = self.map_view.page().profile()
+                profile.setHttpCacheType(QWebEngineProfile.NoCache)
+                profile.clearHttpCache()
         else:
-            self.httpd = start_static_server()
-            port = self.httpd.server_address[1]
-            lat, lon = self.map_cfg.get("center", [0, 0])
-            zoom = self.map_cfg.get("zoom", 2)
-            map_url = QUrl(
-                f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
-            )
-            self.map_view.setUrl(map_url)
-            # Disable WebEngine HTTP caching to limit memory usage from map tiles
-            profile = self.map_view.page().profile()
-            profile.setHttpCacheType(QWebEngineProfile.NoCache)
-            profile.clearHttpCache()
+            # Hide the map widget when the map feature is disabled
+            self.ui.mapframe.hide()
 
         # Add Data tab and associated graphs
         self.setup_data_page()
@@ -958,7 +963,7 @@ class MainWindow(QMainWindow):
             self.current_altitude = alt
             self.altitude_data.append(alt)
             self.airspeed_data.append(speed)
-            if hasattr(self, "map_view"):
+            if MAP_ENABLED and hasattr(self, "map_view"):
                 self.map_view.page().runJavaScript(
                     f"updateMarker({lat}, {lon});"
                 )
