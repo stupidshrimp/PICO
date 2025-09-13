@@ -375,33 +375,34 @@ class CRSFPacketProcessor(QObject):
 
 
     def decode_gps(self, data):
-        """Decode a CRSF GPS telemetry packet."""
-        if len(data) < 19:
+        """Decode a custom GPS telemetry packet."""
+        # New GPS packets include a 17 byte payload consisting of:
+        # latitude (4B), longitude (4B), altitude (4B, cm),
+        # speed (2B, cm/s), ground course (2B, deg*100), satellites (1B)
+        if len(data) < 21:
             logger.warning("GPS packet too short")
             return
-        if data[1] != 17:
+        if data[1] != 19:
             logger.warning("GPS length byte unexpected: %d", data[1])
             return
         try:
-            # Extract the 15-byte payload (latitude through satellite count)
-            payload = data[3:18]
-            lat_raw, lon_raw, spd_raw, crs_raw, alt_raw, sats = struct.unpack(
-                ">iiHHHB", payload
+            # Extract the 17-byte payload
+            payload = data[3:20]
+            lat_raw, lon_raw, alt_raw, spd_raw, crs_raw, sats = struct.unpack(
+                ">iiiHHB", payload
             )
 
-            # Reverse Crossfire scaling/offset to obtain physical units
+            # Convert raw values to physical units
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
-            speed_kmh = spd_raw / 10.0
-            speed_mph = speed_kmh * 0.621371
+            alt_ft = alt_raw * 0.0328084  # cm -> feet
+            speed_mph = spd_raw * 0.0223694  # cm/s -> mph
             course = crs_raw / 100.0
-            alt_m = alt_raw - 1000
-            alt_ft = alt_m * 3.28084
 
-            # Emit values following the CRSF specification order:
-            # latitude, longitude, ground speed, course, altitude, satellites
+            # Emit values in the order: lat, lon, alt (ft), speed (mph),
+            # ground course, satellites
             self.telemetry_ready.emit(
-                ("gps", lat, lon, speed_mph, course, alt_ft, sats)
+                ("gps", lat, lon, alt_ft, speed_mph, course, sats)
             )
         except Exception:
             logger.exception("Failed to parse GPS packet")
