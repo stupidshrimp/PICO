@@ -90,7 +90,7 @@ class AltitudeOSD(QWidget):
                 tick_len = MAJOR_LEN
                 painter.drawLine(self.width() - tick_len, y, self.width(), y)
                 painter.drawText(
-                    self.width() - tick_len - 35, y + 4, f"{alt // TICK_INTERVAL}"
+                    self.width() - tick_len - 45, y + 4, f"{alt}"
                 )
             else:
                 tick_len = MINOR_LEN
@@ -101,7 +101,6 @@ class AltitudeOSD(QWidget):
         box_top = center_y - BOX_HEIGHT / 2
         painter.fillRect(0, box_top, self.width(), BOX_HEIGHT, QColor(0, 0, 0, 180))
         painter.drawRect(0, box_top, self.width() - 1, BOX_HEIGHT - 1)
-        painter.drawText(5, center_y + 8, f"{int(self._altitude)}")
 
         # Draw pointer triangle to left of readout box
         painter.setBrush(Qt.green)
@@ -112,5 +111,8 @@ class AltitudeOSD(QWidget):
             QPoint(15, center_y + 10),
         ])
         painter.drawPolygon(pointer)
+
+        # Draw the current altitude value
+        painter.drawText(20, center_y + 8, f"{int(self._altitude)}")
 
         painter.end()
