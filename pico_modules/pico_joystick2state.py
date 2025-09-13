@@ -36,11 +36,11 @@ class JoystickRawHandler(QObject):
     """Read raw joystick values over a serial connection.
 
     The microcontroller is expected to stream lines similar to the Arduino
-    sketch used for the custom joystick, e.g. ``Hall X=123  Y=456``.  Raw
+    sketch used for the custom joystick, e.g. ``Hall X=123  Y=456``. Raw
     values are already mapped to the ``0-1023`` HID range on the device, so
     the handler simply constrains the numbers and returns them unchanged.
-    Deadzone and sensitivity adjustments can be applied after parsing via
-    :meth:`get_mapped_values`.
+    Use :meth:`get_mapped_values` to convert roll and pitch to the CRSF
+    channel range (``172-1811``).
     """
 
     error = Signal(str)
@@ -117,10 +117,19 @@ class JoystickRawHandler(QObject):
 
         return self.pitch, self.roll  # pitch first for consistency with callers
 
+    @staticmethod
+    def _map_to_crsf(value, in_min=0, in_max=1023, out_min=172, out_max=1811):
+        """Linearly map ``value`` from one range to another."""
+        value = max(in_min, min(in_max, value))
+        scale = (out_max - out_min) / (in_max - in_min)
+        return int((value - in_min) * scale + out_min)
+
     def get_mapped_values(self):
-        """Return raw roll and pitch values without additional processing."""
+        """Return roll and pitch values mapped to the CRSF channel range."""
         pitch, roll = self.get_raw_values()
-        return roll, pitch
+        mapped_roll = self._map_to_crsf(roll)
+        mapped_pitch = self._map_to_crsf(pitch)
+        return mapped_roll, mapped_pitch
 
 
 # ----------------------------------------------------------------------
