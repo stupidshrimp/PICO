@@ -375,28 +375,29 @@ class CRSFPacketProcessor(QObject):
 
 
     def decode_gps(self, data):
-        """Decode a custom GPS telemetry packet."""
-        # New GPS packets include a 17 byte payload consisting of:
-        # latitude (4B), longitude (4B), altitude (4B, cm),
-        # speed (2B, cm/s), ground course (2B, deg*100), satellites (1B)
-        if len(data) < 21:
+        """Decode a GPS telemetry packet from the radio link."""
+        # GPS packets have a 15 byte payload consisting of:
+        # latitude (4B), longitude (4B), speed (2B, km/h),
+        # ground course (2B, deg*100), altitude (2B, offset +1000 m),
+        # satellites (1B)
+        if len(data) < 19:
             logger.warning("GPS packet too short")
             return
-        if data[1] != 19:
+        if data[1] != 17:
             logger.warning("GPS length byte unexpected: %d", data[1])
             return
         try:
-            # Extract the 17-byte payload
-            payload = data[3:20]
-            lat_raw, lon_raw, alt_raw, spd_raw, crs_raw, sats = struct.unpack(
-                ">iiiHHB", payload
+            # Extract the 15-byte payload
+            payload = data[3:18]
+            lat_raw, lon_raw, spd_raw, crs_raw, alt_raw, sats = struct.unpack(
+                ">iiHHHB", payload
             )
 
             # Convert raw values to physical units
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
-            alt_ft = alt_raw * 0.0328084  # cm -> feet
-            speed_mph = spd_raw * 0.0223694  # cm/s -> mph
+            speed_mph = spd_raw * 0.621371  # km/h -> mph
+            alt_ft = (alt_raw - 1000) * 3.28084  # m (offset +1000) -> feet
             course = crs_raw / 100.0
 
             # Emit values in the order: lat, lon, alt (ft), speed (mph),
