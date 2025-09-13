@@ -936,8 +936,9 @@ class MainWindow(QMainWindow):
 
     def handle_telemetry(self, packet_type, *values) -> None:
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
-        if packet_type != "link_stats":
-            print(f"Telemetry {packet_type}: {values}")
+        # Temporarily silence telemetry debug output
+        # if packet_type != "link_stats":
+        #     print(f"Telemetry {packet_type}: {values}")
         self.packet_count += 1
         now = time.monotonic()
         if packet_type == "attitude":

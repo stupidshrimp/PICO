@@ -117,6 +117,7 @@ class JoystickRawHandler(QObject):
             raw_line = self.data_queue.get()
             try:
                 self.roll, self.pitch = self._parse_line(raw_line)
+                print(f"Flight stick raw X={self.roll} Y={self.pitch}")
             except ValueError:
                 # Ignore unrelated lines such as button events
                 continue
