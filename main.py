@@ -680,13 +680,17 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt override naming
         mapping = {
-            Qt.Key_Space: 0,
             Qt.Key_A: 25,
             Qt.Key_S: 50,
             Qt.Key_D: 75,
             Qt.Key_F: 100,
         }
-        if event.key() in mapping:
+        if event.key() == Qt.Key_Space:
+            self.target_throttle_percent = 0
+            self.throttle_percent = 0
+            self.throttle_indicator.setValue(self.throttle_percent)
+            event.accept()
+        elif event.key() in mapping:
             self.target_throttle_percent = mapping[event.key()]
             event.accept()
         else:
