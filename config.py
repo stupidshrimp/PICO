@@ -6,8 +6,6 @@ DEFAULT_CONFIG = {
     "joystick": {
         "port": "COM14",
         "baudrate": 9600,
-        "deadzone": 5,
-        "sensitivity": 100,
     },
     "crsf": {
         "port": "COM3",

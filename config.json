@@ -1,9 +1,7 @@
 {
     "joystick": {
         "port": "COM5",
-        "baudrate": 9600,
-        "deadzone": 5,
-        "sensitivity": 100
+        "baudrate": 9600
     },
     "crsf": {
         "port": "COM4",
