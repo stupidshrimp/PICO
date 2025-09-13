@@ -179,7 +179,13 @@ class VideoFeed(QObject):
         # Timer for periodically checking camera availability
         self.camera_check_timer = QTimer()
         self.camera_check_timer.timeout.connect(self.check_camera)
-
+        # Persistent buffers used during deinterlacing to avoid per-frame
+        # allocations. These will be resized on first use to match the incoming
+        # frame dimensions.
+        self._even = np.empty((0, 0, 3), dtype=np.uint8)
+        self._odd = np.empty((0, 0, 3), dtype=np.uint8)
+        self._blended = np.empty((0, 0, 3), dtype=np.uint8)
+        self._deinterlaced = np.empty((0, 0, 3), dtype=np.uint8)
 
     def start(self):
         """Begin checking for the camera and start the feed when available."""
@@ -222,16 +228,23 @@ class VideoFeed(QObject):
         if message == "Camera Error or Disconnected":
             self.stop()
 
+    def _ensure_buffers(self, frame):
+        """Ensure persistent buffers match the shape of ``frame``."""
+        h, w, c = frame.shape
+        if self._deinterlaced.shape != frame.shape:
+            self._even = np.empty((h // 2, w, c), dtype=frame.dtype)
+            self._odd = np.empty_like(self._even)
+            self._blended = np.empty_like(self._even)
+            self._deinterlaced = np.empty_like(frame)
+
     def deinterlace(self, frame):
-        even = frame[0::2]
-        odd = frame[1::2]
-        blended = ((even.astype("float32") + odd.astype("float32")) / 2).astype(
-            "uint8"
-        )
-        deinterlaced = np.empty_like(frame)
-        deinterlaced[0::2] = blended
-        deinterlaced[1::2] = blended
-        return deinterlaced
+        self._ensure_buffers(frame)
+        np.copyto(self._even, frame[0::2])
+        np.copyto(self._odd, frame[1::2])
+        cv2.addWeighted(self._even, 0.5, self._odd, 0.5, 0, dst=self._blended)
+        self._deinterlaced[0::2] = self._blended
+        self._deinterlaced[1::2] = self._blended
+        return self._deinterlaced
 
     def show_fading_text(self, message):
         """
