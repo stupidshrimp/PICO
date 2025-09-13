@@ -396,7 +396,7 @@ class CRSFPacketProcessor(QObject):
             # Convert raw values to physical units
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
-            speed_mph = spd_raw * 0.621371  # km/h -> mph
+            speed_mph = spd_raw * 0.0621371  # km/h -> mph
             alt_ft = (alt_raw - 1000) * 3.28084  # m (offset +1000) -> feet
             course = crs_raw / 100.0
 
