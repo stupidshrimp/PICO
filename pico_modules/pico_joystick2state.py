@@ -35,13 +35,12 @@ class _SerialReader(QThread):
 class JoystickRawHandler(QObject):
     """Read raw joystick values over a serial connection.
 
-    The microcontroller is expected to stream values in the format
-    "X=<value> Y=<value>" or "<value>,<value>" where each value is in the
-    range ``0-1023``. The handler normalises the incoming data to this range
-    (inverting the Y axis to match typical HID behaviour) and exposes helper
-    methods for retrieving the most recent readings or values mapped to the
-    ``0-2000`` range used by the CRSF protocol. Deadzone and sensitivity can
-    be adjusted live.
+    The microcontroller is expected to stream lines similar to the Arduino
+    sketch used for the custom joystick, e.g. ``Hall X=123  Y=456``.  Raw
+    values are already mapped to the ``0-1023`` HID range on the device, so
+    the handler simply constrains the numbers and returns them unchanged.
+    Deadzone and sensitivity adjustments can be applied after parsing via
+    :meth:`get_mapped_values`.
     """
 
     error = Signal(str)
@@ -100,16 +99,16 @@ class JoystickRawHandler(QObject):
 
     def _parse_line(self, raw_line):
         """Parse a single line of serial data into normalised roll/pitch."""
-        if "," in raw_line:
-            x, y = map(int, raw_line.split(","))
-        else:
-            match = re.search(r"X\s*=\s*(\d+)\s*Y\s*=\s*(\d+)", raw_line)
-            if not match:
-                raise ValueError
+        match = re.search(r"X\s*=\s*(\d+)\s*Y\s*=\s*(\d+)", raw_line)
+        if match:
             x, y = map(int, match.groups())
+        elif "," in raw_line:
+            x, y = map(int, raw_line.split(",", 1))
+        else:
+            raise ValueError
 
         joy_x = self._normalise(x)
-        joy_y = 1023 - self._normalise(y)  # Invert Y axis
+        joy_y = self._normalise(y)
         return joy_x, joy_y
 
     def get_raw_values(self):
@@ -119,7 +118,8 @@ class JoystickRawHandler(QObject):
             try:
                 self.roll, self.pitch = self._parse_line(raw_line)
             except ValueError:
-                self.error.emit(f"Malformed data: {raw_line}")
+                # Ignore unrelated lines such as button events
+                continue
 
         return self.pitch, self.roll  # pitch first for consistency with callers
 
