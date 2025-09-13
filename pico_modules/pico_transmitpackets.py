@@ -397,9 +397,12 @@ class CRSFPacketProcessor(QObject):
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
             speed_mph = spd_raw * 0.0621371  # km/h -> mph
-            # Altitude is reported in 0.1 m increments with a +1000 m offset
-            # in the CRSF GPS packet. Convert to feet for the UI.
-            alt_ft = (alt_raw - 1000) * 0.328084  # 0.1 m (offset +1000) -> feet
+            # Altitude is encoded in meters with a +1000 m offset in the CRSF
+            # GPS packet. The firmware provides altitude in centimeters and the
+            # CRSF implementation converts it to meters before adding the
+            # offset (encoded_altitude = (alt_cm / 100) + 1000). Subtract 1000
+            # to recover meters and convert to feet for the UI.
+            alt_ft = (alt_raw - 1000) * 3.28084  # meters -> feet
             course = crs_raw / 100.0
 
             # Emit values in the order: lat, lon, alt (ft), speed (mph),
