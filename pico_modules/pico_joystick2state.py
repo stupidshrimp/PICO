@@ -128,19 +128,9 @@ class JoystickRawHandler(QObject):
         """Map raw values to the 0-2000 range used by CRSF."""
         pitch, roll = self.get_raw_values()
 
-        def apply_settings(value):
-            center = 512
-            delta = value - center
-            deadzone_range = (self.deadzone / 100) * 512
-            if abs(delta) < deadzone_range:
-                delta = 0
-            delta *= self.sensitivity / 100
-            adjusted = center + delta
-            return max(0, min(1023, int(adjusted)))
-
-        roll = apply_settings(roll)
-        pitch = apply_settings(pitch)
-
+        # Temporarily disable deadzone and sensitivity adjustments to aid
+        # troubleshooting of incorrect joystick values.  This returns the raw
+        # readings scaled directly to the CRSF range.
         roll_mapped = int(roll * (2000 / 1023))
         pitch_mapped = int(pitch * (2000 / 1023))
         return roll_mapped, pitch_mapped
