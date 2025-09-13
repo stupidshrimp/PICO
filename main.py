@@ -131,6 +131,7 @@ from PySide6.QtCore import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtGui import QCursor, QIcon, QColor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+import shiboken6
 
 from serial.tools import list_ports
 
@@ -737,10 +738,39 @@ class MainWindow(QMainWindow):
         alerts reuse the same player.
         """
         file_path = os.path.join("audio", f"{name}.mp3")
-        player, output = self.sound_players.get(name, (QMediaPlayer(), QAudioOutput()))
+
+        # Reuse an existing player if it hasn't been deleted; otherwise create
+        # a fresh QMediaPlayer/QAudioOutput pair.
+        player_output = self.sound_players.get(name)
+        if player_output:
+            player, output = player_output
+            if not shiboken6.isValid(player) or not shiboken6.isValid(output):
+                player, output = QMediaPlayer(), QAudioOutput()
+        else:
+            player, output = QMediaPlayer(), QAudioOutput()
+
         player.setAudioOutput(output)
         player.setSource(QUrl.fromLocalFile(file_path))
         output.setVolume(1.0)
+
+        # Ensure any previous connections are removed before connecting our
+        # cleanup handler.
+        try:
+            player.mediaStatusChanged.disconnect()
+        except Exception:
+            pass
+
+        def handle_status(status, *, name=name, player=player, output=output):
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                try:
+                    player.mediaStatusChanged.disconnect(handle_status)
+                except Exception:
+                    pass
+                self.sound_players.pop(name, None)
+                player.deleteLater()
+                output.deleteLater()
+
+        player.mediaStatusChanged.connect(handle_status)
         player.play()
         self.sound_players[name] = (player, output)
 
@@ -756,14 +786,33 @@ class MainWindow(QMainWindow):
 
         name = names[0]
         file_path = os.path.join("audio", f"{name}.mp3")
-        player, output = self.sound_players.get(name, (QMediaPlayer(), QAudioOutput()))
+
+        player_output = self.sound_players.get(name)
+        if player_output:
+            player, output = player_output
+            if not shiboken6.isValid(player) or not shiboken6.isValid(output):
+                player, output = QMediaPlayer(), QAudioOutput()
+        else:
+            player, output = QMediaPlayer(), QAudioOutput()
+
         player.setAudioOutput(output)
         player.setSource(QUrl.fromLocalFile(file_path))
         output.setVolume(1.0)
 
-        def handle_status(status):
+        try:
+            player.mediaStatusChanged.disconnect()
+        except Exception:
+            pass
+
+        def handle_status(status, *, name=name, player=player, output=output):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
-                player.mediaStatusChanged.disconnect(handle_status)
+                try:
+                    player.mediaStatusChanged.disconnect(handle_status)
+                except Exception:
+                    pass
+                self.sound_players.pop(name, None)
+                player.deleteLater()
+                output.deleteLater()
                 if len(names) > 1:
                     self.play_sound_sequence(names[1:], finished_callback)
                 elif finished_callback:
