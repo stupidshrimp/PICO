@@ -277,14 +277,24 @@ class MainWindow(QMainWindow):
         )
         self.attitude_monitor_timer.start(200)
 
-        # Initialize the video feed by scanning for an available capture
-        # device. ``detect_device_index`` prefers the external VTX at index 1
-        # but falls back to other indices if needed.
-        video_index = VideoFeed.detect_device_index()
-        if video_index is not None:
-            print(f"Using video capture device index: {video_index}")
+        # Initialize the video feed.  If a specific capture device index is
+        # provided in the configuration it takes precedence.  Otherwise,
+        # automatically scan for an available device. ``detect_device_index``
+        # prefers the external VTX at index 1 but falls back to other indices
+        # if needed.
+        video_index = self.vtx_cfg.get("device_index")
+        if video_index is None:
+            video_index = VideoFeed.detect_device_index()
+            if video_index is not None:
+                print(
+                    f"Using auto-detected video capture device index: {video_index}"
+                )
+            else:
+                print(
+                    "No video capture device found; feed will remain disconnected."
+                )
         else:
-            print("No video capture device found; feed will remain disconnected.")
+            print(f"Using configured video capture device index: {video_index}")
 
         self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
         self.video_feed.worker.error.connect(self.handle_worker_error)
