@@ -15,7 +15,9 @@ DEFAULT_CONFIG = {
         # Interval in ms (~300 Hz)
         "packet_interval": 3,
     },
-    "vtx": {"device_index": 1},
+    # ``device_index`` is optional so that automatic capture device detection
+    # can run when no explicit index is configured.
+    "vtx": {},
     "warnings": {
         # Trigger when airspeed < stall_airspeed and altitude > stall_altitude
         "stall_airspeed": 10,

@@ -10,9 +10,7 @@
         "baudrate": 921600,
         "packet_interval": 3
     },
-    "vtx": {
-        "device_index": 1
-    },
+    "vtx": {},
     "warnings": {
         "stall_airspeed": 20,
         "stall_altitude": 50,
