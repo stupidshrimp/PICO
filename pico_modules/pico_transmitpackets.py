@@ -434,9 +434,9 @@ class CRSFPacketProcessor(QObject):
             return
         try:
             pitch, roll, yaw = struct.unpack(">hhh", data[3:9])
-            pitch /= 10
-            roll /= 10
-            yaw /= 10
+            pitch /= 100
+            roll /= 100
+            yaw /= 100
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
         except Exception:
             logger.exception("Failed to parse attitude packet")
