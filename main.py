@@ -1030,9 +1030,13 @@ class MainWindow(QMainWindow):
                 channels[1] = int(mapped_pitch)
             except Exception as e:
                 print(f"Error during transmission: {e}")
-        # Map throttle percentage (0-100) directly to a 0-1000 range
-        throttle_value = int((self.throttle_percent / 100) * 1000)
-        channels[2] = int(throttle_value)
+        # Map throttle percentage to CRSF channel range (172-1811)
+        throttle_min = 172
+        throttle_max = 1811
+        throttle_span = throttle_max - throttle_min
+        clamped_percent = max(0.0, min(100.0, self.throttle_percent))
+        throttle_value = int((clamped_percent / 100) * throttle_span + throttle_min)
+        channels[2] = throttle_value
         try:
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
