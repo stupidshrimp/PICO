@@ -129,6 +129,7 @@ from PySide6.QtCore import (
     QParallelAnimationGroup,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEngineProfile
 from PySide6.QtGui import QCursor, QIcon, QColor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import shiboken6
@@ -241,6 +242,10 @@ class MainWindow(QMainWindow):
                 f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
             )
             self.map_view.setUrl(map_url)
+            # Disable WebEngine HTTP caching to limit memory usage from map tiles
+            profile = self.map_view.page().profile()
+            profile.setHttpCacheType(QWebEngineProfile.NoCache)
+            profile.clearHttpCache()
 
         # Add Data tab and associated graphs
         self.setup_data_page()
@@ -1359,25 +1364,43 @@ class MainWindow(QMainWindow):
             widgets.stackedWidget.setCurrentWidget(widgets.home)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+            # Resume video feed and pause data timers
+            self.video_feed.start()
+            self.graph_timer.stop()
+            self.packet_rate_timer.stop()
 
         # SHOW WIDGETS PAGE
-        if btnName == "btn_widgets":
+        elif btnName == "btn_widgets":
             self.update_port_lists()
             widgets.stackedWidget.setCurrentWidget(widgets.configuration_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+            # Pause video feed and data timers
+            self.video_feed.stop()
+            self.graph_timer.stop()
+            self.packet_rate_timer.stop()
 
         # SHOW NEW PAGE
-        if btnName == "btn_new":
+        elif btnName == "btn_new":
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
+            # Pause video feed and data timers
+            self.video_feed.stop()
+            self.graph_timer.stop()
+            self.packet_rate_timer.stop()
 
         # SHOW DATA PAGE
-        if btnName == "btn_data":
+        elif btnName == "btn_data":
             widgets.stackedWidget.setCurrentWidget(widgets.data_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+            # Stop video feed and start data timers
+            self.video_feed.stop()
+            if not self.graph_timer.isActive():
+                self.graph_timer.start(100)
+            if not self.packet_rate_timer.isActive():
+                self.packet_rate_timer.start(1000)
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
