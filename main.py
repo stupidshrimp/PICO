@@ -956,11 +956,13 @@ class MainWindow(QMainWindow):
             self.roll_data.append(roll)
             self.yaw_data.append(yaw)
         elif packet_type == "gps":
-            lat, lon, speed, _course, alt, _sats = values
+            # Order: latitude, longitude, altitude (ft), speed (mph),
+            # ground course, satellites
+            lat, lon, alt, speed, _course, _sats = values
             self.gps_lat = lat
             self.gps_lon = lon
-            self.current_airspeed = speed
             self.current_altitude = alt
+            self.current_airspeed = speed
             self.altitude_data.append(alt)
             self.airspeed_data.append(speed)
             if MAP_ENABLED and hasattr(self, "map_view"):
