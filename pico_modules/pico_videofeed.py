@@ -36,6 +36,14 @@ class FrameWorker(QObject):
         self.video_feed = video_feed
         self.cap = None
         self._timer = None
+        # Persistent buffers used during deinterlacing are maintained on the
+        # worker thread itself so that frame processing does not touch Qt
+        # objects living on the main thread.  This avoids cross-thread access
+        # issues that could stall the video feed after the first frame.
+        self._even = np.empty((0, 0, 3), dtype=np.uint8)
+        self._odd = np.empty((0, 0, 3), dtype=np.uint8)
+        self._blended = np.empty((0, 0, 3), dtype=np.uint8)
+        self._deinterlaced = np.empty((0, 0, 3), dtype=np.uint8)
 
     @Slot()
     def ensure_camera(self):
@@ -96,7 +104,7 @@ class FrameWorker(QObject):
                 self.error.emit("Camera Error or Disconnected")
                 return
 
-            frame = self.video_feed.deinterlace(frame)
+            frame = self.deinterlace(frame)
 
             # Convert the frame without imposing a fixed output size so the
             # full field of view from the capture device is preserved.  Any
@@ -109,6 +117,24 @@ class FrameWorker(QObject):
             self.frame_ready.emit(qt_image)
         except Exception as exc:
             self.error.emit(str(exc))
+
+    def _ensure_buffers(self, frame):
+        """Ensure persistent buffers match the shape of ``frame``."""
+        h, w, c = frame.shape
+        if self._deinterlaced.shape != frame.shape:
+            self._even = np.empty((h // 2, w, c), dtype=frame.dtype)
+            self._odd = np.empty_like(self._even)
+            self._blended = np.empty_like(self._even)
+            self._deinterlaced = np.empty_like(frame)
+
+    def deinterlace(self, frame):
+        self._ensure_buffers(frame)
+        np.copyto(self._even, frame[0::2])
+        np.copyto(self._odd, frame[1::2])
+        cv2.addWeighted(self._even, 0.5, self._odd, 0.5, 0, dst=self._blended)
+        self._deinterlaced[0::2] = self._blended
+        self._deinterlaced[1::2] = self._blended
+        return self._deinterlaced
 
 
 class VideoFeed(QObject):
@@ -179,13 +205,6 @@ class VideoFeed(QObject):
         # Timer for periodically checking camera availability
         self.camera_check_timer = QTimer()
         self.camera_check_timer.timeout.connect(self.check_camera)
-        # Persistent buffers used during deinterlacing to avoid per-frame
-        # allocations. These will be resized on first use to match the incoming
-        # frame dimensions.
-        self._even = np.empty((0, 0, 3), dtype=np.uint8)
-        self._odd = np.empty((0, 0, 3), dtype=np.uint8)
-        self._blended = np.empty((0, 0, 3), dtype=np.uint8)
-        self._deinterlaced = np.empty((0, 0, 3), dtype=np.uint8)
 
     def start(self):
         """Begin checking for the camera and start the feed when available."""
@@ -228,23 +247,6 @@ class VideoFeed(QObject):
         if message == "Camera Error or Disconnected":
             self.stop()
 
-    def _ensure_buffers(self, frame):
-        """Ensure persistent buffers match the shape of ``frame``."""
-        h, w, c = frame.shape
-        if self._deinterlaced.shape != frame.shape:
-            self._even = np.empty((h // 2, w, c), dtype=frame.dtype)
-            self._odd = np.empty_like(self._even)
-            self._blended = np.empty_like(self._even)
-            self._deinterlaced = np.empty_like(frame)
-
-    def deinterlace(self, frame):
-        self._ensure_buffers(frame)
-        np.copyto(self._even, frame[0::2])
-        np.copyto(self._odd, frame[1::2])
-        cv2.addWeighted(self._even, 0.5, self._odd, 0.5, 0, dst=self._blended)
-        self._deinterlaced[0::2] = self._blended
-        self._deinterlaced[1::2] = self._blended
-        return self._deinterlaced
 
     def show_fading_text(self, message):
         """
