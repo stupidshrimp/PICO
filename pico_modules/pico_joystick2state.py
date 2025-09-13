@@ -92,13 +92,8 @@ class JoystickRawHandler(QObject):
     # ------------------------------------------------------------------
     # Data processing
     # ------------------------------------------------------------------
-    @staticmethod
-    def _normalise(value):
-        """Constrain ``value`` to the 0-1023 HID range."""
-        return max(0, min(1023, int(value)))
-
     def _parse_line(self, raw_line):
-        """Parse a single line of serial data into normalised roll/pitch."""
+        """Parse a single line of serial data into raw roll/pitch values."""
         match = re.search(r"X\s*=\s*(\d+)\s*Y\s*=\s*(\d+)", raw_line)
         if match:
             x, y = map(int, match.groups())
@@ -107,12 +102,10 @@ class JoystickRawHandler(QObject):
         else:
             raise ValueError
 
-        joy_x = self._normalise(x)
-        joy_y = self._normalise(y)
-        return joy_x, joy_y
+        return x, y
 
     def get_raw_values(self):
-        """Return the most recent normalised pitch and roll values."""
+        """Return the most recent raw pitch and roll values."""
         while not self.data_queue.empty():
             raw_line = self.data_queue.get()
             try:
@@ -125,15 +118,9 @@ class JoystickRawHandler(QObject):
         return self.pitch, self.roll  # pitch first for consistency with callers
 
     def get_mapped_values(self):
-        """Map raw values to the 0-2000 range used by CRSF."""
+        """Return raw roll and pitch values without additional processing."""
         pitch, roll = self.get_raw_values()
-
-        # Temporarily disable deadzone and sensitivity adjustments to aid
-        # troubleshooting of incorrect joystick values.  This returns the raw
-        # readings scaled directly to the CRSF range.
-        roll_mapped = int(roll * (2000 / 1023))
-        pitch_mapped = int(pitch * (2000 / 1023))
-        return roll_mapped, pitch_mapped
+        return roll, pitch
 
 
 # ----------------------------------------------------------------------
