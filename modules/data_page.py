@@ -150,10 +150,27 @@ class DataPage:
         self.snr_curve = self.snr_plot.plot()
         self.downlink_snr_curve = self.downlink_snr_plot.plot()
 
+        self._plot_sources = (
+            (self.roll_curve, self.roll_data),
+            (self.pitch_curve, self.pitch_data),
+            (self.yaw_curve, self.yaw_data),
+            (self.airspeed_curve, self.airspeed_data),
+            (self.altitude_curve, self.altitude_data),
+            (self.rssi_a_curve, self.rssi_a_data),
+            (self.rssi_b_curve, self.rssi_b_data),
+            (self.link_quality_curve, self.link_quality_data),
+            (self.downlink_quality_curve, self.downlink_quality_data),
+            (self.snr_curve, self.snr_data),
+            (self.downlink_snr_curve, self.downlink_snr_data),
+        )
+
+        self._graph_dirty = True
+
     def _init_timers(self) -> None:
         self.graph_timer = QTimer(self._main_window)
         self.graph_timer.timeout.connect(self.update_graphs)
-        self.graph_timer.start(100)
+        # Target ~60 Hz refresh rate for smoother graph updates.
+        self.graph_timer.start(16)
 
         self.packet_rate = 0
         self.packet_count = 0
@@ -171,10 +188,12 @@ class DataPage:
         self.pitch_data.append(pitch)
         self.roll_data.append(roll)
         self.yaw_data.append(yaw)
+        self._graph_dirty = True
 
     def add_flight_metrics(self, altitude: float, airspeed: float) -> None:
         self.altitude_data.append(altitude)
         self.airspeed_data.append(airspeed)
+        self._graph_dirty = True
 
     def add_link_stats(
         self,
@@ -191,22 +210,19 @@ class DataPage:
         self.downlink_quality_data.append(downlink_quality)
         self.snr_data.append(snr)
         self.downlink_snr_data.append(downlink_snr)
+        self._graph_dirty = True
 
     # ------------------------------------------------------------------
     # Timer callbacks
     # ------------------------------------------------------------------
     def update_graphs(self) -> None:
-        self.roll_curve.setData(self.roll_data)
-        self.pitch_curve.setData(self.pitch_data)
-        self.yaw_curve.setData(self.yaw_data)
-        self.airspeed_curve.setData(self.airspeed_data)
-        self.altitude_curve.setData(self.altitude_data)
-        self.rssi_a_curve.setData(self.rssi_a_data)
-        self.rssi_b_curve.setData(self.rssi_b_data)
-        self.link_quality_curve.setData(self.link_quality_data)
-        self.downlink_quality_curve.setData(self.downlink_quality_data)
-        self.snr_curve.setData(self.snr_data)
-        self.downlink_snr_curve.setData(self.downlink_snr_data)
+        if not self._graph_dirty:
+            return
+
+        for curve, data in self._plot_sources:
+            curve.setData(data)
+
+        self._graph_dirty = False
 
     def update_packet_rate(self) -> None:
         self.packet_rate_label.setText(
