@@ -199,6 +199,14 @@ class MainWindow(QMainWindow):
         self.setFixedSize(self.size())
         self.ui.stackedWidget.setCurrentWidget(self.ui.home)
 
+        # Control mode setup
+        self.control_mode = "Manual"  # Default mode
+        self.control_mode_channel = 4  # Channel 5 (0-based index)
+        self.update_control_mode_label()
+        # Shortcut to toggle control mode
+        self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
+        self.mode_shortcut.activated.connect(self.toggle_control_mode)
+
         global widgets
         widgets = self.ui
 
@@ -1040,10 +1048,25 @@ class MainWindow(QMainWindow):
         clamped_percent = max(0.0, min(100.0, self.throttle_percent))
         throttle_value = int((clamped_percent / 100) * throttle_span + throttle_min)
         channels[2] = throttle_value
+        # Control mode channel: send low for Manual, high for Fly-By-Wire
+        mode_value = 1811 if self.control_mode == "Fly-By-Wire" else 172
+        channels[self.control_mode_channel] = mode_value
         try:
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
+
+    def update_control_mode_label(self):
+        """Update the control mode indicator text and color."""
+        if hasattr(self.ui, "controlModeLabel"):
+            color = "rgb(0, 255, 0)" if self.control_mode == "Manual" else "rgb(255, 165, 0)"
+            self.ui.controlModeLabel.setText(self.control_mode)
+            self.ui.controlModeLabel.setStyleSheet(f"color: {color};")
+
+    def toggle_control_mode(self):
+        """Toggle between Manual and Fly-By-Wire modes."""
+        self.control_mode = "Fly-By-Wire" if self.control_mode == "Manual" else "Manual"
+        self.update_control_mode_label()
 
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
