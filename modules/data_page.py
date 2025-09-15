@@ -1,6 +1,6 @@
 """Telemetry data page construction and data management."""
 
-from collections import deque
+import numpy as np
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor
@@ -13,6 +13,34 @@ from PySide6.QtWidgets import (
     QGridLayout,
 )
 import pyqtgraph as pg
+
+
+class _DataSeries:
+    """Container that tracks a scrolling data buffer and its plot curve."""
+
+    __slots__ = ("curve", "data", "count")
+
+    def __init__(self, curve: pg.PlotDataItem, max_points: int) -> None:
+        self.curve = curve
+        self.data = np.zeros(max_points, dtype=np.float32)
+        self.count = 0
+
+    def append(self, value: float) -> None:
+        data = self.data
+        data[:-1] = data[1:]
+        data[-1] = value
+        if self.count < data.size:
+            self.count += 1
+
+    def render(self, x_values: np.ndarray) -> None:
+        if self.count == 0:
+            self.curve.clear()
+            return
+        if self.count < self.data.size:
+            view = slice(-self.count, None)
+            self.curve.setData(x_values[view], self.data[view])
+            return
+        self.curve.setData(x_values, self.data)
 
 
 class DataPage:
@@ -126,51 +154,50 @@ class DataPage:
 
     def _init_data_storage(self) -> None:
         max_points = self._MAX_POINTS
-        self.roll_data = deque([0] * max_points, maxlen=max_points)
-        self.pitch_data = deque([0] * max_points, maxlen=max_points)
-        self.yaw_data = deque([0] * max_points, maxlen=max_points)
-        self.airspeed_data = deque([0] * max_points, maxlen=max_points)
-        self.altitude_data = deque([0] * max_points, maxlen=max_points)
-        self.rssi_a_data = deque([0] * max_points, maxlen=max_points)
-        self.rssi_b_data = deque([0] * max_points, maxlen=max_points)
-        self.link_quality_data = deque([0] * max_points, maxlen=max_points)
-        self.downlink_quality_data = deque([0] * max_points, maxlen=max_points)
-        self.snr_data = deque([0] * max_points, maxlen=max_points)
-        self.downlink_snr_data = deque([0] * max_points, maxlen=max_points)
+        self._x_values = np.linspace(-(max_points - 1), 0, max_points, dtype=np.float32)
 
-        self.roll_curve = self.roll_plot.plot()
-        self.pitch_curve = self.pitch_plot.plot()
-        self.yaw_curve = self.yaw_plot.plot()
-        self.airspeed_curve = self.airspeed_plot.plot()
-        self.altitude_curve = self.altitude_plot.plot()
-        self.rssi_a_curve = self.rssi_a_plot.plot()
-        self.rssi_b_curve = self.rssi_b_plot.plot()
-        self.link_quality_curve = self.link_quality_plot.plot()
-        self.downlink_quality_curve = self.downlink_quality_plot.plot()
-        self.snr_curve = self.snr_plot.plot()
-        self.downlink_snr_curve = self.downlink_snr_plot.plot()
+        self.roll_series = _DataSeries(self.roll_plot.plot(), max_points)
+        self.pitch_series = _DataSeries(self.pitch_plot.plot(), max_points)
+        self.yaw_series = _DataSeries(self.yaw_plot.plot(), max_points)
+        self.airspeed_series = _DataSeries(self.airspeed_plot.plot(), max_points)
+        self.altitude_series = _DataSeries(self.altitude_plot.plot(), max_points)
+        self.rssi_a_series = _DataSeries(self.rssi_a_plot.plot(), max_points)
+        self.rssi_b_series = _DataSeries(self.rssi_b_plot.plot(), max_points)
+        self.link_quality_series = _DataSeries(
+            self.link_quality_plot.plot(), max_points
+        )
+        self.downlink_quality_series = _DataSeries(
+            self.downlink_quality_plot.plot(), max_points
+        )
+        self.snr_series = _DataSeries(self.snr_plot.plot(), max_points)
+        self.downlink_snr_series = _DataSeries(
+            self.downlink_snr_plot.plot(), max_points
+        )
 
-        self._plot_sources = (
-            (self.roll_curve, self.roll_data),
-            (self.pitch_curve, self.pitch_data),
-            (self.yaw_curve, self.yaw_data),
-            (self.airspeed_curve, self.airspeed_data),
-            (self.altitude_curve, self.altitude_data),
-            (self.rssi_a_curve, self.rssi_a_data),
-            (self.rssi_b_curve, self.rssi_b_data),
-            (self.link_quality_curve, self.link_quality_data),
-            (self.downlink_quality_curve, self.downlink_quality_data),
-            (self.snr_curve, self.snr_data),
-            (self.downlink_snr_curve, self.downlink_snr_data),
+        self._series = (
+            self.roll_series,
+            self.pitch_series,
+            self.yaw_series,
+            self.airspeed_series,
+            self.altitude_series,
+            self.rssi_a_series,
+            self.rssi_b_series,
+            self.link_quality_series,
+            self.downlink_quality_series,
+            self.snr_series,
+            self.downlink_snr_series,
         )
 
         self._graph_dirty = True
 
     def _init_timers(self) -> None:
         self.graph_timer = QTimer(self._main_window)
+        self.graph_timer.setTimerType(Qt.CoarseTimer)
         self.graph_timer.timeout.connect(self.update_graphs)
-        # Target ~60 Hz refresh rate for smoother graph updates.
-        self.graph_timer.start(16)
+        self._graph_interval_ms = 33
+        self._graphs_active = False
+        self._ui.stackedWidget.currentChanged.connect(self._on_page_changed)
+        self._on_page_changed(self._ui.stackedWidget.currentIndex())
 
         self.packet_rate = 0
         self.packet_count = 0
@@ -185,14 +212,14 @@ class DataPage:
         self.packet_count += 1
 
     def add_attitude(self, pitch: float, roll: float, yaw: float) -> None:
-        self.pitch_data.append(pitch)
-        self.roll_data.append(roll)
-        self.yaw_data.append(yaw)
+        self.pitch_series.append(pitch)
+        self.roll_series.append(roll)
+        self.yaw_series.append(yaw)
         self._graph_dirty = True
 
     def add_flight_metrics(self, altitude: float, airspeed: float) -> None:
-        self.altitude_data.append(altitude)
-        self.airspeed_data.append(airspeed)
+        self.altitude_series.append(altitude)
+        self.airspeed_series.append(airspeed)
         self._graph_dirty = True
 
     def add_link_stats(
@@ -204,25 +231,38 @@ class DataPage:
         snr: float,
         downlink_snr: float,
     ) -> None:
-        self.rssi_a_data.append(rssi_a)
-        self.rssi_b_data.append(rssi_b)
-        self.link_quality_data.append(link_quality)
-        self.downlink_quality_data.append(downlink_quality)
-        self.snr_data.append(snr)
-        self.downlink_snr_data.append(downlink_snr)
+        self.rssi_a_series.append(rssi_a)
+        self.rssi_b_series.append(rssi_b)
+        self.link_quality_series.append(link_quality)
+        self.downlink_quality_series.append(downlink_quality)
+        self.snr_series.append(snr)
+        self.downlink_snr_series.append(downlink_snr)
         self._graph_dirty = True
 
     # ------------------------------------------------------------------
     # Timer callbacks
     # ------------------------------------------------------------------
     def update_graphs(self) -> None:
-        if not self._graph_dirty:
+        if not self._graph_dirty or not self._graphs_active:
             return
 
-        for curve, data in self._plot_sources:
-            curve.setData(data)
+        for series in self._series:
+            series.render(self._x_values)
 
         self._graph_dirty = False
+
+    def _on_page_changed(self, index: int) -> None:
+        is_current = self._ui.stackedWidget.widget(index) is self._ui.data_page
+        if is_current == self._graphs_active:
+            return
+
+        self._graphs_active = is_current
+        if is_current:
+            self.graph_timer.start(self._graph_interval_ms)
+            if self._graph_dirty:
+                self.update_graphs()
+        else:
+            self.graph_timer.stop()
 
     def update_packet_rate(self) -> None:
         self.packet_rate_label.setText(
