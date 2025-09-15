@@ -161,6 +161,7 @@ from pico_modules.compass_osd import CompassOSD
 from config import load_config, save_config
 
 from collections import deque
+from typing import Optional
 import pyqtgraph as pg
 
 
@@ -1078,16 +1079,19 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.ui.configuration_page)
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
-        def add_section(title):
+        def add_section(title, *, show_status=True):
             section = QWidget()
             vbox = QVBoxLayout(section)
             header = QHBoxLayout()
             label = QLabel(title)
             label.setStyleSheet("font-weight: bold;")
-            status = QLabel()
-            status.setStyleSheet("color: red;")
             header.addWidget(label)
-            header.addWidget(status)
+            if show_status:
+                status = QLabel()
+                status.setStyleSheet("color: red;")
+                header.addWidget(status)
+            else:
+                status = None
             header.addStretch()
             vbox.addLayout(header)
             layout.addWidget(section)
@@ -1176,7 +1180,9 @@ class MainWindow(QMainWindow):
 
         # VTX settings (video receiver is treated as a camera device, so no
         # serial port configuration is required)
-        vtx_layout, self.vtx_status = add_section("VTX System Settings")
+        vtx_layout, self.vtx_status = add_section(
+            "VTX System Settings", show_status=False
+        )
         add_separator()
 
         # Warning system settings
@@ -1420,7 +1426,9 @@ class MainWindow(QMainWindow):
             timer.stop()
         label.setVisible(True)
 
-    def update_connection_status(self, label: QLabel, connected: bool):
+    def update_connection_status(self, label: Optional[QLabel], connected: bool):
+        if label is None:
+            return
         if connected:
             label.setText("")
             self.stop_blinking(label)
