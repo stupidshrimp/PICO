@@ -1224,7 +1224,7 @@ class MainWindow(QMainWindow):
         throttle_value = int((clamped_percent / 100) * throttle_span + throttle_min)
         channels[2] = throttle_value
         # Control mode channel: send low for Manual, high for Fly-By-Wire
-        mode_value = 1811 if self.control_mode == "Fly-By-Wire" else 172
+        mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
         channels[self.control_mode_channel] = mode_value
         try:
             self.crsf_processor.channel_update.emit(channels)
