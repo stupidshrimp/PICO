@@ -192,7 +192,10 @@ class DataPage:
 
     def _init_timers(self) -> None:
         self.graph_timer = QTimer(self._main_window)
-        self.graph_timer.setTimerType(Qt.CoarseTimer)
+        # Use the precise timer type so the refresh cadence isn't throttled to
+        # the coarse timer's ~50 ms granularity.  This keeps the plots on the
+        # data tab rendering at the intended frame rate.
+        self.graph_timer.setTimerType(Qt.PreciseTimer)
         self.graph_timer.timeout.connect(self.update_graphs)
         self._graph_interval_ms = 33
         self._graphs_active = False
