@@ -3237,20 +3237,57 @@ background-repeat: no-repeat;</string>
                          </widget>
                         </item>
                          <item>
-                          <widget class="QCheckBox" name="chk_compass">
-                           <property name="text">
-                            <string>Compass OSD</string>
-                           </property>
-                           <property name="checked">
-                            <bool>true</bool>
-                           </property>
-                          </widget>
-                         </item>
-                        </layout>
-                       </widget>
-                      </item>
-                     </layout>
-                    </widget>
+                         <widget class="QCheckBox" name="chk_compass">
+                          <property name="text">
+                           <string>Compass OSD</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="telemetryWarningLabel">
+                          <property name="text">
+                           <string>Telemetry Warning System</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QCheckBox" name="chk_alarm_airspeed">
+                          <property name="text">
+                           <string>Air Speed Alarm</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QCheckBox" name="chk_alarm_altitude">
+                          <property name="text">
+                           <string>Altitude Alarm</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QCheckBox" name="chk_alarm_bank">
+                          <property name="text">
+                           <string>Bank Angle Alarm</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                       </layout>
+                      </widget>
+                     </item>
+                    </layout>
+                   </widget>
                    </item>
                   </layout>
                  </widget>

@@ -1581,6 +1581,29 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_14.addWidget(self.chk_compass)
 
+        self.telemetryWarningLabel = QLabel(self.topMenus)
+        self.telemetryWarningLabel.setObjectName(u"telemetryWarningLabel")
+
+        self.verticalLayout_14.addWidget(self.telemetryWarningLabel)
+
+        self.chk_alarm_airspeed = QCheckBox(self.topMenus)
+        self.chk_alarm_airspeed.setObjectName(u"chk_alarm_airspeed")
+        self.chk_alarm_airspeed.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_alarm_airspeed)
+
+        self.chk_alarm_altitude = QCheckBox(self.topMenus)
+        self.chk_alarm_altitude.setObjectName(u"chk_alarm_altitude")
+        self.chk_alarm_altitude.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_alarm_altitude)
+
+        self.chk_alarm_bank = QCheckBox(self.topMenus)
+        self.chk_alarm_bank.setObjectName(u"chk_alarm_bank")
+        self.chk_alarm_bank.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_alarm_bank)
+
 
         self.verticalLayout_13.addWidget(self.topMenus, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -1791,6 +1814,10 @@ class Ui_MainWindow(object):
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
         self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
+        self.telemetryWarningLabel.setText(QCoreApplication.translate("MainWindow", u"Telemetry Warning System", None))
+        self.chk_alarm_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Alarm", None))
+        self.chk_alarm_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Alarm", None))
+        self.chk_alarm_bank.setText(QCoreApplication.translate("MainWindow", u"Bank Angle Alarm", None))
         self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"frick you", None))
         self.version.setText(QCoreApplication.translate("MainWindow", u"v1.0", None))
     # retranslateUi

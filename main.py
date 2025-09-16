@@ -270,6 +270,29 @@ class MainWindow(QMainWindow):
         self.crsf_cfg = self.config.setdefault("crsf", {})
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
+        self.warning_cfg.setdefault("stall_alarm_enabled", True)
+        self.warning_cfg.setdefault("altitude_alarm_enabled", True)
+        self.warning_cfg.setdefault("bank_angle_alarm_enabled", True)
+
+        if hasattr(self.ui, "telemetryWarningLabel"):
+            self.ui.telemetryWarningLabel.setContentsMargins(0, 12, 0, 0)
+        if hasattr(self.ui, "chk_alarm_airspeed"):
+            self.ui.chk_alarm_airspeed.setChecked(
+                self.warning_cfg.get("stall_alarm_enabled", True)
+            )
+            self.ui.chk_alarm_airspeed.toggled.connect(self.on_stall_alarm_toggled)
+        if hasattr(self.ui, "chk_alarm_altitude"):
+            self.ui.chk_alarm_altitude.setChecked(
+                self.warning_cfg.get("altitude_alarm_enabled", True)
+            )
+            self.ui.chk_alarm_altitude.toggled.connect(
+                self.on_altitude_alarm_toggled
+            )
+        if hasattr(self.ui, "chk_alarm_bank"):
+            self.ui.chk_alarm_bank.setChecked(
+                self.warning_cfg.get("bank_angle_alarm_enabled", True)
+            )
+            self.ui.chk_alarm_bank.toggled.connect(self.on_bank_alarm_toggled)
 
         # Track last worker error to prevent dialog spam
         self._last_error_message = None
@@ -742,8 +765,10 @@ class MainWindow(QMainWindow):
         now = time.monotonic()
 
         # Airspeed warning: low airspeed at high altitude
+        stall_enabled = self.warning_cfg.get("stall_alarm_enabled", True)
         if (
-            self.current_airspeed < self.warning_cfg.get("stall_airspeed", 0)
+            stall_enabled
+            and self.current_airspeed < self.warning_cfg.get("stall_airspeed", 0)
             and self.current_altitude > self.warning_cfg.get("stall_altitude", 0)
         ):
             if self.stall_alarm_start_time is None:
@@ -759,9 +784,13 @@ class MainWindow(QMainWindow):
             self.stall_alarm_playing = False
 
         # Altitude warning: low altitude at high airspeed
+        altitude_enabled = self.warning_cfg.get("altitude_alarm_enabled", True)
         if (
-            self.current_altitude < self.warning_cfg.get("altitude_alarm_altitude", 0)
-            and self.current_airspeed > self.warning_cfg.get("altitude_alarm_airspeed", 0)
+            altitude_enabled
+            and self.current_altitude
+            < self.warning_cfg.get("altitude_alarm_altitude", 0)
+            and self.current_airspeed
+            > self.warning_cfg.get("altitude_alarm_airspeed", 0)
         ):
             if self.altitude_alarm_start_time is None:
                 self.altitude_alarm_start_time = now
@@ -781,7 +810,11 @@ class MainWindow(QMainWindow):
             self.altitude_alarm_playing = False
 
         # Roll angle warning
-        if abs(self.telemetry_roll) > self.warning_cfg.get("roll_angle", 0):
+        bank_enabled = self.warning_cfg.get("bank_angle_alarm_enabled", True)
+        if (
+            bank_enabled
+            and abs(self.telemetry_roll) > self.warning_cfg.get("roll_angle", 0)
+        ):
             if self.roll_alarm_start_time is None:
                 self.roll_alarm_start_time = now
             elif now - self.roll_alarm_start_time > 1.0 and not self.roll_alarm_playing:
@@ -1260,6 +1293,27 @@ class MainWindow(QMainWindow):
     def on_roll_angle_changed(self, value: int):
         self.warning_cfg["roll_angle"] = value
         self.roll_angle_value.setText(str(value))
+        save_config(self.config)
+
+    def on_stall_alarm_toggled(self, checked: bool):
+        self.warning_cfg["stall_alarm_enabled"] = checked
+        if not checked:
+            self.stall_alarm_start_time = None
+            self.stall_alarm_playing = False
+        save_config(self.config)
+
+    def on_altitude_alarm_toggled(self, checked: bool):
+        self.warning_cfg["altitude_alarm_enabled"] = checked
+        if not checked:
+            self.altitude_alarm_start_time = None
+            self.altitude_alarm_playing = False
+        save_config(self.config)
+
+    def on_bank_alarm_toggled(self, checked: bool):
+        self.warning_cfg["bank_angle_alarm_enabled"] = checked
+        if not checked:
+            self.roll_alarm_start_time = None
+            self.roll_alarm_playing = False
         save_config(self.config)
 
     def start_blinking(self, label: QLabel):
