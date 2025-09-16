@@ -1,8 +1,10 @@
 import os
 import time
+import csv
 import logging
 import threading
 import re
+from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 from typing import Optional
@@ -115,6 +117,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSizeGrip,
     QGraphicsDropShadowEffect,
+    QPushButton,
 )
 from PySide6.QtCore import (
     Qt,
@@ -204,6 +207,38 @@ class MainWindow(QMainWindow):
         # Shortcut to toggle control mode
         self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
         self.mode_shortcut.activated.connect(self.toggle_control_mode)
+
+        # Sortie recording state and controls
+        self._sortie_fields = [
+            "pitch",
+            "roll",
+            "yaw",
+            "latitude",
+            "longitude",
+            "altitude_ft",
+            "airspeed_mph",
+            "ground_course",
+            "satellites",
+            "rssi_a",
+            "rssi_b",
+            "link_quality",
+            "snr",
+            "downlink_quality",
+            "downlink_snr",
+        ]
+        self._sortie_headers = ["timestamp", "packet_type", *self._sortie_fields]
+        self.sortie_directory = os.path.join(os.path.dirname(__file__), "sortie data")
+        self.sortie_recording = False
+        self.sortie_file = None
+        self.sortie_writer = None
+        self.sortie_filename = None
+        self._sortie_ready_state = False
+        self._sortie_stale_timeout = 2.0
+        self.last_telemetry_time = None
+
+        self._setup_sortie_section()
+        self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
+        self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
 
         global widgets
         widgets = self.ui
@@ -414,6 +449,7 @@ class MainWindow(QMainWindow):
         self.gps_lon = None
         self.current_altitude = None
         self.current_airspeed = None
+        self.telemetry_state = {field: None for field in self._sortie_fields}
 
         # Timer used to refresh labels/OSD widgets at a fixed rate. Telemetry
         # packets only update the cached values above; the GUI is refreshed by
@@ -498,6 +534,230 @@ class MainWindow(QMainWindow):
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
 
+    def _setup_sortie_section(self) -> None:
+        """Create the Sorties section and recording controls on the command tab."""
+
+        sorties_frame = QFrame(self.ui.frame_4)
+        sorties_frame.setObjectName("sortiesFrame")
+        sorties_frame.setGeometry(0, 150, 571, 170)
+
+        layout = QVBoxLayout(sorties_frame)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(10)
+
+        sorties_title = QLabel("Sorties", sorties_frame)
+        sorties_title.setObjectName("sortiesTitle")
+        sorties_title.setAlignment(Qt.AlignCenter)
+        sorties_title.setFont(self.ui.signalHealthTitle.font())
+        sorties_title.setStyleSheet("color: white;")
+        layout.addWidget(sorties_title)
+
+        self.ui.sortieRecordButton = QPushButton("Start Recording", sorties_frame)
+        self.ui.sortieRecordButton.setObjectName("sortieRecordButton")
+        self.ui.sortieRecordButton.setCursor(Qt.PointingHandCursor)
+        self.ui.sortieRecordButton.setMinimumHeight(36)
+        layout.addWidget(self.ui.sortieRecordButton, alignment=Qt.AlignCenter)
+
+        self.sortie_status_label = QLabel("Status: Waiting for telemetry", sorties_frame)
+        self.sortie_status_label.setAlignment(Qt.AlignCenter)
+        self.sortie_status_label.setStyleSheet("color: #9e9e9e;")
+        layout.addWidget(self.sortie_status_label)
+
+        self._sortie_idle_style = (
+            "QPushButton {"
+            "background-color: #2e7d32;"
+            "color: white;"
+            "border: 1px solid #1b5e20;"
+            "border-radius: 6px;"
+            "padding: 8px 18px;"
+            "}"
+            "QPushButton:hover {background-color: #388e3c;}"
+            "QPushButton:pressed {background-color: #1b5e20;}"
+            "QPushButton:disabled {background-color: #555555; color: #999999; border-color: #444444;}"
+        )
+        self._sortie_active_style = (
+            "QPushButton {"
+            "background-color: #c62828;"
+            "color: white;"
+            "border: 1px solid #8e0000;"
+            "border-radius: 6px;"
+            "padding: 8px 18px;"
+            "}"
+            "QPushButton:hover {background-color: #d32f2f;}"
+            "QPushButton:pressed {background-color: #b71c1c;}"
+        )
+
+        self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
+        self._update_sortie_ui_state()
+
+    def _update_sortie_ui_state(self) -> None:
+        """Refresh the sortie button appearance and status text."""
+
+        if self.sortie_recording:
+            self.ui.sortieRecordButton.setEnabled(True)
+            self.ui.sortieRecordButton.setText("Stop Recording")
+            self.ui.sortieRecordButton.setStyleSheet(self._sortie_active_style)
+            self.ui.sortieRecordButton.setToolTip("Stop recording telemetry (Ctrl+R)")
+            if self.sortie_filename:
+                status = f"Status: Recording ({self.sortie_filename})"
+            else:
+                status = "Status: Recording"
+            self.sortie_status_label.setText(status)
+            self.sortie_status_label.setStyleSheet("color: #ff6e6e; font-weight: bold;")
+            return
+
+        ready = self._sortie_ready_state
+        self.ui.sortieRecordButton.setStyleSheet(self._sortie_idle_style)
+        self.ui.sortieRecordButton.setText("Start Recording")
+        self.ui.sortieRecordButton.setEnabled(ready)
+        if ready:
+            self.ui.sortieRecordButton.setToolTip("Start recording telemetry (Ctrl+R)")
+            self.sortie_status_label.setText("Status: Ready to record")
+            self.sortie_status_label.setStyleSheet("color: #a5d6a7;")
+        else:
+            self.ui.sortieRecordButton.setToolTip(
+                "Telemetry data required to start recording"
+            )
+            self.sortie_status_label.setText("Status: Waiting for telemetry")
+            self.sortie_status_label.setStyleSheet("color: #9e9e9e;")
+
+    def _sortie_can_record(self) -> bool:
+        """Return ``True`` when telemetry data has been received recently."""
+
+        if self.last_telemetry_time is None:
+            return False
+        return (time.monotonic() - self.last_telemetry_time) <= self._sortie_stale_timeout
+
+    def _update_sortie_button_availability(self, force: bool = False) -> None:
+        """Enable or disable the sortie button according to telemetry status."""
+
+        if self.sortie_recording and not force:
+            return
+
+        can_record = self._sortie_can_record()
+        if force or can_record != self._sortie_ready_state:
+            self._sortie_ready_state = can_record
+            self._update_sortie_ui_state()
+
+    def _show_telemetry_required_message(self) -> None:
+        """Inform the user that telemetry data is required before recording."""
+
+        QMessageBox.warning(
+            self,
+            "Telemetry Required",
+            "Telemetry data is not currently being received.\n"
+            "Recording can only start when live telemetry is available.",
+        )
+
+    def toggle_sortie_recording(self) -> None:
+        """Toggle telemetry sortie recording on or off."""
+
+        if self.sortie_recording:
+            self.stop_sortie_recording()
+            return
+
+        if not self._sortie_can_record():
+            self._show_telemetry_required_message()
+            return
+
+        self.start_sortie_recording()
+
+    def start_sortie_recording(self) -> None:
+        """Begin recording telemetry to a CSV sortie file."""
+
+        if self.sortie_recording:
+            return
+
+        os.makedirs(self.sortie_directory, exist_ok=True)
+        date_str = datetime.now().strftime("%m-%d-%Y")
+        pattern = re.compile(rf"{re.escape(date_str)}-sortie_(\\d+)\\.csv$")
+
+        next_index = 1
+        try:
+            existing = os.listdir(self.sortie_directory)
+        except OSError as exc:
+            logging.error("Failed to list sortie directory: %s", exc)
+            QMessageBox.critical(
+                self,
+                "Recording Error",
+                f"Could not access the sortie data folder:\n{exc}",
+            )
+            return
+
+        for name in existing:
+            match = pattern.match(name)
+            if match:
+                next_index = max(next_index, int(match.group(1)) + 1)
+
+        filename = f"{date_str}-sortie_{next_index}.csv"
+        filepath = os.path.join(self.sortie_directory, filename)
+
+        try:
+            self.sortie_file = open(filepath, "w", newline="", encoding="utf-8")
+        except OSError as exc:
+            logging.error("Failed to create sortie log at %s: %s", filepath, exc)
+            QMessageBox.critical(
+                self,
+                "Recording Error",
+                f"Could not create sortie log file:\n{exc}",
+            )
+            self.sortie_file = None
+            return
+
+        self.sortie_writer = csv.writer(self.sortie_file)
+        self.sortie_writer.writerow(self._sortie_headers)
+        self.sortie_file.flush()
+
+        self.sortie_recording = True
+        self.sortie_filename = filename
+        self._sortie_ready_state = True
+        self._update_sortie_ui_state()
+
+    def stop_sortie_recording(self) -> None:
+        """Stop telemetry sortie recording and close the file handle."""
+
+        if not self.sortie_recording:
+            return
+
+        if self.sortie_file:
+            try:
+                self.sortie_file.flush()
+            except OSError:
+                pass
+            self.sortie_file.close()
+
+        self.sortie_file = None
+        self.sortie_writer = None
+        self.sortie_recording = False
+        self.sortie_filename = None
+        self._update_sortie_button_availability(force=True)
+
+    def _record_telemetry_sample(self, packet_type: str) -> None:
+        """Write the current telemetry snapshot to the sortie log."""
+
+        if not self.sortie_recording or not self.sortie_writer:
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        row = [timestamp, packet_type]
+        for field in self._sortie_fields:
+            value = self.telemetry_state.get(field)
+            row.append("" if value is None else value)
+
+        try:
+            self.sortie_writer.writerow(row)
+            if self.sortie_file:
+                self.sortie_file.flush()
+        except Exception as exc:  # noqa: BLE001 - broad to stop logging on failure
+            logging.error("Failed to write telemetry sortie row: %s", exc)
+            self.stop_sortie_recording()
+            QMessageBox.critical(
+                self,
+                "Recording Error",
+                "Telemetry recording stopped due to a write error.\n"
+                f"Details: {exc}",
+            )
+
     @Slot(str)
     def handle_worker_error(self, message: str):
         """Handle errors emitted from worker threads."""
@@ -522,6 +782,7 @@ class MainWindow(QMainWindow):
     def update_labels(self) -> None:
         """Update GUI labels using joystick inputs and refresh OSD widgets."""
 
+        self._update_sortie_button_availability()
         # Check for any telemetry-based warnings
         self.check_warnings()
 
@@ -839,7 +1100,9 @@ class MainWindow(QMainWindow):
         # if packet_type != "link_stats":
         #     print(f"Telemetry {packet_type}: {values}")
         self.data_page.record_packet()
-        now = time.monotonic()
+        self.last_telemetry_time = time.monotonic()
+        self._update_sortie_button_availability()
+        now = self.last_telemetry_time
         if packet_type == "attitude":
             self.last_attitude_packet_time = now
             if not self.attitude_connected:
@@ -856,15 +1119,24 @@ class MainWindow(QMainWindow):
             self.telemetry_pitch = pitch
             self.telemetry_roll = roll
             self.telemetry_yaw = yaw
+            self.telemetry_state["pitch"] = pitch
+            self.telemetry_state["roll"] = roll
+            self.telemetry_state["yaw"] = yaw
             self.data_page.add_attitude(pitch, roll, yaw)
         elif packet_type == "gps":
             # Order: latitude, longitude, altitude (ft), speed (mph),
             # ground course, satellites
-            lat, lon, alt, speed, _course, _sats = values
+            lat, lon, alt, speed, course, sats = values
             self.gps_lat = lat
             self.gps_lon = lon
             self.current_altitude = alt
             self.current_airspeed = speed
+            self.telemetry_state["latitude"] = lat
+            self.telemetry_state["longitude"] = lon
+            self.telemetry_state["altitude_ft"] = alt
+            self.telemetry_state["airspeed_mph"] = speed
+            self.telemetry_state["ground_course"] = course
+            self.telemetry_state["satellites"] = sats
             self.data_page.add_flight_metrics(alt, speed)
             if MAP_ENABLED and hasattr(self, "map_view"):
                 self.map_view.page().runJavaScript(
@@ -879,6 +1151,12 @@ class MainWindow(QMainWindow):
                 downlink_lq,
                 downlink_snr,
             ) = values
+            self.telemetry_state["rssi_a"] = rssi_a
+            self.telemetry_state["rssi_b"] = rssi_b
+            self.telemetry_state["link_quality"] = link_quality
+            self.telemetry_state["snr"] = snr
+            self.telemetry_state["downlink_quality"] = downlink_lq
+            self.telemetry_state["downlink_snr"] = downlink_snr
             self.data_page.add_link_stats(
                 rssi_a,
                 rssi_b,
@@ -909,6 +1187,8 @@ class MainWindow(QMainWindow):
             self.set_label(self.ui.snrLabel, "SNR", cat, color)
             cat, color = self.classify_snr(downlink_snr)
             self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
+
+        self._record_telemetry_sample(packet_type)
 
     def transmit_data(self):
         """
@@ -1382,6 +1662,7 @@ class MainWindow(QMainWindow):
 
     def cleanup(self):
         """Clean up peripheral resources if they exist."""
+        self.stop_sortie_recording()
         if self.joystick:
             self.joystick.close()
             self.joystick = None
