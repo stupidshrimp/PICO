@@ -28,6 +28,10 @@ DEFAULT_CONFIG = {
         "altitude_alarm_altitude": 20,
         # Trigger when |roll| > roll_angle
         "roll_angle": 45,
+        # Enable/disable individual telemetry alarms
+        "stall_alarm_enabled": True,
+        "altitude_alarm_enabled": True,
+        "bank_angle_alarm_enabled": True,
     },
     "map": {
         # Initial center [lat, lon] and zoom level for the offline map
