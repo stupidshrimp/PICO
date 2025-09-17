@@ -167,6 +167,7 @@ from pico_modules.compass_osd import CompassOSD
 from config import load_config, save_config
 
 from modules.data_page import DataPage
+from modules.debug_page import DebugPage
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -307,6 +308,13 @@ class MainWindow(QMainWindow):
 
         # Add Data tab and associated graphs
         self.data_page = DataPage(self)
+
+        # Add Debug tab for monitoring raw telemetry and joystick data
+        self.debug_page = DebugPage(self)
+
+        self._debug_packets: set[str] = set()
+        self._debug_monitoring = False
+        self._debug_include_joystick = False
 
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
@@ -526,6 +534,7 @@ class MainWindow(QMainWindow):
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
         widgets.btn_data.clicked.connect(self.buttonClick)
+        widgets.btn_debug.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
         widgets.settingsTopBtn.clicked.connect(lambda: UIFunctions.toggleRightBox(self, True))
@@ -1048,6 +1057,13 @@ class MainWindow(QMainWindow):
         if self.joystick:
             try:
                 joy_pitch, joy_roll = self.joystick.get_raw_values()
+                if (
+                    self._debug_monitoring
+                    and self._debug_include_joystick
+                    and joy_pitch is not None
+                    and joy_roll is not None
+                ):
+                    self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
             except Exception:
                 pass
 
@@ -1434,6 +1450,12 @@ class MainWindow(QMainWindow):
                 self.map_view.page().runJavaScript(
                     f"updateMarker({lat}, {lon});"
                 )
+        elif packet_type == "battery":
+            if len(values) >= 3:
+                voltage, current, capacity = values[:3]
+                self.telemetry_state["battery_voltage_raw"] = voltage
+                self.telemetry_state["battery_current_raw"] = current
+                self.telemetry_state["battery_capacity_raw"] = capacity
         elif packet_type == "link_stats":
             (
                 rssi_a,
@@ -1479,6 +1501,9 @@ class MainWindow(QMainWindow):
             self.set_label(self.ui.snrLabel, "SNR", cat, color)
             cat, color = self.classify_snr(downlink_snr)
             self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
+
+        if self._debug_monitoring and packet_type in self._debug_packets:
+            self.debug_page.log_packet(packet_type, values)
 
         self._update_packet_rates(packet_type, now)
         self._update_rate_labels()
@@ -1945,6 +1970,37 @@ class MainWindow(QMainWindow):
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
+        if btnName == "btn_debug":
+            widgets.stackedWidget.setCurrentWidget(widgets.debug_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+    def start_debug_monitoring(self, packets: set[str], include_joystick: bool) -> None:
+        """Begin forwarding selected telemetry streams to the Debug tab."""
+
+        self._debug_packets = set(packets)
+        self._debug_include_joystick = include_joystick
+        self._debug_monitoring = True
+        self.debug_page.begin_monitoring(self._debug_packets, include_joystick)
+        if self._debug_packets and not self.crsf_processor:
+            self.debug_page.append_message(
+                "Telemetry transmitter not connected; waiting for packets."
+            )
+        if include_joystick and not self.joystick:
+            self.debug_page.append_message(
+                "Joystick not connected; waiting for data."
+            )
+
+    def stop_debug_monitoring(self) -> None:
+        """Stop forwarding telemetry to the Debug tab."""
+
+        if not self._debug_monitoring:
+            return
+        self._debug_monitoring = False
+        self._debug_packets.clear()
+        self._debug_include_joystick = False
+        self.debug_page.end_monitoring()
+
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
@@ -1957,6 +2013,7 @@ class MainWindow(QMainWindow):
     def cleanup(self):
         """Clean up peripheral resources if they exist."""
         self.stop_sortie_recording()
+        self.stop_debug_monitoring()
         if self.joystick:
             self.joystick.close()
             self.joystick = None

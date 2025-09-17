@@ -426,6 +426,7 @@ class CRSFPacketProcessor(QObject):
             voltage, current, capacity = struct.unpack("<HHH", data[3:9])
             # Decoded values are currently unused but parsing is retained
             # to validate packet structure.
+            self.telemetry_ready.emit(("battery", voltage, current, capacity))
         except Exception:
             logger.exception("Failed to parse battery packet")
 
