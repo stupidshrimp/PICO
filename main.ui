@@ -7,13 +7,13 @@
      <rect>
       <x>0</x>
       <y>0</y>
-      <width>1600</width>
+      <width>1920</width>
       <height>1000</height>
      </rect>
     </property>
     <property name="minimumSize">
      <size>
-      <width>1600</width>
+      <width>1920</width>
       <height>1000</height>
      </size>
     </property>
@@ -2830,11 +2830,11 @@ background-repeat: no-repeat;</string>
                         </widget>
                        </widget>
                          <widget class="QFrame" name="frame_3">
-                         <property name="geometry">
-                          <rect>
-                           <x>978</x>
+                          <property name="geometry">
+                           <rect>
+                            <x>978</x>
                             <y>-1</y>
-                            <width>571</width>
+                            <width>882</width>
                             <height>381</height>
                            </rect>
                           </property>
@@ -2849,7 +2849,7 @@ background-repeat: no-repeat;</string>
                             <rect>
                              <x>-1</x>
                              <y>-1</y>
-                             <width>571</width>
+                             <width>882</width>
                              <height>381</height>
                             </rect>
                            </property>
@@ -2863,7 +2863,7 @@ background-repeat: no-repeat;</string>
                            <rect>
                             <x>978</x>
                             <y>381</y>
-                            <width>571</width>
+                            <width>882</width>
                             <height>520</height>
                            </rect>
                           </property>
