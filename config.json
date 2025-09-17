@@ -12,7 +12,7 @@
         "packet_interval": 3
     },
     "osd": {
-        "attitude_smoothing": 20
+        "attitude_smoothing": 100
     },
     "vtx": {},
     "warnings": {
@@ -20,7 +20,10 @@
         "stall_altitude": 50,
         "altitude_alarm_airspeed": 20,
         "altitude_alarm_altitude": 17,
-        "roll_angle": 45
+        "roll_angle": 45,
+        "stall_alarm_enabled": true,
+        "altitude_alarm_enabled": true,
+        "bank_angle_alarm_enabled": true
     },
     "map": {
         "center": [
