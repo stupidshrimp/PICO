@@ -2858,7 +2858,7 @@ background-repeat: no-repeat;</string>
                            </property>
                           </widget>
                          </widget>
-                          <widget class="QFrame" name="frame_4">
+                         <widget class="QFrame" name="frame_4">
                           <property name="geometry">
                            <rect>
                             <x>978</x>
@@ -2867,114 +2867,122 @@ background-repeat: no-repeat;</string>
                             <height>520</height>
                            </rect>
                           </property>
-                          <property name="frameShape">
-                           <enum>QFrame::Shape::StyledPanel</enum>
-                          </property>
+                         <property name="frameShape">
+                          <enum>QFrame::Shape::StyledPanel</enum>
+                         </property>
                           <property name="frameShadow">
                            <enum>QFrame::Shadow::Raised</enum>
                           </property>
-                          <layout class="QVBoxLayout" name="frame_4Layout">
-                           <property name="spacing">
-                            <number>12</number>
+                          <widget class="QLabel" name="signalHealthTitle">
+                           <property name="geometry">
+                            <rect>
+                             <x>0</x>
+                             <y>10</y>
+                             <width>571</width>
+                             <height>31</height>
+                            </rect>
                            </property>
-                           <property name="leftMargin">
-                            <number>12</number>
+                           <property name="font">
+                            <font>
+                             <bold>true</bold>
+                             <underline>true</underline>
+                            </font>
                            </property>
-                           <property name="topMargin">
-                            <number>12</number>
+                           <property name="text">
+                            <string>Signal health</string>
                            </property>
-                           <property name="rightMargin">
-                            <number>12</number>
+                           <property name="alignment">
+                            <set>Qt::AlignCenter</set>
                            </property>
-                           <property name="bottomMargin">
-                            <number>12</number>
+                          </widget>
+                          <widget class="QLabel" name="rssiALabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>50</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
                            </property>
-                           <item>
-                            <widget class="QLabel" name="signalHealthTitle">
-                             <property name="font">
-                              <font>
-                               <bold>true</bold>
-                               <underline>true</underline>
-                              </font>
-                             </property>
-                             <property name="text">
-                              <string>Signal health</string>
-                             </property>
-                             <property name="alignment">
-                              <set>Qt::AlignCenter</set>
-                             </property>
-                            </widget>
-                           </item>
-                           <item>
-                            <layout class="QGridLayout" name="signalStatsGrid">
-                             <property name="horizontalSpacing">
-                              <number>20</number>
-                             </property>
-                             <property name="verticalSpacing">
-                              <number>8</number>
-                             </property>
-                             <item row="0" column="0">
-                              <widget class="QLabel" name="rssiALabel">
-                               <property name="text">
-                                <string>RSSI A: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                             <item row="0" column="1">
-                              <widget class="QLabel" name="rssiBLabel">
-                               <property name="text">
-                                <string>RSSI B: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                             <item row="1" column="0">
-                              <widget class="QLabel" name="linkQualityLabel">
-                               <property name="text">
-                                <string>Link quality: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                             <item row="1" column="1">
-                              <widget class="QLabel" name="snrLabel">
-                               <property name="text">
-                                <string>SNR: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                             <item row="2" column="0">
-                              <widget class="QLabel" name="downlinkQualityLabel">
-                               <property name="text">
-                                <string>Downlink quality: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                             <item row="2" column="1">
-                              <widget class="QLabel" name="downlinkSnrLabel">
-                               <property name="text">
-                                <string>Downlink SNR: --</string>
-                               </property>
-                              </widget>
-                             </item>
-                            </layout>
-                           </item>
-                          <item>
-                           <widget class="QScrollArea" name="telemetryScrollArea">
-                            <property name="frameShape">
-                             <enum>QFrame::Shape::NoFrame</enum>
-                            </property>
-                            <property name="widgetResizable">
-                             <bool>true</bool>
-                            </property>
-                            <widget class="QWidget" name="telemetryStatsSection">
-                             <property name="geometry">
-                              <rect>
-                               <x>0</x>
-                               <y>0</y>
-                               <width>543</width>
-                               <height>360</height>
-                              </rect>
-                             </property>
-                             <layout class="QVBoxLayout" name="telemetryStatsSectionLayout">
+                           <property name="text">
+                            <string>RSSI A: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="rssiBLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>190</x>
+                             <y>50</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>RSSI B: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="linkQualityLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>80</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Link quality: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="snrLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>190</x>
+                             <y>80</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>SNR: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="downlinkQualityLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>110</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Downlink quality: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="downlinkSnrLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>190</x>
+                             <y>110</y>
+                             <width>150</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Downlink SNR: --</string>
+                           </property>
+                          </widget>
+                          <widget class="QWidget" name="telemetryStatsSection" native="true">
+                           <property name="geometry">
+                            <rect>
+                             <x>0</x>
+                             <y>150</y>
+                             <width>571</width>
+                             <height>360</height>
+                            </rect>
+                           </property>
+                           <layout class="QVBoxLayout" name="telemetryStatsSectionLayout">
                             <property name="spacing">
                              <number>6</number>
                             </property>
@@ -3043,13 +3051,10 @@ background-repeat: no-repeat;</string>
                            </layout>
                           </widget>
                          </widget>
+                       </widget>
                         </item>
-                       </layout>
-                      </widget>
-                     </widget>
-                      </item>
-                      <item>
-                       <widget class="QWidget" name="commandVideoSpacer" native="true">
+                        <item>
+                        <widget class="QWidget" name="commandVideoSpacer" native="true">
                          <property name="minimumSize">
                           <size>
                            <width>0</width>

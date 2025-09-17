@@ -1449,72 +1449,35 @@ class Ui_MainWindow(object):
         self.frame_4.setGeometry(QRect(978, 381, 571, 520))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
-        self.frame_4Layout = QVBoxLayout(self.frame_4)
-        self.frame_4Layout.setObjectName(u"frame_4Layout")
-        self.frame_4Layout.setSpacing(12)
-        self.frame_4Layout.setContentsMargins(12, 12, 12, 12)
         self.signalHealthTitle = QLabel(self.frame_4)
         self.signalHealthTitle.setObjectName(u"signalHealthTitle")
+        self.signalHealthTitle.setGeometry(QRect(0, 10, 571, 31))
         font5 = QFont()
         font5.setBold(True)
         font5.setUnderline(True)
         self.signalHealthTitle.setFont(font5)
         self.signalHealthTitle.setAlignment(Qt.AlignCenter)
-
-        self.frame_4Layout.addWidget(self.signalHealthTitle)
-
-        self.signalStatsGrid = QGridLayout()
-        self.signalStatsGrid.setObjectName(u"signalStatsGrid")
-        self.signalStatsGrid.setHorizontalSpacing(20)
-        self.signalStatsGrid.setVerticalSpacing(8)
         self.rssiALabel = QLabel(self.frame_4)
         self.rssiALabel.setObjectName(u"rssiALabel")
-        self.rssiALabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.rssiALabel, 0, 0, 1, 1)
-
+        self.rssiALabel.setGeometry(QRect(10, 50, 150, 20))
         self.rssiBLabel = QLabel(self.frame_4)
         self.rssiBLabel.setObjectName(u"rssiBLabel")
-        self.rssiBLabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.rssiBLabel, 0, 1, 1, 1)
-
+        self.rssiBLabel.setGeometry(QRect(190, 50, 150, 20))
         self.linkQualityLabel = QLabel(self.frame_4)
         self.linkQualityLabel.setObjectName(u"linkQualityLabel")
-        self.linkQualityLabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.linkQualityLabel, 1, 0, 1, 1)
-
+        self.linkQualityLabel.setGeometry(QRect(10, 80, 150, 20))
         self.snrLabel = QLabel(self.frame_4)
         self.snrLabel.setObjectName(u"snrLabel")
-        self.snrLabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.snrLabel, 1, 1, 1, 1)
-
+        self.snrLabel.setGeometry(QRect(190, 80, 150, 20))
         self.downlinkQualityLabel = QLabel(self.frame_4)
         self.downlinkQualityLabel.setObjectName(u"downlinkQualityLabel")
-        self.downlinkQualityLabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.downlinkQualityLabel, 2, 0, 1, 1)
-
+        self.downlinkQualityLabel.setGeometry(QRect(10, 110, 150, 20))
         self.downlinkSnrLabel = QLabel(self.frame_4)
         self.downlinkSnrLabel.setObjectName(u"downlinkSnrLabel")
-        self.downlinkSnrLabel.setAlignment(Qt.AlignCenter)
-
-        self.signalStatsGrid.addWidget(self.downlinkSnrLabel, 2, 1, 1, 1)
-
-        self.frame_4Layout.addLayout(self.signalStatsGrid)
-
-        self.telemetryScrollArea = QScrollArea(self.frame_4)
-        self.telemetryScrollArea.setObjectName(u"telemetryScrollArea")
-        self.telemetryScrollArea.setFrameShape(QFrame.Shape.NoFrame)
-        self.telemetryScrollArea.setWidgetResizable(True)
-
-        self.frame_4Layout.addWidget(self.telemetryScrollArea)
-
-        self.telemetryStatsSection = QWidget()
+        self.downlinkSnrLabel.setGeometry(QRect(190, 110, 150, 20))
+        self.telemetryStatsSection = QWidget(self.frame_4)
         self.telemetryStatsSection.setObjectName(u"telemetryStatsSection")
-        self.telemetryScrollArea.setWidget(self.telemetryStatsSection)
+        self.telemetryStatsSection.setGeometry(QRect(0, 150, 571, 360))
         self.telemetryStatsSectionLayout = QVBoxLayout(self.telemetryStatsSection)
         self.telemetryStatsSectionLayout.setSpacing(6)
         self.telemetryStatsSectionLayout.setObjectName(u"telemetryStatsSectionLayout")
