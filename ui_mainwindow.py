@@ -1449,39 +1449,70 @@ class Ui_MainWindow(object):
         self.frame_4.setGeometry(QRect(978, 381, 571, 520))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
+        self.frame4Layout = QVBoxLayout(self.frame_4)
+        self.frame4Layout.setSpacing(6)
+        self.frame4Layout.setObjectName(u"frame4Layout")
+        self.frame4Layout.setContentsMargins(12, 12, 12, 12)
         self.signalHealthTitle = QLabel(self.frame_4)
         self.signalHealthTitle.setObjectName(u"signalHealthTitle")
-        self.signalHealthTitle.setGeometry(QRect(0, 10, 571, 31))
         font5 = QFont()
         font5.setBold(True)
         font5.setUnderline(True)
         self.signalHealthTitle.setFont(font5)
         self.signalHealthTitle.setAlignment(Qt.AlignCenter)
+
+        self.frame4Layout.addWidget(self.signalHealthTitle)
+
+        self.signalMetricsGrid = QGridLayout()
+        self.signalMetricsGrid.setObjectName(u"signalMetricsGrid")
+        self.signalMetricsGrid.setHorizontalSpacing(12)
+        self.signalMetricsGrid.setVerticalSpacing(4)
+        self.signalMetricsGrid.setContentsMargins(0, 0, 0, 0)
         self.rssiALabel = QLabel(self.frame_4)
         self.rssiALabel.setObjectName(u"rssiALabel")
-        self.rssiALabel.setGeometry(QRect(10, 50, 150, 20))
+        self.rssiALabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.rssiALabel, 0, 0, 1, 1)
+
         self.rssiBLabel = QLabel(self.frame_4)
         self.rssiBLabel.setObjectName(u"rssiBLabel")
-        self.rssiBLabel.setGeometry(QRect(190, 50, 150, 20))
+        self.rssiBLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.rssiBLabel, 0, 1, 1, 1)
+
         self.linkQualityLabel = QLabel(self.frame_4)
         self.linkQualityLabel.setObjectName(u"linkQualityLabel")
-        self.linkQualityLabel.setGeometry(QRect(10, 80, 150, 20))
+        self.linkQualityLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.linkQualityLabel, 1, 0, 1, 1)
+
         self.snrLabel = QLabel(self.frame_4)
         self.snrLabel.setObjectName(u"snrLabel")
-        self.snrLabel.setGeometry(QRect(190, 80, 150, 20))
+        self.snrLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.snrLabel, 1, 1, 1, 1)
+
         self.downlinkQualityLabel = QLabel(self.frame_4)
         self.downlinkQualityLabel.setObjectName(u"downlinkQualityLabel")
-        self.downlinkQualityLabel.setGeometry(QRect(10, 110, 150, 20))
+        self.downlinkQualityLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.downlinkQualityLabel, 2, 0, 1, 1)
+
         self.downlinkSnrLabel = QLabel(self.frame_4)
         self.downlinkSnrLabel.setObjectName(u"downlinkSnrLabel")
-        self.downlinkSnrLabel.setGeometry(QRect(190, 110, 150, 20))
+        self.downlinkSnrLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+
+        self.signalMetricsGrid.addWidget(self.downlinkSnrLabel, 2, 1, 1, 1)
+
+
+        self.frame4Layout.addLayout(self.signalMetricsGrid)
+
         self.telemetryStatsSection = QWidget(self.frame_4)
         self.telemetryStatsSection.setObjectName(u"telemetryStatsSection")
-        self.telemetryStatsSection.setGeometry(QRect(0, 150, 571, 360))
         self.telemetryStatsSectionLayout = QVBoxLayout(self.telemetryStatsSection)
         self.telemetryStatsSectionLayout.setSpacing(6)
         self.telemetryStatsSectionLayout.setObjectName(u"telemetryStatsSectionLayout")
-        self.telemetryStatsSectionLayout.setContentsMargins(10, 0, 10, 0)
+        self.telemetryStatsSectionLayout.setContentsMargins(10, 6, 10, 0)
         self.telemetryStatsTitle = QLabel(self.telemetryStatsSection)
         self.telemetryStatsTitle.setObjectName(u"telemetryStatsTitle")
         self.telemetryStatsTitle.setFont(font5)
@@ -1511,6 +1542,9 @@ class Ui_MainWindow(object):
 
 
         self.telemetryStatsSectionLayout.addLayout(self.telemetryStatsRowLayout)
+
+
+        self.frame4Layout.addWidget(self.telemetryStatsSection)
 
 
         self.verticalLayout_20.addWidget(self.frame)
