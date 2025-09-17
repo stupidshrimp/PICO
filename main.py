@@ -784,9 +784,9 @@ class MainWindow(QMainWindow):
             QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
 
-        header_layout = QHBoxLayout(header_container)
+        header_layout = QVBoxLayout(header_container)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
+        header_layout.setSpacing(8)
 
         sorties_title = QLabel("Sorties", header_container)
         sorties_title.setObjectName("sortiesTitle")
@@ -798,25 +798,19 @@ class MainWindow(QMainWindow):
         )
         header_layout.addWidget(sorties_title)
 
-        header_layout.addStretch()
-
-        self.ui.sortieRecordButton = QPushButton("Start Recording", header_container)
+        self.ui.sortieRecordButton = QPushButton("Awaiting Telemetry", header_container)
         self.ui.sortieRecordButton.setObjectName("sortieRecordButton")
         self.ui.sortieRecordButton.setCursor(Qt.PointingHandCursor)
         self.ui.sortieRecordButton.setFixedHeight(36)
         self.ui.sortieRecordButton.setMinimumWidth(160)
-        header_layout.addWidget(
-            self.ui.sortieRecordButton, 0, Qt.AlignVCenter | Qt.AlignRight
+        header_layout.addWidget(self.ui.sortieRecordButton, 0, Qt.AlignLeft)
+
+        header_container.setMinimumHeight(
+            sorties_title.sizeHint().height()
+            + self.ui.sortieRecordButton.sizeHint().height()
         )
 
-        header_container.setMinimumHeight(self.ui.sortieRecordButton.sizeHint().height())
-
         layout.addWidget(header_container)
-
-        self.sortie_status_label = QLabel("Status: Waiting for telemetry", sorties_frame)
-        self.sortie_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.sortie_status_label.setStyleSheet("color: #9e9e9e;")
-        layout.addWidget(self.sortie_status_label)
 
         self._sortie_idle_style = (
             "QPushButton {"
@@ -842,39 +836,33 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed {background-color: #b71c1c;}"
         )
 
+        self.ui.sortieRecordButton.setEnabled(False)
+
         self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
         self._update_sortie_ui_state()
 
     def _update_sortie_ui_state(self) -> None:
-        """Refresh the sortie button appearance and status text."""
+        """Refresh the sortie button appearance and availability."""
 
         if self.sortie_recording:
             self.ui.sortieRecordButton.setEnabled(True)
             self.ui.sortieRecordButton.setText("Stop Recording")
             self.ui.sortieRecordButton.setStyleSheet(self._sortie_active_style)
             self.ui.sortieRecordButton.setToolTip("Stop recording telemetry (Ctrl+R)")
-            if self.sortie_filename:
-                status = f"Status: Recording ({self.sortie_filename})"
-            else:
-                status = "Status: Recording"
-            self.sortie_status_label.setText(status)
-            self.sortie_status_label.setStyleSheet("color: #ff6e6e; font-weight: bold;")
             return
 
         ready = self._sortie_ready_state
         self.ui.sortieRecordButton.setStyleSheet(self._sortie_idle_style)
-        self.ui.sortieRecordButton.setText("Start Recording")
-        self.ui.sortieRecordButton.setEnabled(ready)
         if ready:
+            self.ui.sortieRecordButton.setEnabled(True)
+            self.ui.sortieRecordButton.setText("Start Recording")
             self.ui.sortieRecordButton.setToolTip("Start recording telemetry (Ctrl+R)")
-            self.sortie_status_label.setText("Status: Ready to record")
-            self.sortie_status_label.setStyleSheet("color: #a5d6a7;")
         else:
+            self.ui.sortieRecordButton.setEnabled(False)
+            self.ui.sortieRecordButton.setText("Awaiting Telemetry")
             self.ui.sortieRecordButton.setToolTip(
                 "Telemetry data required to start recording"
             )
-            self.sortie_status_label.setText("Status: Waiting for telemetry")
-            self.sortie_status_label.setStyleSheet("color: #9e9e9e;")
 
     def _sortie_can_record(self) -> bool:
         """Return ``True`` when telemetry data has been received recently."""
