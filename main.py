@@ -551,8 +551,16 @@ class MainWindow(QMainWindow):
         column_layout = frame.layout()
         if column_layout is None:
             column_layout = QVBoxLayout(frame)
-            column_layout.setContentsMargins(0, 0, 0, 0)
-            column_layout.setSpacing(6)
+
+        column_layout.setContentsMargins(8, 8, 8, 8)
+        column_layout.setSpacing(4)
+
+        old_signal_layout = getattr(self.ui, "signalMetricsGrid", None)
+        if isinstance(old_signal_layout, QGridLayout):
+            column_layout.removeItem(old_signal_layout)
+            while old_signal_layout.count():
+                old_signal_layout.takeAt(0)
+            old_signal_layout.setParent(None)
 
         # Build a container for the signal health labels so they occupy the
         # first section of the column before the telemetry statistics widget.
@@ -562,11 +570,12 @@ class MainWindow(QMainWindow):
             QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         )
         signal_layout = QGridLayout(signal_container)
-        signal_layout.setContentsMargins(8, 6, 8, 2)
+        signal_layout.setContentsMargins(8, 4, 8, 0)
         signal_layout.setHorizontalSpacing(16)
-        signal_layout.setVerticalSpacing(2)
+        signal_layout.setVerticalSpacing(4)
         signal_layout.setColumnStretch(0, 1)
         signal_layout.setColumnStretch(1, 1)
+        self.ui.signalMetricsGrid = signal_layout
 
         # Move the existing signal health labels into the new container.
         self.ui.signalHealthTitle.setParent(signal_container)
@@ -597,7 +606,7 @@ class MainWindow(QMainWindow):
 
         telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
         if telemetry_layout is not None:
-            telemetry_layout.setContentsMargins(8, 6, 8, 6)
+            telemetry_layout.setContentsMargins(8, 2, 8, 6)
             telemetry_layout.setSpacing(2)
 
 
@@ -638,10 +647,15 @@ class MainWindow(QMainWindow):
 
         if layout_container is not None:
             insert_position = layout_container.count()
+            telemetry_section = getattr(self.ui, "telemetryStatsSection", None)
+            if telemetry_section is not None:
+                telemetry_index = layout_container.indexOf(telemetry_section)
+                if telemetry_index != -1:
+                    insert_position = telemetry_index + 1
             spacer_widget = getattr(self.ui, "commandVideoSpacer", None)
             if spacer_widget is not None:
                 spacer_index = layout_container.indexOf(spacer_widget)
-                if spacer_index != -1:
+                if spacer_index != -1 and spacer_index < insert_position:
                     insert_position = spacer_index
             layout_container.insertWidget(insert_position, sorties_frame)
         else:
@@ -653,8 +667,8 @@ class MainWindow(QMainWindow):
                 sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
-        layout.setContentsMargins(8, 8, 8, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 4, 8, 10)
+        layout.setSpacing(6)
 
         header_container = QWidget(sorties_frame)
         header_container.setObjectName("sortiesHeader")
