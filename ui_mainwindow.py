@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QPlainTextEdit, QPushButton, QRadioButton,
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
-    QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout, QWidget)
+    QSpacerItem, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QTextEdit, QVBoxLayout, QWidget)
 import resources_rc
 
 class Ui_MainWindow(object):
@@ -1552,17 +1552,26 @@ class Ui_MainWindow(object):
         self.commandVideoSpacer = QWidget(self.new_page)
         self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
         self.commandVideoSpacer.setMinimumSize(QSize(0, 120))
+        sizePolicy4 = QSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        sizePolicy4.setHorizontalStretch(0)
+        sizePolicy4.setVerticalStretch(0)
+        sizePolicy4.setHeightForWidth(self.commandVideoSpacer.sizePolicy().hasHeightForWidth())
+        self.commandVideoSpacer.setSizePolicy(sizePolicy4)
         self.commandVideoSpacer.setMaximumSize(QSize(960, 16777215))
-        self.controlInputsLayout = QVBoxLayout(self.commandVideoSpacer)
-        self.controlInputsLayout.setSpacing(8)
+        self.controlInputsLayout = QHBoxLayout(self.commandVideoSpacer)
+        self.controlInputsLayout.setSpacing(24)
         self.controlInputsLayout.setObjectName(u"controlInputsLayout")
         self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
+        self.controlInputsColumn = QVBoxLayout()
+        self.controlInputsColumn.setSpacing(8)
+        self.controlInputsColumn.setObjectName(u"controlInputsColumn")
+        self.controlInputsColumn.setContentsMargins(0, 0, 0, 0)
         self.InputsLabel = QLabel(self.commandVideoSpacer)
         self.InputsLabel.setObjectName(u"InputsLabel")
         self.InputsLabel.setFont(font5)
-        self.InputsLabel.setAlignment(Qt.AlignCenter)
+        self.InputsLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
 
-        self.controlInputsLayout.addWidget(self.InputsLabel)
+        self.controlInputsColumn.addWidget(self.InputsLabel)
 
         self.controlInputsRow = QHBoxLayout()
         self.controlInputsRow.setSpacing(24)
@@ -1596,22 +1605,38 @@ class Ui_MainWindow(object):
 
         self.controlInputsRow.addWidget(self.throttleInput)
 
-        self.controlInputsLayout.addLayout(self.controlInputsRow)
 
+        self.controlInputsColumn.addLayout(self.controlInputsRow)
+
+
+        self.controlInputsLayout.addLayout(self.controlInputsColumn)
+
+        self.controlModeLayout = QVBoxLayout()
+        self.controlModeLayout.setSpacing(4)
+        self.controlModeLayout.setObjectName(u"controlModeLayout")
+        self.controlModeLayout.setContentsMargins(0, 8, 0, 0)
         self.controlModeTitle = QLabel(self.commandVideoSpacer)
         self.controlModeTitle.setObjectName(u"controlModeTitle")
         self.controlModeTitle.setFont(font5)
-        self.controlModeTitle.setAlignment(Qt.AlignCenter)
+        self.controlModeTitle.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
 
-        self.controlInputsLayout.addWidget(self.controlModeTitle)
+        self.controlModeLayout.addWidget(self.controlModeTitle)
 
         self.controlModeLabel = QLabel(self.commandVideoSpacer)
         self.controlModeLabel.setObjectName(u"controlModeLabel")
-        self.controlModeLabel.setAlignment(Qt.AlignCenter)
+        self.controlModeLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
 
-        self.controlInputsLayout.addWidget(self.controlModeLabel)
+        self.controlModeLayout.addWidget(self.controlModeLabel)
 
-        self.verticalLayout_20.addWidget(self.commandVideoSpacer, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.controlInputsLayout.addLayout(self.controlModeLayout)
+
+        self.controlInputsSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.controlInputsLayout.addItem(self.controlInputsSpacer)
+
+
+        self.verticalLayout_20.addWidget(self.commandVideoSpacer, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.stackedWidget.addWidget(self.new_page)
 
