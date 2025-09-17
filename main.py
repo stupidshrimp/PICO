@@ -600,10 +600,12 @@ class MainWindow(QMainWindow):
             telemetry_layout.setContentsMargins(8, 6, 8, 6)
             telemetry_layout.setSpacing(2)
 
+
         stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
         if stats_row_layout is not None:
             stats_row_layout.setContentsMargins(0, 0, 0, 0)
             stats_row_layout.setSpacing(6)
+
 
         if hasattr(self.ui, "telemetryStatsTitle"):
             self.ui.telemetryStatsTitle.setParent(telemetry_section)
