@@ -1566,6 +1566,8 @@ class MainWindow(QMainWindow):
         """Toggle between Manual and Fly-By-Wire modes."""
         self.control_mode = "Fly-By-Wire" if self.control_mode == "Manual" else "Manual"
         self.update_control_mode_label()
+        sound_name = "fbw" if self.control_mode == "Fly-By-Wire" else "manual"
+        self.play_sound(sound_name)
 
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
