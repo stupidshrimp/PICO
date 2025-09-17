@@ -119,6 +119,8 @@ from PySide6.QtWidgets import (
     QSizeGrip,
     QGraphicsDropShadowEffect,
     QPushButton,
+    QGridLayout,
+    QSizePolicy,
 )
 from PySide6.QtCore import (
     Qt,
@@ -243,6 +245,7 @@ class MainWindow(QMainWindow):
             "total": deque(),
         }
 
+        self._setup_command_sidebar()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
@@ -541,18 +544,77 @@ class MainWindow(QMainWindow):
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
 
+    def _setup_command_sidebar(self) -> None:
+        """Lay out the command tab's right column with stacked sections."""
+
+        frame = self.ui.frame_4
+        column_layout = frame.layout()
+        if column_layout is None:
+            column_layout = QVBoxLayout(frame)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(12)
+
+        # Build a container for the signal health labels so they occupy the
+        # first section of the column before the telemetry statistics widget.
+        signal_container = QFrame(frame)
+        signal_container.setObjectName("signalHealthContainer")
+        signal_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        )
+        signal_layout = QGridLayout(signal_container)
+        signal_layout.setContentsMargins(10, 10, 10, 0)
+        signal_layout.setHorizontalSpacing(20)
+        signal_layout.setVerticalSpacing(6)
+        signal_layout.setColumnStretch(0, 1)
+        signal_layout.setColumnStretch(1, 1)
+
+        # Move the existing signal health labels into the new container.
+        self.ui.signalHealthTitle.setParent(signal_container)
+        signal_layout.addWidget(
+            self.ui.signalHealthTitle, 0, 0, 1, 2, alignment=Qt.AlignCenter
+        )
+
+        for row, (left_widget, right_widget) in enumerate(
+            (
+                (self.ui.rssiALabel, self.ui.rssiBLabel),
+                (self.ui.linkQualityLabel, self.ui.snrLabel),
+                (self.ui.downlinkQualityLabel, self.ui.downlinkSnrLabel),
+            ),
+            start=1,
+        ):
+            left_widget.setParent(signal_container)
+            right_widget.setParent(signal_container)
+            signal_layout.addWidget(left_widget, row, 0, alignment=Qt.AlignLeft)
+            signal_layout.addWidget(right_widget, row, 1, alignment=Qt.AlignLeft)
+
+        column_layout.insertWidget(0, signal_container)
+
+        telemetry_section = self.ui.telemetryStatsSection
+        telemetry_section.setParent(frame)
+        telemetry_section.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        )
+        column_layout.addWidget(telemetry_section)
+
     def _setup_sortie_section(self) -> None:
         """Create the Sorties section and recording controls on the command tab."""
 
-        parent_widget = getattr(self.ui, "telemetryStatsSection", self.ui.frame_4)
-        sorties_frame = QFrame(parent_widget)
+        sorties_frame = QFrame(self.ui.frame_4)
         sorties_frame.setObjectName("sortiesFrame")
-        layout_container = getattr(self.ui, "telemetryStatsSectionLayout", None)
+        sorties_frame.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        layout_container = self.ui.frame_4.layout()
+
         if layout_container is not None:
-            layout_container.addSpacing(12)
             layout_container.addWidget(sorties_frame)
         else:
-            sorties_frame.setGeometry(0, 150, 571, 170)
+            legacy_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
+            if legacy_layout is not None:
+                legacy_layout.addSpacing(12)
+                legacy_layout.addWidget(sorties_frame)
+            else:
+                sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
         layout.setContentsMargins(20, 10, 20, 10)
@@ -1760,3 +1822,4 @@ if __name__ == "__main__":
     finally:
         window.cleanup()
     sys.exit(exit_code)
+
