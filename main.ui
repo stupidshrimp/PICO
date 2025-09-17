@@ -2973,6 +2973,67 @@ background-repeat: no-repeat;</string>
                             <string>Downlink SNR: --</string>
                            </property>
                           </widget>
+                          <widget class="QLabel" name="telemetryStatsTitle">
+                           <property name="geometry">
+                            <rect>
+                             <x>0</x>
+                             <y>160</y>
+                             <width>571</width>
+                             <height>31</height>
+                            </rect>
+                           </property>
+                           <property name="font">
+                            <font>
+                             <bold>true</bold>
+                             <underline>true</underline>
+                            </font>
+                           </property>
+                           <property name="text">
+                            <string>Telemetry Statistics</string>
+                           </property>
+                           <property name="alignment">
+                            <set>Qt::AlignCenter</set>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="attitudeRateLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>200</y>
+                             <width>200</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Attitude rate: -- Hz</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="gpsRateLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>230</y>
+                             <width>200</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>GPS rate: -- Hz</string>
+                           </property>
+                          </widget>
+                          <widget class="QLabel" name="totalRateLabel">
+                           <property name="geometry">
+                            <rect>
+                             <x>10</x>
+                             <y>260</y>
+                             <width>200</width>
+                             <height>20</height>
+                            </rect>
+                           </property>
+                           <property name="text">
+                            <string>Total rate: -- Hz</string>
+                           </property>
+                          </widget>
                          </widget>
                        </widget>
                         </item>
