@@ -4,6 +4,7 @@ import csv
 import logging
 import threading
 import re
+from collections import deque
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
@@ -235,6 +236,12 @@ class MainWindow(QMainWindow):
         self._sortie_ready_state = False
         self._sortie_stale_timeout = 2.0
         self.last_telemetry_time = None
+        self._rate_window_seconds = 1.0
+        self._packet_times = {
+            "attitude": deque(),
+            "gps": deque(),
+            "total": deque(),
+        }
 
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
@@ -794,6 +801,7 @@ class MainWindow(QMainWindow):
         """Update GUI labels using joystick inputs and refresh OSD widgets."""
 
         self._update_sortie_button_availability()
+        self._update_rate_labels()
         # Check for any telemetry-based warnings
         self.check_warnings()
 
@@ -914,6 +922,44 @@ class MainWindow(QMainWindow):
             label.setStyleSheet(f"color: {color}")
         else:
             label.setStyleSheet("")
+
+    def _prune_packet_times(self, queue, current_time: float) -> None:
+        cutoff = current_time - self._rate_window_seconds
+        while queue and queue[0] < cutoff:
+            queue.popleft()
+
+    def _add_packet_timestamp(self, key: str, timestamp: float) -> None:
+        queue = self._packet_times[key]
+        queue.append(timestamp)
+        self._prune_packet_times(queue, timestamp)
+
+    def _update_packet_rates(self, packet_type: str, timestamp: float) -> None:
+        self._add_packet_timestamp("total", timestamp)
+        if packet_type == "attitude":
+            self._add_packet_timestamp("attitude", timestamp)
+        elif packet_type == "gps":
+            self._add_packet_timestamp("gps", timestamp)
+
+    def _update_rate_labels(self) -> None:
+        if not hasattr(self.ui, "attitudeRateLabel"):
+            return
+
+        now = time.monotonic()
+        for queue in self._packet_times.values():
+            self._prune_packet_times(queue, now)
+
+        label_map = (
+            ("attitude", self.ui.attitudeRateLabel, "Attitude rate"),
+            ("gps", self.ui.gpsRateLabel, "GPS rate"),
+            ("total", self.ui.totalRateLabel, "Total rate"),
+        )
+        for key, label, prefix in label_map:
+            queue = self._packet_times[key]
+            if queue:
+                rate = len(queue) / self._rate_window_seconds
+                label.setText(f"{prefix}: {rate:.1f} Hz")
+            else:
+                label.setText(f"{prefix}: -- Hz")
 
     def play_sound(self, name: str):
         """Play a warning sound identified by ``name``.
@@ -1198,6 +1244,8 @@ class MainWindow(QMainWindow):
             cat, color = self.classify_snr(downlink_snr)
             self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
 
+        self._update_packet_rates(packet_type, now)
+        self._update_rate_labels()
         self._record_telemetry_sample(packet_type)
 
     def transmit_data(self):
