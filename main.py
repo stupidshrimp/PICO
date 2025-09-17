@@ -579,10 +579,12 @@ class MainWindow(QMainWindow):
         column_layout.setSpacing(12)
         column_layout.setAlignment(Qt.AlignTop)
 
-        panel_style = (
-            "background-color: rgba(26, 30, 36, 200);"
-            "border: 1px solid rgb(62, 68, 82);"
-            "border-radius: 10px;"
+        panel_style = "\n".join(
+            (
+                "background-color: rgba(26, 30, 36, 200);",
+                "border: 1px solid rgb(62, 68, 82);",
+                "border-radius: 10px;",
+            )
         )
         self._sidebar_panel_style = panel_style
 
