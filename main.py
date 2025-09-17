@@ -650,18 +650,27 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(6)
 
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+
         sorties_title = QLabel("Sorties", sorties_frame)
         sorties_title.setObjectName("sortiesTitle")
-        sorties_title.setAlignment(Qt.AlignCenter)
+        sorties_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sorties_title.setFont(self.ui.signalHealthTitle.font())
         sorties_title.setStyleSheet("color: white;")
-        layout.addWidget(sorties_title)
+        header_layout.addWidget(sorties_title)
+
+        header_layout.addStretch()
 
         self.ui.sortieRecordButton = QPushButton("Start Recording", sorties_frame)
         self.ui.sortieRecordButton.setObjectName("sortieRecordButton")
         self.ui.sortieRecordButton.setCursor(Qt.PointingHandCursor)
         self.ui.sortieRecordButton.setMinimumHeight(36)
-        layout.addWidget(self.ui.sortieRecordButton, alignment=Qt.AlignCenter)
+        self.ui.sortieRecordButton.setMinimumWidth(160)
+        header_layout.addWidget(self.ui.sortieRecordButton)
+
+        layout.addLayout(header_layout)
 
         self.sortie_status_label = QLabel("Status: Waiting for telemetry", sorties_frame)
         self.sortie_status_label.setAlignment(Qt.AlignCenter)
