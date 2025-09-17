@@ -1446,7 +1446,7 @@ class Ui_MainWindow(object):
         self.mapframe.setStyleSheet(u"background-color: black;")
         self.frame_4 = QFrame(self.frame)
         self.frame_4.setObjectName(u"frame_4")
-        self.frame_4.setGeometry(QRect(978, 381, 571, 420))
+        self.frame_4.setGeometry(QRect(978, 381, 571, 520))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
         self.signalHealthTitle = QLabel(self.frame_4)
@@ -1477,25 +1477,41 @@ class Ui_MainWindow(object):
         self.downlinkSnrLabel.setGeometry(QRect(190, 110, 150, 20))
         self.telemetryStatsSection = QWidget(self.frame_4)
         self.telemetryStatsSection.setObjectName(u"telemetryStatsSection")
-        self.telemetryStatsSection.setGeometry(QRect(0, 150, 571, 270))
+        self.telemetryStatsSection.setGeometry(QRect(0, 150, 571, 360))
         self.telemetryStatsSectionLayout = QVBoxLayout(self.telemetryStatsSection)
-        self.telemetryStatsSectionLayout.setObjectName(u"telemetryStatsSectionLayout")
         self.telemetryStatsSectionLayout.setSpacing(6)
+        self.telemetryStatsSectionLayout.setObjectName(u"telemetryStatsSectionLayout")
         self.telemetryStatsSectionLayout.setContentsMargins(10, 0, 10, 0)
         self.telemetryStatsTitle = QLabel(self.telemetryStatsSection)
         self.telemetryStatsTitle.setObjectName(u"telemetryStatsTitle")
         self.telemetryStatsTitle.setFont(font5)
         self.telemetryStatsTitle.setAlignment(Qt.AlignCenter)
+
         self.telemetryStatsSectionLayout.addWidget(self.telemetryStatsTitle)
+
+        self.telemetryStatsRowLayout = QHBoxLayout()
+        self.telemetryStatsRowLayout.setObjectName(u"telemetryStatsRowLayout")
         self.attitudeRateLabel = QLabel(self.telemetryStatsSection)
         self.attitudeRateLabel.setObjectName(u"attitudeRateLabel")
-        self.telemetryStatsSectionLayout.addWidget(self.attitudeRateLabel)
+        self.attitudeRateLabel.setAlignment(Qt.AlignCenter)
+
+        self.telemetryStatsRowLayout.addWidget(self.attitudeRateLabel)
+
         self.gpsRateLabel = QLabel(self.telemetryStatsSection)
         self.gpsRateLabel.setObjectName(u"gpsRateLabel")
-        self.telemetryStatsSectionLayout.addWidget(self.gpsRateLabel)
+        self.gpsRateLabel.setAlignment(Qt.AlignCenter)
+
+        self.telemetryStatsRowLayout.addWidget(self.gpsRateLabel)
+
         self.totalRateLabel = QLabel(self.telemetryStatsSection)
         self.totalRateLabel.setObjectName(u"totalRateLabel")
-        self.telemetryStatsSectionLayout.addWidget(self.totalRateLabel)
+        self.totalRateLabel.setAlignment(Qt.AlignCenter)
+
+        self.telemetryStatsRowLayout.addWidget(self.totalRateLabel)
+
+
+        self.telemetryStatsSectionLayout.addLayout(self.telemetryStatsRowLayout)
+
 
         self.verticalLayout_20.addWidget(self.frame)
 

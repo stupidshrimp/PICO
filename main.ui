@@ -2864,7 +2864,7 @@ background-repeat: no-repeat;</string>
                             <x>978</x>
                             <y>381</y>
                             <width>571</width>
-                            <height>420</height>
+                            <height>520</height>
                            </rect>
                           </property>
                          <property name="frameShape">
@@ -2979,7 +2979,7 @@ background-repeat: no-repeat;</string>
                              <x>0</x>
                              <y>150</y>
                              <width>571</width>
-                             <height>270</height>
+                             <height>360</height>
                             </rect>
                            </property>
                            <layout class="QVBoxLayout" name="telemetryStatsSectionLayout">
@@ -3015,25 +3015,38 @@ background-repeat: no-repeat;</string>
                              </widget>
                             </item>
                             <item>
-                             <widget class="QLabel" name="attitudeRateLabel">
-                              <property name="text">
-                               <string>Attitude rate: -- Hz</string>
-                              </property>
-                             </widget>
-                            </item>
-                            <item>
-                             <widget class="QLabel" name="gpsRateLabel">
-                              <property name="text">
-                               <string>GPS rate: -- Hz</string>
-                              </property>
-                             </widget>
-                            </item>
-                            <item>
-                             <widget class="QLabel" name="totalRateLabel">
-                              <property name="text">
-                               <string>Total rate: -- Hz</string>
-                              </property>
-                             </widget>
+                             <layout class="QHBoxLayout" name="telemetryStatsRowLayout">
+                              <item>
+                               <widget class="QLabel" name="attitudeRateLabel">
+                                <property name="text">
+                                 <string>Attitude rate: -- Hz</string>
+                                </property>
+                                <property name="alignment">
+                                 <set>Qt::AlignCenter</set>
+                                </property>
+                               </widget>
+                              </item>
+                              <item>
+                               <widget class="QLabel" name="gpsRateLabel">
+                                <property name="text">
+                                 <string>GPS rate: -- Hz</string>
+                                </property>
+                                <property name="alignment">
+                                 <set>Qt::AlignCenter</set>
+                                </property>
+                               </widget>
+                              </item>
+                              <item>
+                               <widget class="QLabel" name="totalRateLabel">
+                                <property name="text">
+                                 <string>Total rate: -- Hz</string>
+                                </property>
+                                <property name="alignment">
+                                 <set>Qt::AlignCenter</set>
+                                </property>
+                               </widget>
+                              </item>
+                             </layout>
                             </item>
                            </layout>
                           </widget>
