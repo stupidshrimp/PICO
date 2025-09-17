@@ -1551,36 +1551,67 @@ class Ui_MainWindow(object):
 
         self.commandVideoSpacer = QWidget(self.new_page)
         self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
-        self.commandVideoSpacer.setMinimumSize(QSize(0, 100))
-        self.commandVideoSpacer.setMaximumSize(QSize(16777215, 100))
+        self.commandVideoSpacer.setMinimumSize(QSize(0, 120))
+        self.commandVideoSpacer.setMaximumSize(QSize(960, 16777215))
+        self.controlInputsLayout = QVBoxLayout(self.commandVideoSpacer)
+        self.controlInputsLayout.setSpacing(8)
+        self.controlInputsLayout.setObjectName(u"controlInputsLayout")
+        self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
         self.InputsLabel = QLabel(self.commandVideoSpacer)
         self.InputsLabel.setObjectName(u"InputsLabel")
-        self.InputsLabel.setGeometry(QRect(0, 0, 200, 20))
         self.InputsLabel.setFont(font5)
         self.InputsLabel.setAlignment(Qt.AlignCenter)
-        self.controlModeTitle = QLabel(self.commandVideoSpacer)
-        self.controlModeTitle.setObjectName(u"controlModeTitle")
-        self.controlModeTitle.setGeometry(QRect(210, 0, 120, 20))
-        self.controlModeTitle.setFont(font5)
-        self.controlModeTitle.setAlignment(Qt.AlignCenter)
-        self.controlModeLabel = QLabel(self.commandVideoSpacer)
-        self.controlModeLabel.setObjectName(u"controlModeLabel")
-        self.controlModeLabel.setGeometry(QRect(210, 20, 120, 20))
-        self.controlModeLabel.setAlignment(Qt.AlignCenter)
+
+        self.controlInputsLayout.addWidget(self.InputsLabel)
+
+        self.controlInputsRow = QHBoxLayout()
+        self.controlInputsRow.setSpacing(24)
+        self.controlInputsRow.setObjectName(u"controlInputsRow")
+        self.controlInputsRow.setContentsMargins(0, 0, 0, 0)
         self.pitchInput = QWidget(self.commandVideoSpacer)
         self.pitchInput.setObjectName(u"pitchInput")
-        self.pitchInput.setGeometry(QRect(10, 20, 15, 60))
+        self.pitchInput.setMinimumSize(QSize(15, 60))
+        self.pitchInput.setMaximumSize(QSize(15, 60))
+
+        self.controlInputsRow.addWidget(self.pitchInput)
+
         self.rollInput = QWidget(self.commandVideoSpacer)
         self.rollInput.setObjectName(u"rollInput")
-        self.rollInput.setGeometry(QRect(40, 50, 60, 15))
+        self.rollInput.setMinimumSize(QSize(60, 15))
+        self.rollInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.rollInput)
+
         self.yawInput = QWidget(self.commandVideoSpacer)
         self.yawInput.setObjectName(u"yawInput")
-        self.yawInput.setGeometry(QRect(110, 50, 60, 15))
+        self.yawInput.setMinimumSize(QSize(60, 15))
+        self.yawInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.yawInput)
+
         self.throttleInput = QWidget(self.commandVideoSpacer)
         self.throttleInput.setObjectName(u"throttleInput")
-        self.throttleInput.setGeometry(QRect(175, 20, 15, 60))
+        self.throttleInput.setMinimumSize(QSize(15, 60))
+        self.throttleInput.setMaximumSize(QSize(15, 60))
 
-        self.verticalLayout_20.addWidget(self.commandVideoSpacer)
+        self.controlInputsRow.addWidget(self.throttleInput)
+
+        self.controlInputsLayout.addLayout(self.controlInputsRow)
+
+        self.controlModeTitle = QLabel(self.commandVideoSpacer)
+        self.controlModeTitle.setObjectName(u"controlModeTitle")
+        self.controlModeTitle.setFont(font5)
+        self.controlModeTitle.setAlignment(Qt.AlignCenter)
+
+        self.controlInputsLayout.addWidget(self.controlModeTitle)
+
+        self.controlModeLabel = QLabel(self.commandVideoSpacer)
+        self.controlModeLabel.setObjectName(u"controlModeLabel")
+        self.controlModeLabel.setAlignment(Qt.AlignCenter)
+
+        self.controlInputsLayout.addWidget(self.controlModeLabel)
+
+        self.verticalLayout_20.addWidget(self.commandVideoSpacer, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self.stackedWidget.addWidget(self.new_page)
 
