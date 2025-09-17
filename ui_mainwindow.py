@@ -1435,6 +1435,93 @@ class Ui_MainWindow(object):
         self.altitudeosd = QWidget(self.frame_2)
         self.altitudeosd.setObjectName(u"altitudeosd")
         self.altitudeosd.setGeometry(QRect(855, 120, 75, 300))
+        self.commandVideoSpacer = QWidget(self.frame)
+        self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
+        self.commandVideoSpacer.setGeometry(QRect(0, 720, 960, 120))
+        self.controlInputsLayout = QHBoxLayout(self.commandVideoSpacer)
+        self.controlInputsLayout.setSpacing(24)
+        self.controlInputsLayout.setObjectName(u"controlInputsLayout")
+        self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
+        self.controlInputsLeftSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.controlInputsLayout.addItem(self.controlInputsLeftSpacer)
+
+        self.controlInputsColumn = QVBoxLayout()
+        self.controlInputsColumn.setSpacing(8)
+        self.controlInputsColumn.setObjectName(u"controlInputsColumn")
+        self.controlInputsColumn.setContentsMargins(0, 0, 0, 0)
+        self.InputsLabel = QLabel(self.commandVideoSpacer)
+        self.InputsLabel.setObjectName(u"InputsLabel")
+        font5 = QFont()
+        font5.setBold(True)
+        font5.setUnderline(True)
+        self.InputsLabel.setFont(font5)
+        self.InputsLabel.setAlignment(Qt.AlignCenter)
+
+        self.controlInputsColumn.addWidget(self.InputsLabel)
+
+        self.controlInputsRow = QHBoxLayout()
+        self.controlInputsRow.setSpacing(24)
+        self.controlInputsRow.setObjectName(u"controlInputsRow")
+        self.controlInputsRow.setContentsMargins(0, 0, 0, 0)
+        self.pitchInput = QWidget(self.commandVideoSpacer)
+        self.pitchInput.setObjectName(u"pitchInput")
+        self.pitchInput.setMinimumSize(QSize(15, 60))
+        self.pitchInput.setMaximumSize(QSize(15, 60))
+
+        self.controlInputsRow.addWidget(self.pitchInput)
+
+        self.rollInput = QWidget(self.commandVideoSpacer)
+        self.rollInput.setObjectName(u"rollInput")
+        self.rollInput.setMinimumSize(QSize(60, 15))
+        self.rollInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.rollInput)
+
+        self.yawInput = QWidget(self.commandVideoSpacer)
+        self.yawInput.setObjectName(u"yawInput")
+        self.yawInput.setMinimumSize(QSize(60, 15))
+        self.yawInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.yawInput)
+
+        self.throttleInput = QWidget(self.commandVideoSpacer)
+        self.throttleInput.setObjectName(u"throttleInput")
+        self.throttleInput.setMinimumSize(QSize(15, 60))
+        self.throttleInput.setMaximumSize(QSize(15, 60))
+
+        self.controlInputsRow.addWidget(self.throttleInput)
+
+
+        self.controlInputsColumn.addLayout(self.controlInputsRow)
+
+
+        self.controlInputsLayout.addLayout(self.controlInputsColumn)
+
+        self.controlModeLayout = QVBoxLayout()
+        self.controlModeLayout.setSpacing(4)
+        self.controlModeLayout.setObjectName(u"controlModeLayout")
+        self.controlModeLayout.setContentsMargins(0, 8, 0, 0)
+        self.controlModeTitle = QLabel(self.commandVideoSpacer)
+        self.controlModeTitle.setObjectName(u"controlModeTitle")
+        self.controlModeTitle.setFont(font5)
+        self.controlModeTitle.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.controlModeLayout.addWidget(self.controlModeTitle)
+
+        self.controlModeLabel = QLabel(self.commandVideoSpacer)
+        self.controlModeLabel.setObjectName(u"controlModeLabel")
+        self.controlModeLabel.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.controlModeLayout.addWidget(self.controlModeLabel)
+
+
+        self.controlInputsLayout.addLayout(self.controlModeLayout)
+
+        self.controlInputsRightSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.controlInputsLayout.addItem(self.controlInputsRightSpacer)
+
         self.frame_3 = QFrame(self.frame)
         self.frame_3.setObjectName(u"frame_3")
         self.frame_3.setGeometry(QRect(978, -1, 600, 381))
@@ -1455,9 +1542,6 @@ class Ui_MainWindow(object):
         self.frame4Layout.setContentsMargins(12, 12, 12, 12)
         self.signalHealthTitle = QLabel(self.frame_4)
         self.signalHealthTitle.setObjectName(u"signalHealthTitle")
-        font5 = QFont()
-        font5.setBold(True)
-        font5.setUnderline(True)
         self.signalHealthTitle.setFont(font5)
         self.signalHealthTitle.setAlignment(Qt.AlignCenter)
 
@@ -1548,95 +1632,6 @@ class Ui_MainWindow(object):
 
 
         self.verticalLayout_20.addWidget(self.frame)
-
-        self.commandVideoSpacer = QWidget(self.new_page)
-        self.commandVideoSpacer.setObjectName(u"commandVideoSpacer")
-        self.commandVideoSpacer.setMinimumSize(QSize(0, 120))
-        sizePolicy4 = QSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        sizePolicy4.setHorizontalStretch(0)
-        sizePolicy4.setVerticalStretch(0)
-        sizePolicy4.setHeightForWidth(self.commandVideoSpacer.sizePolicy().hasHeightForWidth())
-        self.commandVideoSpacer.setSizePolicy(sizePolicy4)
-        self.commandVideoSpacer.setMaximumSize(QSize(960, 16777215))
-        self.controlInputsLayout = QHBoxLayout(self.commandVideoSpacer)
-        self.controlInputsLayout.setSpacing(24)
-        self.controlInputsLayout.setObjectName(u"controlInputsLayout")
-        self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
-        self.controlInputsColumn = QVBoxLayout()
-        self.controlInputsColumn.setSpacing(8)
-        self.controlInputsColumn.setObjectName(u"controlInputsColumn")
-        self.controlInputsColumn.setContentsMargins(0, 0, 0, 0)
-        self.InputsLabel = QLabel(self.commandVideoSpacer)
-        self.InputsLabel.setObjectName(u"InputsLabel")
-        self.InputsLabel.setFont(font5)
-        self.InputsLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-
-        self.controlInputsColumn.addWidget(self.InputsLabel)
-
-        self.controlInputsRow = QHBoxLayout()
-        self.controlInputsRow.setSpacing(24)
-        self.controlInputsRow.setObjectName(u"controlInputsRow")
-        self.controlInputsRow.setContentsMargins(0, 0, 0, 0)
-        self.pitchInput = QWidget(self.commandVideoSpacer)
-        self.pitchInput.setObjectName(u"pitchInput")
-        self.pitchInput.setMinimumSize(QSize(15, 60))
-        self.pitchInput.setMaximumSize(QSize(15, 60))
-
-        self.controlInputsRow.addWidget(self.pitchInput)
-
-        self.rollInput = QWidget(self.commandVideoSpacer)
-        self.rollInput.setObjectName(u"rollInput")
-        self.rollInput.setMinimumSize(QSize(60, 15))
-        self.rollInput.setMaximumSize(QSize(60, 15))
-
-        self.controlInputsRow.addWidget(self.rollInput)
-
-        self.yawInput = QWidget(self.commandVideoSpacer)
-        self.yawInput.setObjectName(u"yawInput")
-        self.yawInput.setMinimumSize(QSize(60, 15))
-        self.yawInput.setMaximumSize(QSize(60, 15))
-
-        self.controlInputsRow.addWidget(self.yawInput)
-
-        self.throttleInput = QWidget(self.commandVideoSpacer)
-        self.throttleInput.setObjectName(u"throttleInput")
-        self.throttleInput.setMinimumSize(QSize(15, 60))
-        self.throttleInput.setMaximumSize(QSize(15, 60))
-
-        self.controlInputsRow.addWidget(self.throttleInput)
-
-
-        self.controlInputsColumn.addLayout(self.controlInputsRow)
-
-
-        self.controlInputsLayout.addLayout(self.controlInputsColumn)
-
-        self.controlModeLayout = QVBoxLayout()
-        self.controlModeLayout.setSpacing(4)
-        self.controlModeLayout.setObjectName(u"controlModeLayout")
-        self.controlModeLayout.setContentsMargins(0, 8, 0, 0)
-        self.controlModeTitle = QLabel(self.commandVideoSpacer)
-        self.controlModeTitle.setObjectName(u"controlModeTitle")
-        self.controlModeTitle.setFont(font5)
-        self.controlModeTitle.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-
-        self.controlModeLayout.addWidget(self.controlModeTitle)
-
-        self.controlModeLabel = QLabel(self.commandVideoSpacer)
-        self.controlModeLabel.setObjectName(u"controlModeLabel")
-        self.controlModeLabel.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-
-        self.controlModeLayout.addWidget(self.controlModeLabel)
-
-
-        self.controlInputsLayout.addLayout(self.controlModeLayout)
-
-        self.controlInputsSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-
-        self.controlInputsLayout.addItem(self.controlInputsSpacer)
-
-
-        self.verticalLayout_20.addWidget(self.commandVideoSpacer, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.stackedWidget.addWidget(self.new_page)
 
@@ -1926,6 +1921,9 @@ class Ui_MainWindow(object):
         self.tableWidget.setSortingEnabled(__sortingEnabled)
 
         self.VideoLabel.setText("")
+        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
+        self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
+        self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
         self.signalHealthTitle.setText(QCoreApplication.translate("MainWindow", u"Signal health", None))
         self.rssiALabel.setText(QCoreApplication.translate("MainWindow", u"RSSI A: --", None))
         self.rssiBLabel.setText(QCoreApplication.translate("MainWindow", u"RSSI B: --", None))
@@ -1937,9 +1935,6 @@ class Ui_MainWindow(object):
         self.attitudeRateLabel.setText(QCoreApplication.translate("MainWindow", u"Attitude rate: -- Hz", None))
         self.gpsRateLabel.setText(QCoreApplication.translate("MainWindow", u"GPS rate: -- Hz", None))
         self.totalRateLabel.setText(QCoreApplication.translate("MainWindow", u"Total rate: -- Hz", None))
-        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
-        self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
-        self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
         self.osdLabel.setText(QCoreApplication.translate("MainWindow", u"OSD", None))
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
