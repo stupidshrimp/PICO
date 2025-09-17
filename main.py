@@ -121,6 +121,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QGridLayout,
     QSizePolicy,
+    QLayout,
 )
 from PySide6.QtCore import (
     Qt,
@@ -544,6 +545,24 @@ class MainWindow(QMainWindow):
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
 
+    def _clear_layout(self, layout: Optional[QLayout]) -> None:
+        """Remove all items from a layout without deleting the widgets."""
+
+        if layout is None:
+            return
+
+        while layout.count():
+            item = layout.takeAt(0)
+            child_widget = item.widget()
+            child_layout = item.layout()
+
+            if child_widget is not None:
+                child_widget.setParent(None)
+
+            if child_layout is not None:
+                self._clear_layout(child_layout)
+
+
     def _setup_command_sidebar(self) -> None:
         """Lay out the command tab's right column with stacked sections."""
 
@@ -551,48 +570,49 @@ class MainWindow(QMainWindow):
         column_layout = frame.layout()
         if column_layout is None:
             column_layout = QVBoxLayout(frame)
+        telemetry_section = getattr(self.ui, "telemetryStatsSection", None)
+        command_spacer = getattr(self.ui, "commandVideoSpacer", None)
 
-        column_layout.setContentsMargins(8, 8, 8, 8)
-        column_layout.setSpacing(4)
+        self._clear_layout(column_layout)
 
-        old_signal_layout = getattr(self.ui, "signalMetricsGrid", None)
-        if isinstance(old_signal_layout, QGridLayout):
-            layout_item = None
-            for index in range(column_layout.count()):
-                item = column_layout.itemAt(index)
-                if item is not None and item.layout() is old_signal_layout:
-                    layout_item = column_layout.takeAt(index)
-                    break
+        column_layout.setContentsMargins(0, 12, 0, 12)
+        column_layout.setSpacing(12)
+        column_layout.setAlignment(Qt.AlignTop)
 
-            if layout_item is not None:
-                while old_signal_layout.count():
-                    child_item = old_signal_layout.takeAt(0)
-                    child_widget = child_item.widget()
-                    if child_widget is not None:
-                        child_widget.setParent(frame)
-                old_signal_layout.setParent(None)
+        panel_style = (
+            "background-color: rgba(26, 30, 36, 200);"
+            "border: 1px solid rgb(62, 68, 82);"
+            "border-radius: 10px;"
+        )
+        self._sidebar_panel_style = panel_style
 
-
-        # Build a container for the signal health labels so they occupy the
-        # first section of the column before the telemetry statistics widget.
         signal_container = QFrame(frame)
         signal_container.setObjectName("signalHealthContainer")
         signal_container.setSizePolicy(
-            QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
-        signal_layout = QGridLayout(signal_container)
-        signal_layout.setContentsMargins(8, 4, 8, 0)
-        signal_layout.setHorizontalSpacing(16)
-        signal_layout.setVerticalSpacing(4)
-        signal_layout.setColumnStretch(0, 1)
-        signal_layout.setColumnStretch(1, 1)
-        self.ui.signalMetricsGrid = signal_layout
+        signal_container.setStyleSheet(panel_style)
 
-        # Move the existing signal health labels into the new container.
-        self.ui.signalHealthTitle.setParent(signal_container)
-        signal_layout.addWidget(
-            self.ui.signalHealthTitle, 0, 0, 1, 2, alignment=Qt.AlignCenter
+        signal_layout = QVBoxLayout(signal_container)
+        signal_layout.setContentsMargins(12, 12, 12, 12)
+        signal_layout.setSpacing(10)
+
+        signal_title = self.ui.signalHealthTitle
+        signal_title.setParent(signal_container)
+        signal_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        signal_title.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
+        signal_layout.addWidget(signal_title)
+
+        metrics_grid = QGridLayout()
+        metrics_grid.setContentsMargins(0, 0, 0, 0)
+        metrics_grid.setHorizontalSpacing(20)
+        metrics_grid.setVerticalSpacing(6)
+        metrics_grid.setColumnStretch(0, 1)
+        metrics_grid.setColumnStretch(1, 1)
+        signal_layout.addLayout(metrics_grid)
+        self.ui.signalMetricsGrid = metrics_grid
 
         for row, (left_widget, right_widget) in enumerate(
             (
@@ -600,51 +620,72 @@ class MainWindow(QMainWindow):
                 (self.ui.linkQualityLabel, self.ui.snrLabel),
                 (self.ui.downlinkQualityLabel, self.ui.downlinkSnrLabel),
             ),
-            start=1,
         ):
             left_widget.setParent(signal_container)
             right_widget.setParent(signal_container)
-            signal_layout.addWidget(left_widget, row, 0, alignment=Qt.AlignLeft)
-            signal_layout.addWidget(right_widget, row, 1, alignment=Qt.AlignLeft)
+            left_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            right_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            left_widget.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
+            right_widget.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
+            metrics_grid.addWidget(left_widget, row, 0)
+            metrics_grid.addWidget(right_widget, row, 1)
 
-        column_layout.insertWidget(0, signal_container)
+        column_layout.addWidget(signal_container)
 
-        telemetry_section = self.ui.telemetryStatsSection
-        telemetry_section.setParent(frame)
-        telemetry_section.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
+        if telemetry_section is not None:
+            telemetry_section.setParent(frame)
+            telemetry_section.setStyleSheet(panel_style)
+            telemetry_section.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
 
-        telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
-        if telemetry_layout is not None:
-            telemetry_layout.setContentsMargins(8, 2, 8, 6)
-            telemetry_layout.setSpacing(2)
+            telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
+            if telemetry_layout is not None:
+                telemetry_layout.setContentsMargins(12, 12, 12, 12)
+                telemetry_layout.setSpacing(10)
 
+            stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
+            if stats_row_layout is not None:
+                stats_row_layout.setContentsMargins(0, 0, 0, 0)
+                stats_row_layout.setSpacing(16)
+                stats_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
-        if stats_row_layout is not None:
-            stats_row_layout.setContentsMargins(0, 0, 0, 0)
-            stats_row_layout.setSpacing(6)
+            telemetry_title = getattr(self.ui, "telemetryStatsTitle", None)
+            if telemetry_title is not None:
+                telemetry_title.setParent(telemetry_section)
+                telemetry_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
+            for label in (
+                getattr(self.ui, "attitudeRateLabel", None),
+                getattr(self.ui, "gpsRateLabel", None),
+                getattr(self.ui, "totalRateLabel", None),
+            ):
+                if label is None:
+                    continue
+                label.setParent(telemetry_section)
+                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                label.setSizePolicy(
+                    QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                )
 
-        if hasattr(self.ui, "telemetryStatsTitle"):
-            self.ui.telemetryStatsTitle.setParent(telemetry_section)
-            self.ui.telemetryStatsTitle.setAlignment(Qt.AlignCenter)
+            telemetry_section.adjustSize()
+            telemetry_section.setMinimumHeight(telemetry_section.sizeHint().height())
+            column_layout.addWidget(telemetry_section)
 
-        for label in (
-            getattr(self.ui, "attitudeRateLabel", None),
-            getattr(self.ui, "gpsRateLabel", None),
-            getattr(self.ui, "totalRateLabel", None),
-        ):
-            if label is None:
-                continue
-            label.setParent(telemetry_section)
-            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        if command_spacer is not None:
+            command_spacer.setParent(frame)
+            command_spacer.setMinimumHeight(0)
+            command_spacer.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            )
+            column_layout.addWidget(command_spacer, 1)
 
-        telemetry_section.adjustSize()
-        telemetry_section.setFixedHeight(telemetry_section.sizeHint().height())
-
-        column_layout.addWidget(telemetry_section)
+        if column_layout.count() == 0:
+            column_layout.addStretch()
 
     def _setup_sortie_section(self) -> None:
         """Create the Sorties section and recording controls on the command tab."""
@@ -654,6 +695,9 @@ class MainWindow(QMainWindow):
         sorties_frame.setSizePolicy(
             QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
+        panel_style = getattr(self, "_sidebar_panel_style", "")
+        if panel_style:
+            sorties_frame.setStyleSheet(panel_style)
         layout_container = self.ui.frame_4.layout()
 
         if layout_container is not None:
@@ -678,8 +722,8 @@ class MainWindow(QMainWindow):
                 sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
-        layout.setContentsMargins(8, 4, 8, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
 
         header_container = QWidget(sorties_frame)
         header_container.setObjectName("sortiesHeader")
@@ -717,7 +761,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(header_container)
 
         self.sortie_status_label = QLabel("Status: Waiting for telemetry", sorties_frame)
-        self.sortie_status_label.setAlignment(Qt.AlignCenter)
+        self.sortie_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.sortie_status_label.setStyleSheet("color: #9e9e9e;")
         layout.addWidget(self.sortie_status_label)
 
