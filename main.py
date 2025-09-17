@@ -637,7 +637,13 @@ class MainWindow(QMainWindow):
         layout_container = self.ui.frame_4.layout()
 
         if layout_container is not None:
-            layout_container.addWidget(sorties_frame)
+            insert_position = layout_container.count()
+            spacer_widget = getattr(self.ui, "commandVideoSpacer", None)
+            if spacer_widget is not None:
+                spacer_index = layout_container.indexOf(spacer_widget)
+                if spacer_index != -1:
+                    insert_position = spacer_index
+            layout_container.insertWidget(insert_position, sorties_frame)
         else:
             legacy_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
             if legacy_layout is not None:
@@ -647,8 +653,8 @@ class MainWindow(QMainWindow):
                 sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
-        layout.setContentsMargins(16, 8, 16, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 8, 8, 12)
+        layout.setSpacing(8)
 
         header_container = QWidget(sorties_frame)
         header_container.setObjectName("sortiesHeader")
