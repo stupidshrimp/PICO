@@ -544,9 +544,15 @@ class MainWindow(QMainWindow):
     def _setup_sortie_section(self) -> None:
         """Create the Sorties section and recording controls on the command tab."""
 
-        sorties_frame = QFrame(self.ui.frame_4)
+        parent_widget = getattr(self.ui, "telemetryStatsSection", self.ui.frame_4)
+        sorties_frame = QFrame(parent_widget)
         sorties_frame.setObjectName("sortiesFrame")
-        sorties_frame.setGeometry(0, 150, 571, 170)
+        layout_container = getattr(self.ui, "telemetryStatsSectionLayout", None)
+        if layout_container is not None:
+            layout_container.addSpacing(12)
+            layout_container.addWidget(sorties_frame)
+        else:
+            sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
         layout.setContentsMargins(20, 10, 20, 10)

@@ -2864,7 +2864,7 @@ background-repeat: no-repeat;</string>
                             <x>978</x>
                             <y>381</y>
                             <width>571</width>
-                            <height>339</height>
+                            <height>420</height>
                            </rect>
                           </property>
                          <property name="frameShape">
@@ -2973,66 +2973,69 @@ background-repeat: no-repeat;</string>
                             <string>Downlink SNR: --</string>
                            </property>
                           </widget>
-                          <widget class="QLabel" name="telemetryStatsTitle">
+                          <widget class="QWidget" name="telemetryStatsSection" native="true">
                            <property name="geometry">
                             <rect>
                              <x>0</x>
-                             <y>160</y>
+                             <y>150</y>
                              <width>571</width>
-                             <height>31</height>
+                             <height>270</height>
                             </rect>
                            </property>
-                           <property name="font">
-                            <font>
-                             <bold>true</bold>
-                             <underline>true</underline>
-                            </font>
-                           </property>
-                           <property name="text">
-                            <string>Telemetry Statistics</string>
-                           </property>
-                           <property name="alignment">
-                            <set>Qt::AlignCenter</set>
-                           </property>
-                          </widget>
-                          <widget class="QLabel" name="attitudeRateLabel">
-                           <property name="geometry">
-                            <rect>
-                             <x>10</x>
-                             <y>200</y>
-                             <width>200</width>
-                             <height>20</height>
-                            </rect>
-                           </property>
-                           <property name="text">
-                            <string>Attitude rate: -- Hz</string>
-                           </property>
-                          </widget>
-                          <widget class="QLabel" name="gpsRateLabel">
-                           <property name="geometry">
-                            <rect>
-                             <x>10</x>
-                             <y>230</y>
-                             <width>200</width>
-                             <height>20</height>
-                            </rect>
-                           </property>
-                           <property name="text">
-                            <string>GPS rate: -- Hz</string>
-                           </property>
-                          </widget>
-                          <widget class="QLabel" name="totalRateLabel">
-                           <property name="geometry">
-                            <rect>
-                             <x>10</x>
-                             <y>260</y>
-                             <width>200</width>
-                             <height>20</height>
-                            </rect>
-                           </property>
-                           <property name="text">
-                            <string>Total rate: -- Hz</string>
-                           </property>
+                           <layout class="QVBoxLayout" name="telemetryStatsSectionLayout">
+                            <property name="spacing">
+                             <number>6</number>
+                            </property>
+                            <property name="leftMargin">
+                             <number>10</number>
+                            </property>
+                            <property name="topMargin">
+                             <number>0</number>
+                            </property>
+                            <property name="rightMargin">
+                             <number>10</number>
+                            </property>
+                            <property name="bottomMargin">
+                             <number>0</number>
+                            </property>
+                            <item>
+                             <widget class="QLabel" name="telemetryStatsTitle">
+                              <property name="font">
+                               <font>
+                                <bold>true</bold>
+                                <underline>true</underline>
+                               </font>
+                              </property>
+                              <property name="text">
+                               <string>Telemetry Statistics</string>
+                              </property>
+                              <property name="alignment">
+                               <set>Qt::AlignCenter</set>
+                              </property>
+                             </widget>
+                            </item>
+                            <item>
+                             <widget class="QLabel" name="attitudeRateLabel">
+                              <property name="text">
+                               <string>Attitude rate: -- Hz</string>
+                              </property>
+                             </widget>
+                            </item>
+                            <item>
+                             <widget class="QLabel" name="gpsRateLabel">
+                              <property name="text">
+                               <string>GPS rate: -- Hz</string>
+                              </property>
+                             </widget>
+                            </item>
+                            <item>
+                             <widget class="QLabel" name="totalRateLabel">
+                              <property name="text">
+                               <string>Total rate: -- Hz</string>
+                              </property>
+                             </widget>
+                            </item>
+                           </layout>
                           </widget>
                          </widget>
                        </widget>
