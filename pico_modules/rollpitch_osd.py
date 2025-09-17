@@ -24,6 +24,25 @@ class RollPitchOSD(QWidget):
         self._smoothing = 0.2  # Weight for new samples
         self.setMinimumSize(300, 300)
 
+    def set_smoothing(self, weight: float) -> None:
+        """Adjust the smoothing factor applied to new roll/pitch samples.
+
+        ``weight`` represents the proportion of a new sample to mix into the
+        running average. Values greater than 1.0 are treated as percentages and
+        scaled accordingly. The final weight is clamped to the range
+        ``[0.01, 1.0]`` to prevent the indicator from freezing entirely.
+        """
+
+        try:
+            value = float(weight)
+        except (TypeError, ValueError):
+            return
+
+        if value > 1.0:
+            value /= 100.0
+
+        self._smoothing = max(0.01, min(1.0, value))
+
     def setRollPitch(self, roll_deg: float, pitch_deg: float) -> None:
         """Update the displayed roll and pitch in degrees.
 

@@ -329,6 +329,19 @@ class MainWindow(QMainWindow):
         self.warning_cfg.setdefault("altitude_alarm_enabled", True)
         self.warning_cfg.setdefault("bank_angle_alarm_enabled", True)
 
+        self.osd_cfg = self.config.setdefault("osd", {})
+        smoothing_percent = int(self.osd_cfg.get("attitude_smoothing", 20))
+        self.osd_cfg["attitude_smoothing"] = smoothing_percent
+        if hasattr(self.ui, "attitudeSmoothingSlider"):
+            self.ui.attitudeSmoothingSlider.setMinimum(1)
+            self.ui.attitudeSmoothingSlider.setMaximum(100)
+            self.ui.attitudeSmoothingSlider.setValue(smoothing_percent)
+            self.ui.attitudeSmoothingSlider.valueChanged.connect(
+                self.on_attitude_smoothing_changed
+            )
+        if hasattr(self.ui, "attitudeSmoothingValue"):
+            self.ui.attitudeSmoothingValue.setText(f"{smoothing_percent}%")
+
         if hasattr(self.ui, "telemetryWarningLabel"):
             self.ui.telemetryWarningLabel.setContentsMargins(0, 12, 0, 0)
         if hasattr(self.ui, "chk_alarm_airspeed"):
@@ -491,6 +504,9 @@ class MainWindow(QMainWindow):
         # Here we assume that in your .ui file there is a placeholder widget named "rollpitchosd"
         # We create our custom RollPitchOSD instance with that widget as its parent.
         self.rollpitch_osd = RollPitchOSD(self.ui.rollpitchosd)
+        self.rollpitch_osd.set_smoothing(
+            self.osd_cfg.get("attitude_smoothing", 20) / 100.0
+        )
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
         self.rollpitch_osd.show()
 
@@ -1867,6 +1883,19 @@ class MainWindow(QMainWindow):
         self.smoothing_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_smoothing(value)
+        save_config(self.config)
+
+    def on_attitude_smoothing_changed(self, value: int):
+        try:
+            percent = int(value)
+        except (TypeError, ValueError):
+            percent = self.osd_cfg.get("attitude_smoothing", 20)
+        percent = max(1, min(100, percent))
+        self.osd_cfg["attitude_smoothing"] = percent
+        if hasattr(self.ui, "attitudeSmoothingValue"):
+            self.ui.attitudeSmoothingValue.setText(f"{percent}%")
+        if hasattr(self, "rollpitch_osd"):
+            self.rollpitch_osd.set_smoothing(percent / 100.0)
         save_config(self.config)
 
     def on_stall_speed_changed(self, value: int):

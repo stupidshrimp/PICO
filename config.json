@@ -11,6 +11,9 @@
         "baudrate": 921600,
         "packet_interval": 3
     },
+    "osd": {
+        "attitude_smoothing": 20
+    },
     "vtx": {},
     "warnings": {
         "stall_airspeed": 20,
