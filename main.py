@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._configure_metric_labels()
         # Size the window using the command page and keep it fixed. This
         # ensures the GUI is always large enough for its contents and does not
         # change size when switching between pages.
@@ -545,6 +546,51 @@ class MainWindow(QMainWindow):
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
 
 
+    def _configure_metric_labels(self) -> None:
+        """Constrain telemetry labels so they wrap within their sections."""
+
+        signal_labels = [
+            getattr(self.ui, "rssiALabel", None),
+            getattr(self.ui, "rssiBLabel", None),
+            getattr(self.ui, "linkQualityLabel", None),
+            getattr(self.ui, "snrLabel", None),
+            getattr(self.ui, "downlinkQualityLabel", None),
+            getattr(self.ui, "downlinkSnrLabel", None),
+        ]
+        for label in signal_labels:
+            if label is None:
+                continue
+            label.setWordWrap(True)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+
+        grid_layout = getattr(self.ui, "signalMetricsGrid", None)
+        if grid_layout is not None:
+            grid_layout.setColumnStretch(0, 1)
+            grid_layout.setColumnStretch(1, 1)
+
+        stats_labels = [
+            getattr(self.ui, "attitudeRateLabel", None),
+            getattr(self.ui, "gpsRateLabel", None),
+            getattr(self.ui, "totalRateLabel", None),
+        ]
+        for label in stats_labels:
+            if label is None:
+                continue
+            label.setWordWrap(True)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+
+        stats_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
+        if stats_layout is not None:
+            for index in range(stats_layout.count()):
+                stats_layout.setStretch(index, 1)
+
+
     def _clear_layout(self, layout: Optional[QLayout]) -> None:
         """Remove all items from a layout without deleting the widgets."""
 
@@ -625,6 +671,8 @@ class MainWindow(QMainWindow):
         ):
             left_widget.setParent(signal_container)
             right_widget.setParent(signal_container)
+            left_widget.setWordWrap(True)
+            right_widget.setWordWrap(True)
             left_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             right_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             left_widget.setSizePolicy(
@@ -655,6 +703,8 @@ class MainWindow(QMainWindow):
                 stats_row_layout.setContentsMargins(0, 0, 0, 0)
                 stats_row_layout.setSpacing(16)
                 stats_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                for index in range(stats_row_layout.count()):
+                    stats_row_layout.setStretch(index, 1)
 
             telemetry_title = getattr(self.ui, "telemetryStatsTitle", None)
             if telemetry_title is not None:
@@ -669,6 +719,7 @@ class MainWindow(QMainWindow):
                 if label is None:
                     continue
                 label.setParent(telemetry_section)
+                label.setWordWrap(True)
                 label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 label.setSizePolicy(
                     QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
