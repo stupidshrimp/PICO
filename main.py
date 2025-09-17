@@ -592,8 +592,36 @@ class MainWindow(QMainWindow):
         telemetry_section = self.ui.telemetryStatsSection
         telemetry_section.setParent(frame)
         telemetry_section.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
+
+        telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
+        if telemetry_layout is not None:
+            telemetry_layout.setContentsMargins(10, 8, 10, 8)
+            telemetry_layout.setSpacing(4)
+
+        stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
+        if stats_row_layout is not None:
+            stats_row_layout.setContentsMargins(0, 0, 0, 0)
+            stats_row_layout.setSpacing(12)
+
+        if hasattr(self.ui, "telemetryStatsTitle"):
+            self.ui.telemetryStatsTitle.setParent(telemetry_section)
+            self.ui.telemetryStatsTitle.setAlignment(Qt.AlignCenter)
+
+        for label in (
+            getattr(self.ui, "attitudeRateLabel", None),
+            getattr(self.ui, "gpsRateLabel", None),
+            getattr(self.ui, "totalRateLabel", None),
+        ):
+            if label is None:
+                continue
+            label.setParent(telemetry_section)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        telemetry_section.adjustSize()
+        telemetry_section.setFixedHeight(telemetry_section.sizeHint().height())
+
         column_layout.addWidget(telemetry_section)
 
     def _setup_sortie_section(self) -> None:
