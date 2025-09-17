@@ -3434,7 +3434,67 @@ background-repeat: no-repeat;</string>
                           </property>
                          </widget>
                         </item>
-                         <item>
+                        <item>
+                         <widget class="QLabel" name="attitudeSmoothingLabel">
+                          <property name="text">
+                           <string>Attitude smoothing</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QWidget" name="attitudeSmoothingContainer" native="true">
+                          <layout class="QHBoxLayout" name="attitudeSmoothingLayout">
+                           <property name="spacing">
+                            <number>6</number>
+                           </property>
+                           <property name="leftMargin">
+                            <number>0</number>
+                           </property>
+                           <property name="topMargin">
+                            <number>0</number>
+                           </property>
+                           <property name="rightMargin">
+                            <number>0</number>
+                           </property>
+                           <property name="bottomMargin">
+                            <number>0</number>
+                           </property>
+                           <item>
+                            <widget class="QSlider" name="attitudeSmoothingSlider">
+                             <property name="minimum">
+                              <number>1</number>
+                             </property>
+                             <property name="maximum">
+                              <number>100</number>
+                             </property>
+                             <property name="value">
+                              <number>20</number>
+                             </property>
+                             <property name="orientation">
+                              <enum>Qt::Horizontal</enum>
+                             </property>
+                            </widget>
+                           </item>
+                           <item>
+                            <widget class="QLabel" name="attitudeSmoothingValue">
+                             <property name="minimumSize">
+                              <size>
+                               <width>40</width>
+                               <height>0</height>
+                              </size>
+                             </property>
+                             <property name="alignment">
+                              <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                             </property>
+                             <property name="text">
+                              <string>20%</string>
+                             </property>
+                            </widget>
+                           </item>
+                          </layout>
+                         </widget>
+                        </item>
+                        <item>
                          <widget class="QCheckBox" name="chk_compass">
                           <property name="text">
                            <string>Compass OSD</string>

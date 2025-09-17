@@ -1701,6 +1701,35 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_14.addWidget(self.chk_attitude)
 
+        self.attitudeSmoothingLabel = QLabel(self.topMenus)
+        self.attitudeSmoothingLabel.setObjectName(u"attitudeSmoothingLabel")
+
+        self.verticalLayout_14.addWidget(self.attitudeSmoothingLabel)
+
+        self.attitudeSmoothingContainer = QWidget(self.topMenus)
+        self.attitudeSmoothingContainer.setObjectName(u"attitudeSmoothingContainer")
+        self.attitudeSmoothingLayout = QHBoxLayout(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingLayout.setSpacing(6)
+        self.attitudeSmoothingLayout.setObjectName(u"attitudeSmoothingLayout")
+        self.attitudeSmoothingLayout.setContentsMargins(0, 0, 0, 0)
+        self.attitudeSmoothingSlider = QSlider(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingSlider.setObjectName(u"attitudeSmoothingSlider")
+        self.attitudeSmoothingSlider.setMinimum(1)
+        self.attitudeSmoothingSlider.setMaximum(100)
+        self.attitudeSmoothingSlider.setValue(20)
+        self.attitudeSmoothingSlider.setOrientation(Qt.Horizontal)
+
+        self.attitudeSmoothingLayout.addWidget(self.attitudeSmoothingSlider)
+
+        self.attitudeSmoothingValue = QLabel(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingValue.setObjectName(u"attitudeSmoothingValue")
+        self.attitudeSmoothingValue.setMinimumSize(QSize(40, 0))
+        self.attitudeSmoothingValue.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+
+        self.attitudeSmoothingLayout.addWidget(self.attitudeSmoothingValue)
+
+        self.verticalLayout_14.addWidget(self.attitudeSmoothingContainer)
+
         self.chk_compass = QCheckBox(self.topMenus)
         self.chk_compass.setObjectName(u"chk_compass")
         self.chk_compass.setChecked(True)
@@ -1943,6 +1972,8 @@ class Ui_MainWindow(object):
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
+        self.attitudeSmoothingLabel.setText(QCoreApplication.translate("MainWindow", u"Attitude smoothing", None))
+        self.attitudeSmoothingValue.setText(QCoreApplication.translate("MainWindow", u"20%", None))
         self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.telemetryWarningLabel.setText(QCoreApplication.translate("MainWindow", u"Telemetry Warning System", None))
         self.chk_alarm_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Alarm", None))
