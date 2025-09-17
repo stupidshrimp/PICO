@@ -557,10 +557,21 @@ class MainWindow(QMainWindow):
 
         old_signal_layout = getattr(self.ui, "signalMetricsGrid", None)
         if isinstance(old_signal_layout, QGridLayout):
-            column_layout.removeItem(old_signal_layout)
-            while old_signal_layout.count():
-                old_signal_layout.takeAt(0)
-            old_signal_layout.setParent(None)
+            layout_item = None
+            for index in range(column_layout.count()):
+                item = column_layout.itemAt(index)
+                if item is not None and item.layout() is old_signal_layout:
+                    layout_item = column_layout.takeAt(index)
+                    break
+
+            if layout_item is not None:
+                while old_signal_layout.count():
+                    child_item = old_signal_layout.takeAt(0)
+                    child_widget = child_item.widget()
+                    if child_widget is not None:
+                        child_widget.setParent(frame)
+                old_signal_layout.setParent(None)
+
 
         # Build a container for the signal health labels so they occupy the
         # first section of the column before the telemetry statistics widget.
