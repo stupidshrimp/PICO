@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
         if column_layout is None:
             column_layout = QVBoxLayout(frame)
             column_layout.setContentsMargins(0, 0, 0, 0)
-            column_layout.setSpacing(12)
+            column_layout.setSpacing(6)
 
         # Build a container for the signal health labels so they occupy the
         # first section of the column before the telemetry statistics widget.
@@ -562,9 +562,9 @@ class MainWindow(QMainWindow):
             QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         )
         signal_layout = QGridLayout(signal_container)
-        signal_layout.setContentsMargins(10, 10, 10, 0)
-        signal_layout.setHorizontalSpacing(20)
-        signal_layout.setVerticalSpacing(6)
+        signal_layout.setContentsMargins(8, 6, 8, 2)
+        signal_layout.setHorizontalSpacing(16)
+        signal_layout.setVerticalSpacing(2)
         signal_layout.setColumnStretch(0, 1)
         signal_layout.setColumnStretch(1, 1)
 
@@ -592,8 +592,36 @@ class MainWindow(QMainWindow):
         telemetry_section = self.ui.telemetryStatsSection
         telemetry_section.setParent(frame)
         telemetry_section.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
+
+        telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
+        if telemetry_layout is not None:
+            telemetry_layout.setContentsMargins(8, 6, 8, 6)
+            telemetry_layout.setSpacing(2)
+
+        stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
+        if stats_row_layout is not None:
+            stats_row_layout.setContentsMargins(0, 0, 0, 0)
+            stats_row_layout.setSpacing(6)
+
+        if hasattr(self.ui, "telemetryStatsTitle"):
+            self.ui.telemetryStatsTitle.setParent(telemetry_section)
+            self.ui.telemetryStatsTitle.setAlignment(Qt.AlignCenter)
+
+        for label in (
+            getattr(self.ui, "attitudeRateLabel", None),
+            getattr(self.ui, "gpsRateLabel", None),
+            getattr(self.ui, "totalRateLabel", None),
+        ):
+            if label is None:
+                continue
+            label.setParent(telemetry_section)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        telemetry_section.adjustSize()
+        telemetry_section.setFixedHeight(telemetry_section.sizeHint().height())
+
         column_layout.addWidget(telemetry_section)
 
     def _setup_sortie_section(self) -> None:
@@ -617,8 +645,8 @@ class MainWindow(QMainWindow):
                 sorties_frame.setGeometry(0, 150, 571, 170)
 
         layout = QVBoxLayout(sorties_frame)
-        layout.setContentsMargins(20, 10, 20, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(6)
 
         sorties_title = QLabel("Sorties", sorties_frame)
         sorties_title.setObjectName("sortiesTitle")
