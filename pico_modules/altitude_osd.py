@@ -113,6 +113,6 @@ class AltitudeOSD(QWidget):
         painter.drawPolygon(pointer)
 
         # Draw the current altitude value
-        painter.drawText(20, center_y + 8, f"{int(self._altitude)}")
+        painter.drawText(20, center_y + 8, f"{int(self._altitude)} ft")
 
         painter.end()
