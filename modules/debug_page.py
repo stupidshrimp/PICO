@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 from typing import Iterable, Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -34,6 +35,11 @@ class DebugPage:
         self._ui = main_window.ui
         self._packet_checkboxes: dict[str, QCheckBox] = {}
         self._monitoring = False
+        self._packet_timestamps: deque[datetime] = deque()
+        self._frequency_window = timedelta(seconds=5)
+        self._frequency_timer = QTimer()
+        self._frequency_timer.setInterval(1000)
+        self._frequency_timer.timeout.connect(self._refresh_frequency_label)
 
         self._create_navigation_button()
         self._build_page()
@@ -92,6 +98,10 @@ class DebugPage:
         button_row.addStretch()
         layout.addLayout(button_row)
 
+        self.frequency_label = QLabel("Packet frequency: --")
+        self.frequency_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(self.frequency_label)
+
         self.output_edit = QPlainTextEdit()
         self.output_edit.setReadOnly(True)
         self.output_edit.setObjectName("debugOutput")
@@ -131,6 +141,9 @@ class DebugPage:
         self._monitoring = True
         self.monitor_button.setText("Stop Monitoring")
         self.monitor_button.setEnabled(True)
+        self._packet_timestamps.clear()
+        self._frequency_timer.start()
+        self._update_frequency_label(datetime.now())
         if packets or include_joystick:
             enabled = ", ".join(sorted(packets))
             if include_joystick:
@@ -145,6 +158,9 @@ class DebugPage:
         self._monitoring = False
         self.monitor_button.setText("Start Monitoring")
         self.monitor_button.setEnabled(True)
+        self._frequency_timer.stop()
+        self._packet_timestamps.clear()
+        self.frequency_label.setText("Packet frequency: --")
         self.append_message("Monitoring stopped.")
 
     def append_message(self, message: str) -> None:
@@ -154,7 +170,10 @@ class DebugPage:
     def log_packet(self, packet_type: str, values: Sequence[float | int]) -> None:
         if not self._monitoring:
             return
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        now = datetime.now()
+        self._packet_timestamps.append(now)
+        self._update_frequency_label(now)
+        timestamp = now.strftime("%H:%M:%S")
         if packet_type == "attitude" and len(values) >= 3:
             pitch, roll, yaw = values[:3]
             detail = f"pitch={pitch:.2f}\u00b0 roll={roll:.2f}\u00b0 yaw={yaw:.2f}\u00b0"
@@ -187,3 +206,37 @@ class DebugPage:
 
     def monitoring_active(self) -> bool:
         return self._monitoring
+
+    # ------------------------------------------------------------------
+    # Packet frequency calculations
+    # ------------------------------------------------------------------
+    def _trim_packet_timestamps(self, reference_time: datetime) -> None:
+        cutoff = reference_time - self._frequency_window
+        while self._packet_timestamps and self._packet_timestamps[0] < cutoff:
+            self._packet_timestamps.popleft()
+
+    def _update_frequency_label(self, reference_time: datetime | None = None) -> None:
+        if reference_time is None:
+            reference_time = datetime.now()
+        self._trim_packet_timestamps(reference_time)
+        if not self._monitoring:
+            self.frequency_label.setText("Packet frequency: --")
+            return
+
+        packet_count = len(self._packet_timestamps)
+        if packet_count <= 1:
+            if packet_count == 0:
+                self.frequency_label.setText("Packet frequency: 0.0 packets/sec")
+            else:
+                self.frequency_label.setText("Packet frequency: <1 packet/sec")
+            return
+
+        elapsed = (self._packet_timestamps[-1] - self._packet_timestamps[0]).total_seconds()
+        if elapsed <= 0:
+            frequency = float(packet_count)
+        else:
+            frequency = (packet_count - 1) / elapsed
+        self.frequency_label.setText(f"Packet frequency: {frequency:.1f} packets/sec")
+
+    def _refresh_frequency_label(self) -> None:
+        self._update_frequency_label()
