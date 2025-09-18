@@ -56,9 +56,17 @@ class DataPage:
 
     _MAX_POINTS = 200
 
-    def __init__(self, main_window) -> None:
+    def __init__(self, main_window, enabled: bool = True) -> None:
         self._main_window = main_window
         self._ui = main_window.ui
+        self._enabled = enabled
+        self._graphs_active = False
+        self._graph_dirty = False
+
+        if not enabled:
+            self._series = ()
+            self.graph_timer = None
+            return
 
         self._create_navigation_button()
         self._build_page()
@@ -211,12 +219,16 @@ class DataPage:
     # Data update methods
     # ------------------------------------------------------------------
     def add_attitude(self, pitch: float, roll: float, yaw: float) -> None:
+        if not self._enabled:
+            return
         self.pitch_series.append(pitch)
         self.roll_series.append(roll)
         self.yaw_series.append(yaw)
         self._graph_dirty = True
 
     def add_flight_metrics(self, altitude: float, airspeed: float) -> None:
+        if not self._enabled:
+            return
         self.altitude_series.append(altitude)
         self.airspeed_series.append(airspeed)
         self._graph_dirty = True
@@ -230,6 +242,8 @@ class DataPage:
         snr: float,
         downlink_snr: float,
     ) -> None:
+        if not self._enabled:
+            return
         self.rssi_a_series.append(rssi_a)
         self.rssi_b_series.append(rssi_b)
         self.link_quality_series.append(link_quality)
@@ -242,6 +256,8 @@ class DataPage:
     # Timer callbacks
     # ------------------------------------------------------------------
     def update_graphs(self) -> None:
+        if not self._enabled:
+            return
         if not self._graph_dirty or not self._graphs_active:
             return
 
@@ -251,6 +267,8 @@ class DataPage:
         self._graph_dirty = False
 
     def _on_page_changed(self, index: int) -> None:
+        if not self._enabled:
+            return
         is_current = self._ui.stackedWidget.widget(index) is self._ui.data_page
         if is_current == self._graphs_active:
             return

@@ -192,6 +192,9 @@ widgets = None
 # Temporarily disable the GPS map to troubleshoot memory usage
 MAP_ENABLED = False
 
+# Temporarily disable the telemetry data tab while troubleshooting graphs
+DATA_TAB_ENABLED = False
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -307,7 +310,7 @@ class MainWindow(QMainWindow):
             self.ui.mapframe.hide()
 
         # Add Data tab and associated graphs
-        self.data_page = DataPage(self)
+        self.data_page = DataPage(self, enabled=DATA_TAB_ENABLED)
 
         # Add Debug tab for monitoring raw telemetry and joystick data
         self.debug_page = DebugPage(self)
@@ -549,7 +552,8 @@ class MainWindow(QMainWindow):
         widgets.btn_home.clicked.connect(self.buttonClick)
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
-        widgets.btn_data.clicked.connect(self.buttonClick)
+        if hasattr(widgets, "btn_data"):
+            widgets.btn_data.clicked.connect(self.buttonClick)
         widgets.btn_debug.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
@@ -1996,7 +2000,11 @@ class MainWindow(QMainWindow):
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
 
         # SHOW DATA PAGE
-        if btnName == "btn_data":
+        if (
+            btnName == "btn_data"
+            and hasattr(widgets, "data_page")
+            and widgets.data_page is not None
+        ):
             widgets.stackedWidget.setCurrentWidget(widgets.data_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
