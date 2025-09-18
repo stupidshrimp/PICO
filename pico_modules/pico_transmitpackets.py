@@ -419,14 +419,26 @@ class CRSFPacketProcessor(QObject):
         if len(data) < 9:
             logger.warning("Battery packet too short")
             return
-        if data[1] < 8:
-            logger.warning("Battery length byte unexpected: %d", data[1])
+
+        payload_length = data[1] - 2 if data[1] >= 2 else 0
+        if payload_length < 6:
+            logger.warning("Battery payload too short: %d", payload_length)
             return
+
         try:
-            voltage, current, capacity = struct.unpack("<HHH", data[3:9])
-            # Decoded values are currently unused but parsing is retained
-            # to validate packet structure.
-            self.telemetry_ready.emit(("battery", voltage, current, capacity))
+            payload = data[3 : 3 + payload_length]
+            voltage_raw, current_raw, capacity = struct.unpack("<HHH", payload[:6])
+            percent = payload[6] if payload_length >= 7 else None
+
+            voltage = (voltage_raw + 5) / 10.0
+            current = current_raw / 10.0
+
+            if percent is not None:
+                self.telemetry_ready.emit(
+                    ("battery", voltage, current, capacity, float(percent))
+                )
+            else:
+                self.telemetry_ready.emit(("battery", voltage, current, capacity))
         except Exception:
             logger.exception("Failed to parse battery packet")
 

@@ -166,9 +166,12 @@ class DebugPage:
             )
         elif packet_type == "battery" and len(values) >= 3:
             voltage, current, capacity = values[:3]
+            percent = values[3] if len(values) >= 4 else None
             detail = (
-                f"voltage_raw={voltage} current_raw={current} capacity_raw={capacity}"
+                f"voltage={voltage:.1f} V current={current:.1f} A capacity={int(capacity)} mAh"
             )
+            if percent is not None:
+                detail += f" percent={percent:.0f}%"
         elif packet_type == "link_stats" and len(values) >= 6:
             rssi_a, rssi_b, link_quality, snr, downlink_lq, downlink_snr = values[:6]
             detail = (

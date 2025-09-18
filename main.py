@@ -122,6 +122,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QSizePolicy,
     QLayout,
+    QProgressBar,
 )
 from PySide6.QtCore import (
     Qt,
@@ -198,6 +199,12 @@ class MainWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._configure_metric_labels()
+
+        self.battery_voltage_label = None
+        self.battery_current_label = None
+        self.battery_capacity_label = None
+        self.battery_percent_bar = None
+        self.battery_charge_label = None
         # Size the window using the command page and keep it fixed. This
         # ensures the GUI is always large enough for its contents and does not
         # change size when switching between pages.
@@ -231,6 +238,10 @@ class MainWindow(QMainWindow):
             "snr",
             "downlink_quality",
             "downlink_snr",
+            "battery_voltage",
+            "battery_current",
+            "battery_capacity",
+            "battery_percent",
         ]
         self._sortie_headers = ["timestamp", "packet_type", *self._sortie_fields]
         self.sortie_directory = os.path.join(os.path.dirname(__file__), "sortie data")
@@ -714,6 +725,71 @@ class MainWindow(QMainWindow):
 
         column_layout.addWidget(signal_container)
 
+        battery_container = QFrame(frame)
+        battery_container.setObjectName("batteryHealthContainer")
+        battery_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        battery_container.setStyleSheet(panel_style)
+
+        battery_layout = QVBoxLayout(battery_container)
+        battery_layout.setContentsMargins(12, 12, 12, 12)
+        battery_layout.setSpacing(10)
+
+        battery_title = QLabel("Battery Health", battery_container)
+        battery_title.setObjectName("batteryHealthTitle")
+        battery_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        battery_title.setFont(signal_title.font())
+        battery_layout.addWidget(battery_title)
+
+        stats_layout = QGridLayout()
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+        stats_layout.setHorizontalSpacing(20)
+        stats_layout.setVerticalSpacing(6)
+        stats_layout.setColumnStretch(0, 1)
+        stats_layout.setColumnStretch(1, 1)
+
+        self.battery_voltage_label = QLabel("Voltage: -- V", battery_container)
+        self.battery_current_label = QLabel("Current: -- A", battery_container)
+        self.battery_capacity_label = QLabel("Capacity: -- mAh", battery_container)
+
+        for label in (
+            self.battery_voltage_label,
+            self.battery_current_label,
+            self.battery_capacity_label,
+        ):
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            label.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
+
+        stats_layout.addWidget(self.battery_voltage_label, 0, 0)
+        stats_layout.addWidget(self.battery_current_label, 0, 1)
+        stats_layout.addWidget(self.battery_capacity_label, 1, 0, 1, 2)
+        battery_layout.addLayout(stats_layout)
+
+        self.battery_charge_label = QLabel("Charge Level", battery_container)
+        self.battery_charge_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.battery_charge_label.setWordWrap(True)
+        self.battery_charge_label.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        battery_layout.addWidget(self.battery_charge_label)
+
+        self.battery_percent_bar = QProgressBar(battery_container)
+        self.battery_percent_bar.setRange(0, 100)
+        self.battery_percent_bar.setValue(0)
+        self.battery_percent_bar.setFormat("--%")
+        self.battery_percent_bar.setAlignment(Qt.AlignCenter)
+        self.battery_percent_bar.setTextVisible(True)
+        self.battery_percent_bar.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        battery_layout.addWidget(self.battery_percent_bar)
+
+        column_layout.addWidget(battery_container)
+
         if telemetry_section is not None:
             telemetry_section.setParent(frame)
             telemetry_section.setStyleSheet(panel_style)
@@ -1194,6 +1270,43 @@ class MainWindow(QMainWindow):
         else:
             label.setStyleSheet("")
 
+    def _update_battery_health_display(
+        self,
+        voltage: Optional[float],
+        current: Optional[float],
+        capacity: Optional[int],
+        percent: Optional[float],
+    ) -> None:
+        if self.battery_voltage_label is None:
+            return
+
+        if voltage is None:
+            self.battery_voltage_label.setText("Voltage: -- V")
+        else:
+            self.battery_voltage_label.setText(f"Voltage: {voltage:.1f} V")
+
+        if current is None:
+            self.battery_current_label.setText("Current: -- A")
+        else:
+            self.battery_current_label.setText(f"Current: {current:.1f} A")
+
+        if capacity is None:
+            self.battery_capacity_label.setText("Capacity: -- mAh")
+        else:
+            self.battery_capacity_label.setText(f"Capacity: {int(capacity)} mAh")
+
+        if self.battery_percent_bar is None:
+            return
+
+        if percent is None:
+            self.battery_percent_bar.setValue(0)
+            self.battery_percent_bar.setFormat("--%")
+        else:
+            percent = max(0.0, min(100.0, float(percent)))
+            self.battery_percent_bar.setRange(0, 100)
+            self.battery_percent_bar.setValue(int(round(percent)))
+            self.battery_percent_bar.setFormat("%p%")
+
     def _prune_packet_times(self, queue, current_time: float) -> None:
         cutoff = current_time - self._rate_window_seconds
         while queue and queue[0] < cutoff:
@@ -1471,9 +1584,12 @@ class MainWindow(QMainWindow):
         elif packet_type == "battery":
             if len(values) >= 3:
                 voltage, current, capacity = values[:3]
-                self.telemetry_state["battery_voltage_raw"] = voltage
-                self.telemetry_state["battery_current_raw"] = current
-                self.telemetry_state["battery_capacity_raw"] = capacity
+                percent = values[3] if len(values) >= 4 else None
+                self.telemetry_state["battery_voltage"] = voltage
+                self.telemetry_state["battery_current"] = current
+                self.telemetry_state["battery_capacity"] = capacity
+                self.telemetry_state["battery_percent"] = percent
+                self._update_battery_health_display(voltage, current, capacity, percent)
         elif packet_type == "link_stats":
             (
                 rssi_a,
