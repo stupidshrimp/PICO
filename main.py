@@ -247,8 +247,6 @@ class MainWindow(QMainWindow):
             "gps": deque(),
             "total": deque(),
         }
-        # Temporarily disable telemetry rate statistics on the command tab.
-        self._telemetry_stats_enabled = False
 
         self._setup_command_sidebar()
         self._setup_sortie_section()
@@ -713,7 +711,7 @@ class MainWindow(QMainWindow):
 
         column_layout.addWidget(signal_container)
 
-        if telemetry_section is not None and self._telemetry_stats_enabled:
+        if telemetry_section is not None:
             telemetry_section.setParent(frame)
             telemetry_section.setStyleSheet(panel_style)
             telemetry_section.setSizePolicy(
@@ -755,9 +753,6 @@ class MainWindow(QMainWindow):
             telemetry_section.adjustSize()
             telemetry_section.setMinimumHeight(telemetry_section.sizeHint().height())
             column_layout.addWidget(telemetry_section)
-        elif telemetry_section is not None:
-            telemetry_section.setParent(None)
-            telemetry_section.hide()
 
         if command_spacer is not None:
             command_spacer.setParent(frame)
@@ -1214,10 +1209,7 @@ class MainWindow(QMainWindow):
             self._add_packet_timestamp("gps", timestamp)
 
     def _update_rate_labels(self) -> None:
-        if (
-            not self._telemetry_stats_enabled
-            or not hasattr(self.ui, "attitudeRateLabel")
-        ):
+        if not hasattr(self.ui, "attitudeRateLabel"):
             return
 
         now = time.monotonic()
