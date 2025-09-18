@@ -65,7 +65,7 @@ class DebugPage:
         layout.setSpacing(12)
 
         description = QLabel(
-            "Select the data streams you want to observe and press Monitor to start."
+            "Select the data streams you want to observe and press Start Monitoring to begin."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -85,13 +85,11 @@ class DebugPage:
 
         button_row = QHBoxLayout()
         button_row.addStretch()
-        self.monitor_button = QPushButton("Monitor")
+        self.monitor_button = QPushButton("Start Monitoring")
+        self.monitor_button.setMinimumSize(200, 48)
         self.monitor_button.clicked.connect(self._on_monitor_clicked)
         button_row.addWidget(self.monitor_button)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.clicked.connect(self._on_stop_clicked)
-        self.stop_button.setEnabled(False)
-        button_row.addWidget(self.stop_button)
+        button_row.addStretch()
         layout.addLayout(button_row)
 
         self.output_edit = QPlainTextEdit()
@@ -109,6 +107,11 @@ class DebugPage:
     # Callbacks wired to UI controls
     # ------------------------------------------------------------------
     def _on_monitor_clicked(self) -> None:
+        if self._monitoring:
+            self.monitor_button.setEnabled(False)
+            self._main_window.stop_debug_monitoring()
+            return
+
         packet_selection = {
             name for name, checkbox in self._packet_checkboxes.items() if checkbox.isChecked()
         }
@@ -118,18 +121,16 @@ class DebugPage:
             return
 
         self.output_edit.clear()
+        self.monitor_button.setEnabled(False)
         self._main_window.start_debug_monitoring(packet_selection, include_joystick)
-
-    def _on_stop_clicked(self) -> None:
-        self._main_window.stop_debug_monitoring()
 
     # ------------------------------------------------------------------
     # Methods invoked from the main window
     # ------------------------------------------------------------------
     def begin_monitoring(self, packets: Iterable[str], include_joystick: bool) -> None:
         self._monitoring = True
-        self.monitor_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self.monitor_button.setText("Stop Monitoring")
+        self.monitor_button.setEnabled(True)
         if packets or include_joystick:
             enabled = ", ".join(sorted(packets))
             if include_joystick:
@@ -142,8 +143,8 @@ class DebugPage:
         if not self._monitoring:
             return
         self._monitoring = False
+        self.monitor_button.setText("Start Monitoring")
         self.monitor_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
         self.append_message("Monitoring stopped.")
 
     def append_message(self, message: str) -> None:
