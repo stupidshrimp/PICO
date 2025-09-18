@@ -8,6 +8,7 @@ DEFAULT_CONFIG = {
         "baudrate": 9600,
         "deadzone": 0,
         "sensitivity": 100,
+        "yaw_sensitivity": 100,
         "smoothing": 0,
     },
     "crsf": {

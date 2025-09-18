@@ -336,6 +336,7 @@ class MainWindow(QMainWindow):
 
         # Configuration sections
         self.joystick_cfg = self.config.setdefault("joystick", {})
+        self.joystick_cfg.setdefault("yaw_sensitivity", 100)
         self.crsf_cfg = self.config.setdefault("crsf", {})
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
@@ -472,6 +473,15 @@ class MainWindow(QMainWindow):
         self.yaw_indicator = InputLine(Qt.Horizontal, self.ui.yawInput)
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
+        self.yaw_value = 0.0
+        self.yaw_target_value = 0.0
+        self._yaw_keys_pressed: set[int] = set()
+        self.yaw_sensitivity = int(self.joystick_cfg.get("yaw_sensitivity", 100))
+        self._yaw_step_base = 0.05
+        self.yaw_indicator.setValue(self.yaw_value)
+        self.yaw_update_timer = QTimer(self)
+        self.yaw_update_timer.timeout.connect(self.update_yaw)
+        self.yaw_update_timer.start(50)
         self.throttle_percent = 0
         self.target_throttle_percent = 0
         self.throttle_indicator = ThrottleWidget(self.ui.throttleInput)
@@ -1165,13 +1175,12 @@ class MainWindow(QMainWindow):
         if joy_pitch is None:
             self.pitch_indicator.setValue(0)
             self.roll_indicator.setValue(0)
-            self.yaw_indicator.setValue(0)
         else:
             norm_pitch = (joy_pitch - 512) / 512
             norm_roll = (joy_roll - 512) / 512
             self.pitch_indicator.setValue(norm_pitch)
             self.roll_indicator.setValue(norm_roll)
-            self.yaw_indicator.setValue(0)
+        self.yaw_indicator.setValue(self.yaw_value)
         self.throttle_indicator.setValue(self.throttle_percent)
 
         # ------------------------------------------------------------------
@@ -1208,8 +1217,20 @@ class MainWindow(QMainWindow):
         if event.key() in mapping:
             self.target_throttle_percent = mapping[event.key()]
             event.accept()
+        elif event.key() in (Qt.Key_Q, Qt.Key_E):
+            self._handle_yaw_key(event.key(), True)
+            event.accept()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):  # noqa: N802 - Qt override naming
+        if event.key() in (Qt.Key_Q, Qt.Key_E):
+            if event.isAutoRepeat():
+                return
+            self._handle_yaw_key(event.key(), False)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def update_throttle(self):
         """Gradually move the throttle toward its target value."""
@@ -1226,6 +1247,41 @@ class MainWindow(QMainWindow):
                 self.throttle_percent - step, self.target_throttle_percent
             )
         self.throttle_indicator.setValue(self.throttle_percent)
+
+    def update_yaw(self) -> None:
+        """Gradually move the yaw indicator toward its target value."""
+
+        step_scale = max(1, int(self.yaw_sensitivity)) / 100.0
+        step = self._yaw_step_base * step_scale
+        diff = self.yaw_target_value - self.yaw_value
+        if abs(diff) <= step:
+            if self.yaw_value != self.yaw_target_value:
+                self.yaw_value = self.yaw_target_value
+                self.yaw_indicator.setValue(self.yaw_value)
+            return
+
+        self.yaw_value += step if diff > 0 else -step
+        self.yaw_value = max(-1.0, min(1.0, self.yaw_value))
+        self.yaw_indicator.setValue(self.yaw_value)
+
+    def _handle_yaw_key(self, key: int, pressed: bool) -> None:
+        """Update yaw target tracking based on keyboard input."""
+
+        if pressed:
+            self._yaw_keys_pressed.add(key)
+        else:
+            self._yaw_keys_pressed.discard(key)
+
+        if Qt.Key_Q in self._yaw_keys_pressed and Qt.Key_E in self._yaw_keys_pressed:
+            target = 0.0
+        elif Qt.Key_Q in self._yaw_keys_pressed:
+            target = -1.0
+        elif Qt.Key_E in self._yaw_keys_pressed:
+            target = 1.0
+        else:
+            target = 0.0
+
+        self.yaw_target_value = target
 
     def classify_rssi(self, rssi):
         if rssi >= -60:
@@ -1643,6 +1699,14 @@ class MainWindow(QMainWindow):
         self._update_rate_labels()
         self._record_telemetry_sample(packet_type)
 
+    @staticmethod
+    def _map_axis_to_crsf(value: float) -> int:
+        """Map a normalized control value (``-1`` to ``1``) to CRSF range."""
+
+        value = max(-1.0, min(1.0, float(value)))
+        out_min, out_max = 172, 1811
+        return int(round((value + 1.0) * 0.5 * (out_max - out_min) + out_min))
+
     def transmit_data(self):
         """
         Transmit CRSF packets using mapped joystick values.
@@ -1665,6 +1729,9 @@ class MainWindow(QMainWindow):
         clamped_percent = max(0.0, min(100.0, self.throttle_percent))
         throttle_value = int((clamped_percent / 100) * throttle_span + throttle_min)
         channels[2] = throttle_value
+        # Map yaw input to channel 4 (index 3)
+        channels[3] = self._map_axis_to_crsf(self.yaw_value)
+
         # Control mode channel: send low for Manual, high for Fly-By-Wire
         mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
         channels[self.control_mode_channel] = mode_value
@@ -1784,6 +1851,20 @@ class MainWindow(QMainWindow):
         sens_row.addWidget(self.sensitivity_value_label)
         control_layout.addLayout(sens_row)
 
+        yaw_sens_row = QHBoxLayout()
+        yaw_sens_row.addWidget(QLabel("Yaw sensitivity (%)"))
+        self.yaw_sensitivity_slider = QSlider(Qt.Horizontal)
+        self.yaw_sensitivity_slider.setRange(1, 200)
+        self.yaw_sensitivity_slider.setValue(
+            self.joystick_cfg.get("yaw_sensitivity", 100)
+        )
+        yaw_sens_row.addWidget(self.yaw_sensitivity_slider)
+        self.yaw_sensitivity_value_label = QLabel(
+            str(self.yaw_sensitivity_slider.value())
+        )
+        yaw_sens_row.addWidget(self.yaw_sensitivity_value_label)
+        control_layout.addLayout(yaw_sens_row)
+
         smooth_row = QHBoxLayout()
         smooth_row.addWidget(QLabel("Smoothing (%)"))
         self.smoothing_slider = QSlider(Qt.Horizontal)
@@ -1880,6 +1961,9 @@ class MainWindow(QMainWindow):
         self.packet_interval_edit.editingFinished.connect(self.on_packet_interval_changed)
         self.deadzone_slider.valueChanged.connect(self.on_deadzone_changed)
         self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
+        self.yaw_sensitivity_slider.valueChanged.connect(
+            self.on_yaw_sensitivity_changed
+        )
         self.smoothing_slider.valueChanged.connect(self.on_smoothing_changed)
         self.stall_speed_slider.valueChanged.connect(self.on_stall_speed_changed)
         self.stall_alt_slider.valueChanged.connect(self.on_stall_alt_changed)
@@ -1996,6 +2080,12 @@ class MainWindow(QMainWindow):
         self.sensitivity_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_sensitivity(value)
+        save_config(self.config)
+
+    def on_yaw_sensitivity_changed(self, value: int):
+        self.joystick_cfg["yaw_sensitivity"] = value
+        self.yaw_sensitivity_value_label.setText(str(value))
+        self.yaw_sensitivity = int(value)
         save_config(self.config)
 
     def on_smoothing_changed(self, value: int):
