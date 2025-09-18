@@ -315,6 +315,9 @@ class MainWindow(QMainWindow):
         self._debug_packets: set[str] = set()
         self._debug_monitoring = False
         self._debug_include_joystick = False
+        # Disable telemetry packet debug logging by default; it can be toggled
+        # explicitly if needed for troubleshooting.
+        self._telemetry_debug_logging = False
 
         # Use frameless window and translucent background
         # self.setWindowFlags(Qt.FramelessWindowHint)
@@ -1421,9 +1424,8 @@ class MainWindow(QMainWindow):
 
     def handle_telemetry(self, packet_type, *values) -> None:
         """Receive decoded telemetry from ``CRSFPacketProcessor`` and cache it."""
-        # Temporarily silence telemetry debug output
-        # if packet_type != "link_stats":
-        #     print(f"Telemetry {packet_type}: {values}")
+        if self._telemetry_debug_logging and packet_type != "link_stats":
+            logging.debug("Telemetry %s: %s", packet_type, values)
         self.last_telemetry_time = time.monotonic()
         self._update_sortie_button_availability()
         now = self.last_telemetry_time
