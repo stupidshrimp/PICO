@@ -1507,46 +1507,6 @@ class Ui_MainWindow(object):
 
         self.frame4Layout.addLayout(self.signalMetricsGrid)
 
-        self.telemetryStatsSection = QWidget(self.frame_4)
-        self.telemetryStatsSection.setObjectName(u"telemetryStatsSection")
-        self.telemetryStatsSectionLayout = QVBoxLayout(self.telemetryStatsSection)
-        self.telemetryStatsSectionLayout.setSpacing(6)
-        self.telemetryStatsSectionLayout.setObjectName(u"telemetryStatsSectionLayout")
-        self.telemetryStatsSectionLayout.setContentsMargins(10, 6, 10, 0)
-        self.telemetryStatsTitle = QLabel(self.telemetryStatsSection)
-        self.telemetryStatsTitle.setObjectName(u"telemetryStatsTitle")
-        self.telemetryStatsTitle.setFont(font5)
-        self.telemetryStatsTitle.setAlignment(Qt.AlignCenter)
-
-        self.telemetryStatsSectionLayout.addWidget(self.telemetryStatsTitle)
-
-        self.telemetryStatsRowLayout = QHBoxLayout()
-        self.telemetryStatsRowLayout.setObjectName(u"telemetryStatsRowLayout")
-        self.attitudeRateLabel = QLabel(self.telemetryStatsSection)
-        self.attitudeRateLabel.setObjectName(u"attitudeRateLabel")
-        self.attitudeRateLabel.setAlignment(Qt.AlignCenter)
-
-        self.telemetryStatsRowLayout.addWidget(self.attitudeRateLabel)
-
-        self.gpsRateLabel = QLabel(self.telemetryStatsSection)
-        self.gpsRateLabel.setObjectName(u"gpsRateLabel")
-        self.gpsRateLabel.setAlignment(Qt.AlignCenter)
-
-        self.telemetryStatsRowLayout.addWidget(self.gpsRateLabel)
-
-        self.totalRateLabel = QLabel(self.telemetryStatsSection)
-        self.totalRateLabel.setObjectName(u"totalRateLabel")
-        self.totalRateLabel.setAlignment(Qt.AlignCenter)
-
-        self.telemetryStatsRowLayout.addWidget(self.totalRateLabel)
-
-
-        self.telemetryStatsSectionLayout.addLayout(self.telemetryStatsRowLayout)
-
-
-        self.frame4Layout.addWidget(self.telemetryStatsSection)
-
-
         self.verticalLayout_20.addWidget(self.frame)
 
         self.controlSectionFrame = QFrame(self.new_page)
@@ -1935,10 +1895,6 @@ class Ui_MainWindow(object):
         self.snrLabel.setText(QCoreApplication.translate("MainWindow", u"SNR: --", None))
         self.downlinkQualityLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink quality: --", None))
         self.downlinkSnrLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink SNR: --", None))
-        self.telemetryStatsTitle.setText(QCoreApplication.translate("MainWindow", u"Telemetry Statistics", None))
-        self.attitudeRateLabel.setText(QCoreApplication.translate("MainWindow", u"Attitude rate: -- Hz", None))
-        self.gpsRateLabel.setText(QCoreApplication.translate("MainWindow", u"GPS rate: -- Hz", None))
-        self.totalRateLabel.setText(QCoreApplication.translate("MainWindow", u"Total rate: -- Hz", None))
         self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
         self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
         self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
