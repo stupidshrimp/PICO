@@ -18,17 +18,18 @@ import pyqtgraph as pg
 class _DataSeries:
     """Container that tracks a scrolling data buffer and its plot curve."""
 
-    __slots__ = ("curve", "data", "count")
+    __slots__ = ("curve", "data", "count", "_write_index")
 
     def __init__(self, curve: pg.PlotDataItem, max_points: int) -> None:
         self.curve = curve
         self.data = np.zeros(max_points, dtype=np.float32)
         self.count = 0
+        self._write_index = 0
 
     def append(self, value: float) -> None:
         data = self.data
-        data[:-1] = data[1:]
-        data[-1] = value
+        data[self._write_index] = value
+        self._write_index = (self._write_index + 1) % data.size
         if self.count < data.size:
             self.count += 1
 
@@ -36,11 +37,18 @@ class _DataSeries:
         if self.count == 0:
             self.curve.clear()
             return
-        if self.count < self.data.size:
-            view = slice(-self.count, None)
-            self.curve.setData(x_values[view], self.data[view])
+
+        data = self.data
+        if self.count < data.size:
+            view = slice(0, self.count)
+            self.curve.setData(x_values[-self.count :], data[view])
             return
-        self.curve.setData(x_values, self.data)
+
+        if self._write_index == 0:
+            ordered = data
+        else:
+            ordered = np.concatenate((data[self._write_index :], data[: self._write_index]))
+        self.curve.setData(x_values, ordered)
 
 
 class DataPage:
