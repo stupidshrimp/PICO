@@ -454,16 +454,17 @@ class CRSFPacketProcessor(QObject):
             return
         try:
             # Attitude packets encode signed 16-bit integers using little-endian
-            # order. Previously we attempted to decode them as big-endian values,
-            # which produced wildly incorrect angles (e.g. yaw readings over
-            # 1000° while the vehicle was stationary). Decode the payload using
-            # the correct little-endian format so the attitude conversion below
-            # yields realistic angles.
-            pitch_raw, roll_raw, yaw_raw = struct.unpack("<hhh", data[3:9])
+            # order.  When the telemetry data is produced, the firmware sends the
+            # values as ``roll``, ``pitch`` (negated) and ``yaw`` after converting
+            # from decidegrees to radians×1000 (see ``_decidegreeToRadians`` in
+            # the transmitter firmware).  Mirror that encoding here by unpacking
+            # in ``roll, pitch, yaw`` order and applying the inverse conversion so
+            # the UI sees the original angles in degrees.
+            roll_raw, pitch_raw, yaw_raw = struct.unpack("<hhh", data[3:9])
 
-            pitch = -(pitch_raw / 1000.0) * 180.0 / math.pi
-            roll = (roll_raw / 1000.0) * 180.0 / math.pi
-            yaw = (yaw_raw / 1000.0) * 180.0 / math.pi
+            roll = math.degrees(roll_raw / 1000.0)
+            pitch = -math.degrees(pitch_raw / 1000.0)
+            yaw = math.degrees(yaw_raw / 1000.0)
 
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
         except Exception:
