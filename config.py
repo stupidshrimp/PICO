@@ -43,6 +43,9 @@ DEFAULT_CONFIG = {
         "center": [0, 0],
         "zoom": 2,
     },
+    "aircraft": {
+        "battery_cells": "3s",
+    },
 }
 
 def load_config(path: str = "config.json"):

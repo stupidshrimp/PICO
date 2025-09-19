@@ -200,11 +200,10 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
         self._configure_metric_labels()
 
-        self.battery_voltage_label = None
-        self.battery_current_label = None
-        self.battery_capacity_label = None
         self.battery_percent_bar = None
-        self.battery_charge_label = None
+        self.autopilot_time_label = None
+        self.autopilot_longitude_label = None
+        self.autopilot_latitude_label = None
         # Size the window using the command page and keep it fixed. This
         # ensures the GUI is always large enough for its contents and does not
         # change size when switching between pages.
@@ -259,6 +258,18 @@ class MainWindow(QMainWindow):
             "total": deque(),
         }
 
+        self._settings_title_style = (
+            "color: white; font-weight: bold; text-decoration: underline;"
+        )
+        for label_name in (
+            "osdLabel",
+            "attitudeSmoothingLabel",
+            "telemetryWarningLabel",
+        ):
+            label = getattr(self.ui, label_name, None)
+            if label is not None:
+                label.setStyleSheet(self._settings_title_style)
+
         self._setup_command_sidebar()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
@@ -287,6 +298,10 @@ class MainWindow(QMainWindow):
         # Load configuration early so map defaults are available
         self.config = load_config()
         self.map_cfg = self.config.setdefault("map", {"center": [0, 0], "zoom": 2})
+        self.aircraft_cfg = self.config.setdefault("aircraft", {})
+        self.aircraft_cfg.setdefault("battery_cells", "3s")
+        self._battery_full_voltage = 0.0
+        self._update_battery_full_voltage()
 
         # Optionally start the local map server and load the map if enabled
         self.httpd = None
@@ -507,6 +522,7 @@ class MainWindow(QMainWindow):
         self.current_altitude = None
         self.current_airspeed = None
         self.telemetry_state = {field: None for field in self._sortie_fields}
+        self._update_battery_full_voltage()
 
         # Timer used to refresh labels/OSD widgets at a fixed rate. Telemetry
         # packets only update the cached values above; the GUI is refreshed by
@@ -746,46 +762,12 @@ class MainWindow(QMainWindow):
         battery_layout.setContentsMargins(12, 12, 12, 12)
         battery_layout.setSpacing(10)
 
-        battery_title = QLabel("Battery Health", battery_container)
+        battery_title = QLabel("Battery", battery_container)
         battery_title.setObjectName("batteryHealthTitle")
         battery_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         battery_title.setFont(signal_title.font())
+        battery_title.setStyleSheet("color: white;")
         battery_layout.addWidget(battery_title)
-
-        stats_layout = QGridLayout()
-        stats_layout.setContentsMargins(0, 0, 0, 0)
-        stats_layout.setHorizontalSpacing(20)
-        stats_layout.setVerticalSpacing(6)
-        stats_layout.setColumnStretch(0, 1)
-        stats_layout.setColumnStretch(1, 1)
-
-        self.battery_voltage_label = QLabel("Voltage: -- V", battery_container)
-        self.battery_current_label = QLabel("Current: -- A", battery_container)
-        self.battery_capacity_label = QLabel("Capacity: -- mAh", battery_container)
-
-        for label in (
-            self.battery_voltage_label,
-            self.battery_current_label,
-            self.battery_capacity_label,
-        ):
-            label.setWordWrap(True)
-            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            label.setSizePolicy(
-                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            )
-
-        stats_layout.addWidget(self.battery_voltage_label, 0, 0)
-        stats_layout.addWidget(self.battery_current_label, 0, 1)
-        stats_layout.addWidget(self.battery_capacity_label, 1, 0, 1, 2)
-        battery_layout.addLayout(stats_layout)
-
-        self.battery_charge_label = QLabel("Charge Level", battery_container)
-        self.battery_charge_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.battery_charge_label.setWordWrap(True)
-        self.battery_charge_label.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        battery_layout.addWidget(self.battery_charge_label)
 
         self.battery_percent_bar = QProgressBar(battery_container)
         self.battery_percent_bar.setRange(0, 100)
@@ -799,6 +781,41 @@ class MainWindow(QMainWindow):
         battery_layout.addWidget(self.battery_percent_bar)
 
         column_layout.addWidget(battery_container)
+
+        autopilot_container = QFrame(frame)
+        autopilot_container.setObjectName("autopilotContainer")
+        autopilot_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        autopilot_container.setStyleSheet(panel_style)
+
+        autopilot_layout = QVBoxLayout(autopilot_container)
+        autopilot_layout.setContentsMargins(12, 12, 12, 12)
+        autopilot_layout.setSpacing(10)
+
+        autopilot_title = QLabel("Autopilot", autopilot_container)
+        autopilot_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        autopilot_title.setFont(signal_title.font())
+        autopilot_title.setStyleSheet("color: white;")
+        autopilot_layout.addWidget(autopilot_title)
+
+        self.autopilot_time_label = QLabel("Time to target: --", autopilot_container)
+        self.autopilot_longitude_label = QLabel("Longitude: --", autopilot_container)
+        self.autopilot_latitude_label = QLabel("Latitude: --", autopilot_container)
+
+        for label in (
+            self.autopilot_time_label,
+            self.autopilot_longitude_label,
+            self.autopilot_latitude_label,
+        ):
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            label.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
+            autopilot_layout.addWidget(label)
+
+        column_layout.addWidget(autopilot_container)
 
         if telemetry_section is not None:
             telemetry_section.setParent(frame)
@@ -855,76 +872,36 @@ class MainWindow(QMainWindow):
             column_layout.addStretch()
 
     def _setup_sortie_section(self) -> None:
-        """Create the Sorties section and recording controls on the command tab."""
+        """Create the Sortie controls within the settings sidebar."""
 
-        sorties_frame = QFrame(self.ui.frame_4)
-        sorties_frame.setObjectName("sortiesFrame")
-        sorties_frame.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        panel_style = getattr(self, "_sidebar_panel_style", "")
-        if panel_style:
-            sorties_frame.setStyleSheet(panel_style)
-        layout_container = self.ui.frame_4.layout()
+        settings_container = getattr(self.ui, "topMenus", None)
+        settings_layout = getattr(self.ui, "verticalLayout_14", None)
+        if settings_container is None or settings_layout is None:
+            return
 
-        if layout_container is not None:
-            insert_position = layout_container.count()
-            telemetry_section = getattr(self.ui, "telemetryStatsSection", None)
-            if telemetry_section is not None:
-                telemetry_index = layout_container.indexOf(telemetry_section)
-                if telemetry_index != -1:
-                    insert_position = telemetry_index + 1
-            spacer_widget = getattr(self.ui, "commandVideoSpacer", None)
-            if spacer_widget is not None:
-                spacer_index = layout_container.indexOf(spacer_widget)
-                if spacer_index != -1 and spacer_index < insert_position:
-                    insert_position = spacer_index
-            layout_container.insertWidget(insert_position, sorties_frame)
-        else:
-            legacy_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
-            if legacy_layout is not None:
-                legacy_layout.addSpacing(12)
-                legacy_layout.addWidget(sorties_frame)
-            else:
-                sorties_frame.setGeometry(0, 150, 571, 170)
+        sortie_container = QWidget(settings_container)
+        sortie_container.setObjectName("sortieSettingsContainer")
 
-        layout = QVBoxLayout(sorties_frame)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        sortie_layout = QVBoxLayout(sortie_container)
+        sortie_layout.setContentsMargins(0, 12, 0, 0)
+        sortie_layout.setSpacing(8)
 
-        header_container = QWidget(sorties_frame)
-        header_container.setObjectName("sortiesHeader")
-        header_container.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-
-        header_layout = QVBoxLayout(header_container)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
-
-        sorties_title = QLabel("Sorties", header_container)
+        sorties_title = QLabel("Sortie", sortie_container)
         sorties_title.setObjectName("sortiesTitle")
         sorties_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        sorties_title.setFont(self.ui.signalHealthTitle.font())
-        sorties_title.setStyleSheet("color: white;")
-        sorties_title.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        header_layout.addWidget(sorties_title)
+        sorties_title.setStyleSheet(self._settings_title_style)
+        sortie_layout.addWidget(sorties_title)
 
-        self.ui.sortieRecordButton = QPushButton("Awaiting Telemetry", header_container)
+        self.ui.sortieRecordButton = QPushButton(
+            "Awaiting Telemetry", sortie_container
+        )
         self.ui.sortieRecordButton.setObjectName("sortieRecordButton")
         self.ui.sortieRecordButton.setCursor(Qt.PointingHandCursor)
         self.ui.sortieRecordButton.setFixedHeight(36)
         self.ui.sortieRecordButton.setMinimumWidth(160)
-        header_layout.addWidget(self.ui.sortieRecordButton, 0, Qt.AlignLeft)
+        sortie_layout.addWidget(self.ui.sortieRecordButton, 0, Qt.AlignLeft)
 
-        header_container.setMinimumHeight(
-            sorties_title.sizeHint().height()
-            + self.ui.sortieRecordButton.sizeHint().height()
-        )
-
-        layout.addWidget(header_container)
+        settings_layout.addWidget(sortie_container, 0, Qt.AlignTop)
 
         self._sortie_idle_style = (
             "QPushButton {"
@@ -1329,39 +1306,42 @@ class MainWindow(QMainWindow):
     def _update_battery_health_display(
         self,
         voltage: Optional[float],
-        current: Optional[float],
-        capacity: Optional[int],
-        percent: Optional[float],
+        _current: Optional[float],
+        _capacity: Optional[int],
+        _percent: Optional[float],
     ) -> None:
-        if self.battery_voltage_label is None:
-            return
-
-        if voltage is None:
-            self.battery_voltage_label.setText("Voltage: -- V")
-        else:
-            self.battery_voltage_label.setText(f"Voltage: {voltage:.1f} V")
-
-        if current is None:
-            self.battery_current_label.setText("Current: -- A")
-        else:
-            self.battery_current_label.setText(f"Current: {current:.1f} A")
-
-        if capacity is None:
-            self.battery_capacity_label.setText("Capacity: -- mAh")
-        else:
-            self.battery_capacity_label.setText(f"Capacity: {int(capacity)} mAh")
-
         if self.battery_percent_bar is None:
             return
 
-        if percent is None:
+        if not voltage or self._battery_full_voltage <= 0:
+            self.telemetry_state["battery_percent"] = None
             self.battery_percent_bar.setValue(0)
             self.battery_percent_bar.setFormat("--%")
-        else:
-            percent = max(0.0, min(100.0, float(percent)))
-            self.battery_percent_bar.setRange(0, 100)
-            self.battery_percent_bar.setValue(int(round(percent)))
-            self.battery_percent_bar.setFormat("%p%")
+            return
+
+        ratio = max(0.0, min(float(voltage) / self._battery_full_voltage, 1.0))
+        percent = ratio * 100.0
+        self.telemetry_state["battery_percent"] = percent
+        self.battery_percent_bar.setRange(0, 100)
+        self.battery_percent_bar.setValue(int(round(percent)))
+        self.battery_percent_bar.setFormat(f"{percent:.0f}%")
+
+    def _update_battery_full_voltage(self) -> None:
+        voltage_map = {
+            "2s": 8.4,
+            "3s": 12.6,
+            "4s": 16.8,
+            "5s": 21.0,
+        }
+        selection = str(self.aircraft_cfg.get("battery_cells", "3s")).lower()
+        self._battery_full_voltage = voltage_map.get(selection, 12.6)
+
+        if hasattr(self, "telemetry_state") and isinstance(self.telemetry_state, dict):
+            voltage = self.telemetry_state.get("battery_voltage")
+            current = self.telemetry_state.get("battery_current")
+            capacity = self.telemetry_state.get("battery_capacity")
+            percent = self.telemetry_state.get("battery_percent")
+            self._update_battery_health_display(voltage, current, capacity, percent)
 
     def _prune_packet_times(self, queue, current_time: float) -> None:
         cutoff = current_time - self._rate_window_seconds
@@ -1879,6 +1859,19 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(smooth_row)
         add_separator()
 
+        aircraft_layout, _ = add_section(
+            "Aircraft configuration", show_status=False
+        )
+        battery_row = QHBoxLayout()
+        battery_row.addWidget(QLabel("Battery pack"))
+        self.battery_type_combo = QComboBox()
+        self.battery_type_combo.addItems(["2s", "3s", "4s", "5s"])
+        battery_row.addWidget(self.battery_type_combo)
+        battery_row.addStretch()
+        aircraft_layout.addLayout(battery_row)
+
+        add_separator()
+
         # VTX settings (video receiver is treated as a camera device, so no
         # serial port configuration is required)
         vtx_layout, self.vtx_status = add_section(
@@ -1958,6 +1951,9 @@ class MainWindow(QMainWindow):
         self.elrs_port_combo.setCurrentText(
             self.crsf_cfg.get("port", "Not connected")
         )
+        self.battery_type_combo.setCurrentText(
+            self.aircraft_cfg.get("battery_cells", "3s")
+        )
         # Connect signals
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
         self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
@@ -1973,6 +1969,9 @@ class MainWindow(QMainWindow):
         self.alt_alarm_alt_slider.valueChanged.connect(self.on_alt_alarm_alt_changed)
         self.alt_alarm_speed_slider.valueChanged.connect(self.on_alt_alarm_speed_changed)
         self.roll_angle_slider.valueChanged.connect(self.on_roll_angle_changed)
+        self.battery_type_combo.currentTextChanged.connect(
+            self.on_battery_type_changed
+        )
 
         # Initial connection status
         self.update_connection_status(self.control_status, self.joystick is not None)
@@ -2134,6 +2133,11 @@ class MainWindow(QMainWindow):
     def on_roll_angle_changed(self, value: int):
         self.warning_cfg["roll_angle"] = value
         self.roll_angle_value.setText(str(value))
+        save_config(self.config)
+
+    def on_battery_type_changed(self, selection: str):
+        self.aircraft_cfg["battery_cells"] = selection
+        self._update_battery_full_voltage()
         save_config(self.config)
 
     def on_stall_alarm_toggled(self, checked: bool):

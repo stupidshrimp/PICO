@@ -32,5 +32,8 @@
             0
         ],
         "zoom": 2
+    },
+    "aircraft": {
+        "battery_cells": "3s"
     }
 }
