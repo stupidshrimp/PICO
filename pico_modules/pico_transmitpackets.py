@@ -453,18 +453,19 @@ class CRSFPacketProcessor(QObject):
             logger.warning("Attitude length byte unexpected: %d", data[1])
             return
         try:
-            # Attitude packets encode signed 16-bit integers using little-endian
-            # order.  When the telemetry data is produced, the firmware sends the
-            # values as ``roll``, ``pitch`` (negated) and ``yaw`` after converting
-            # from decidegrees to radians×1000 (see ``_decidegreeToRadians`` in
-            # the transmitter firmware).  Mirror that encoding here by unpacking
-            # in ``roll, pitch, yaw`` order and applying the inverse conversion so
-            # the UI sees the original angles in degrees.
-            roll_raw, pitch_raw, yaw_raw = struct.unpack("<hhh", data[3:9])
+            # Attitude packets encode signed 16-bit integers using big-endian
+            # order.  When the telemetry data is produced, the firmware writes
+            # ``pitch``, ``roll`` and ``yaw`` after converting each value from
+            # decidegrees to radians×10 000 (see ``_decidegreeToRadians`` in the
+            # transmitter firmware).  Pitch is negated before transmission.
+            # Mirror that encoding here by unpacking in ``pitch, roll, yaw``
+            # order and applying the inverse conversion so the UI sees the
+            # original angles in degrees.
+            pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", data[3:9])
 
-            roll = math.degrees(roll_raw / 1000.0)
-            pitch = -math.degrees(pitch_raw / 1000.0)
-            yaw = math.degrees(yaw_raw / 1000.0)
+            roll = math.degrees(roll_raw / 10000.0)
+            pitch = math.degrees(-pitch_raw / 10000.0)
+            yaw = math.degrees(yaw_raw / 10000.0)
 
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
         except Exception:
