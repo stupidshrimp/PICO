@@ -453,7 +453,13 @@ class CRSFPacketProcessor(QObject):
             logger.warning("Attitude length byte unexpected: %d", data[1])
             return
         try:
-            pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", data[3:9])
+            # Attitude packets encode signed 16-bit integers using little-endian
+            # order. Previously we attempted to decode them as big-endian values,
+            # which produced wildly incorrect angles (e.g. yaw readings over
+            # 1000° while the vehicle was stationary). Decode the payload using
+            # the correct little-endian format so the attitude conversion below
+            # yields realistic angles.
+            pitch_raw, roll_raw, yaw_raw = struct.unpack("<hhh", data[3:9])
 
             pitch = -(pitch_raw / 1000.0) * 180.0 / math.pi
             roll = (roll_raw / 1000.0) * 180.0 / math.pi
