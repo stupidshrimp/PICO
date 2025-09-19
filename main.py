@@ -1739,6 +1739,9 @@ class MainWindow(QMainWindow):
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
+        else:
+            if self._debug_monitoring and "control" in self._debug_packets:
+                self.debug_page.log_packet("control", channels)
 
     def update_control_mode_label(self):
         """Update the control mode indicator text and color."""

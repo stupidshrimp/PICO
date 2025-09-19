@@ -28,6 +28,7 @@ class DebugPage:
         "gps": "GPS packets",
         "battery": "Battery packets",
         "link_stats": "Link statistics packets",
+        "control": "Control packet transmission",
     }
 
     def __init__(self, main_window) -> None:
@@ -200,6 +201,10 @@ class DebugPage:
         elif packet_type == "joystick" and len(values) >= 2:
             pitch, roll = values[:2]
             detail = f"pitch={pitch:.1f} roll={roll:.1f}"
+        elif packet_type == "control":
+            detail = " ".join(
+                f"ch{index + 1}={int(value)}" for index, value in enumerate(values)
+            )
         else:
             detail = " ".join(str(value) for value in values)
         self.output_edit.appendPlainText(f"[{timestamp}] {packet_type}: {detail}")
