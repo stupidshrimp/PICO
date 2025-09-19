@@ -301,6 +301,7 @@ class MainWindow(QMainWindow):
                 break
 
         if logo_path is not None:
+
             app_icon = QIcon(logo_path)
             self.setWindowIcon(app_icon)
             app = QApplication.instance()
@@ -319,6 +320,7 @@ class MainWindow(QMainWindow):
             self._branding_logo.setGeometry(10, 4, 48, 42)
             self._branding_logo.setPixmap(scaled_logo)
             self._branding_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
 
         # Remove unwanted side tabs
         self.ui.btn_save.hide()
