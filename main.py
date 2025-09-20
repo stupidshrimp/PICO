@@ -1573,7 +1573,7 @@ class MainWindow(QMainWindow):
             ):
                 self.altitude_alarm_playing = True
                 self.play_sound_sequence(
-                    ["beepalarm", "pullupwarning", "pullupwarning"],
+                    ["beepalarm", "altitudewarning", "pullupwarning"],
                     finished_callback=lambda: setattr(
                         self, "altitude_alarm_playing", False
                     ),
