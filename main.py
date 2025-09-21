@@ -442,6 +442,13 @@ class MainWindow(QMainWindow):
         self.last_attitude_packet_time = None
         self.attitude_first_received_time = None
         self.attitude_connected = False
+        self.last_link_stats_packet_time = None
+        self.link_stats_first_received_time = None
+        self.link_stats_connected = False
+        self._combined_event_times = {
+            "connect": {"attitude": None, "link_stats": None},
+            "disconnect": {"attitude": None, "link_stats": None},
+        }
 
         self.attitude_monitor_timer = QTimer(self)
         self.attitude_monitor_timer.timeout.connect(
@@ -1517,6 +1524,29 @@ class MainWindow(QMainWindow):
         player.play()
         self.sound_players[name] = (player, output)
 
+    def _handle_connection_sound(self, source: str, connected: bool) -> None:
+        """Play connection or disconnection sounds and combined alerts."""
+
+        sound_map = {
+            ("attitude", True): "telemetryonline",
+            ("attitude", False): "telemetryoffline",
+            ("link_stats", True): "connectedalarm",
+            ("link_stats", False): "disconnectedalarm",
+        }
+        event_type = "connect" if connected else "disconnect"
+        now = time.monotonic()
+        other_source = "link_stats" if source == "attitude" else "attitude"
+
+        self.play_sound_sequence([sound_map[(source, connected)]])
+
+        last_other_time = self._combined_event_times[event_type][other_source]
+        self._combined_event_times[event_type][source] = now
+        if last_other_time is not None and now - last_other_time <= 0.5:
+            combined_sound = "elrsconnected" if connected else "elrsdisconnected"
+            self.play_sound_sequence([combined_sound])
+            self._combined_event_times[event_type][source] = None
+            self._combined_event_times[event_type][other_source] = None
+
     def check_attitude_connection(self):
         """Monitor attitude packet reception and play connection sounds."""
         now = time.monotonic()
@@ -1526,7 +1556,7 @@ class MainWindow(QMainWindow):
                 or now - self.last_attitude_packet_time > 1.0
             ):
                 self.attitude_connected = False
-                self.play_sound_sequence(["disconnectedalarm"])
+                self._handle_connection_sound("attitude", False)
                 self.attitude_first_received_time = None
         else:
             if (
@@ -1534,6 +1564,21 @@ class MainWindow(QMainWindow):
                 or now - self.last_attitude_packet_time > 1.0
             ):
                 self.attitude_first_received_time = None
+
+        if self.link_stats_connected:
+            if (
+                self.last_link_stats_packet_time is None
+                or now - self.last_link_stats_packet_time > 1.0
+            ):
+                self.link_stats_connected = False
+                self._handle_connection_sound("link_stats", False)
+                self.link_stats_first_received_time = None
+        else:
+            if (
+                self.last_link_stats_packet_time is None
+                or now - self.last_link_stats_packet_time > 1.0
+            ):
+                self.link_stats_first_received_time = None
 
     def check_warnings(self):
         """Evaluate telemetry values against configured thresholds and play alarms."""
@@ -1630,7 +1675,7 @@ class MainWindow(QMainWindow):
                 elif now - self.attitude_first_received_time >= 1.0:
                     self.attitude_connected = True
                     self.attitude_first_received_time = None
-                    self.play_sound_sequence(["connectedalarm"])
+                    self._handle_connection_sound("attitude", True)
             else:
                 self.attitude_first_received_time = None
 
@@ -1671,6 +1716,17 @@ class MainWindow(QMainWindow):
                 self.telemetry_state["battery_percent"] = percent
                 self._update_battery_health_display(voltage, current, capacity, percent)
         elif packet_type == "link_stats":
+            self.last_link_stats_packet_time = now
+            if not self.link_stats_connected:
+                if self.link_stats_first_received_time is None:
+                    self.link_stats_first_received_time = now
+                elif now - self.link_stats_first_received_time >= 1.0:
+                    self.link_stats_connected = True
+                    self.link_stats_first_received_time = None
+                    self._handle_connection_sound("link_stats", True)
+            else:
+                self.link_stats_first_received_time = None
+
             (
                 rssi_a,
                 rssi_b,
