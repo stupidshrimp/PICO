@@ -1779,6 +1779,27 @@ class MainWindow(QMainWindow):
         widgets.stackedWidget.addWidget(self.ui.configuration_page)
 
         layout = QVBoxLayout(self.ui.configuration_page)
+
+        self.reinitialize_ports_button = QPushButton("Re-initialize serial ports")
+        self.reinitialize_ports_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reinitialize_ports_button.setMinimumHeight(44)
+        button_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.reinitialize_ports_button.setSizePolicy(button_policy)
+        self.reinitialize_ports_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: rgb(46, 125, 50);"
+            "color: white;"
+            "font-weight: bold;"
+            "border-radius: 8px;"
+            "padding: 8px 16px;"
+            "}"
+            "QPushButton:hover {background-color: rgb(56, 142, 60);}"
+            "QPushButton:pressed {background-color: rgb(35, 97, 39);}" 
+            "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}" 
+        )
+        layout.addWidget(self.reinitialize_ports_button)
+        layout.addSpacing(12)
+
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
         def add_section(title, *, show_status=True):
@@ -2016,6 +2037,8 @@ class MainWindow(QMainWindow):
         # Ensure the port lists reflect currently connected devices
         self.update_port_lists()
 
+        self.reinitialize_ports_button.clicked.connect(self.reinitialize_serial_ports)
+
     def update_port_lists(self):
         """Refresh available serial ports and update the dropdowns."""
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
@@ -2035,6 +2058,17 @@ class MainWindow(QMainWindow):
         refresh(self.control_port_combo, self.on_control_port_selected)
         refresh(self.elrs_port_combo, self.on_elrs_port_selected)
         # Video receiver uses a fixed device index; no port list to refresh
+
+    def reinitialize_serial_ports(self):
+        """Rescan serial ports and restart active connections."""
+
+        self.update_port_lists()
+
+        for combo, handler in (
+            (self.control_port_combo, self.on_control_port_selected),
+            (self.elrs_port_combo, self.on_elrs_port_selected),
+        ):
+            handler(combo.currentText())
 
     def on_control_port_selected(self, port: str):
         """Handle selection of control system port."""
