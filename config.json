@@ -1,6 +1,6 @@
 {
     "joystick": {
-        "port": "COM5",
+        "port": "Not connected",
         "baudrate": 9600,
         "deadzone": 0,
         "sensitivity": 100,
@@ -8,7 +8,7 @@
         "smoothing": 0
     },
     "crsf": {
-        "port": "COM4",
+        "port": "Not connected",
         "baudrate": 921600,
         "packet_interval": 3
     },
