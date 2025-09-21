@@ -66,6 +66,7 @@
   });
 
   const marker = new maplibregl.Marker({color: 'red'}).setLngLat([lon, lat]).addTo(map);
+  const MAX_TRAIL_POINTS = 500;
   const trail = {
     type: 'Feature',
     geometry: { type: 'LineString', coordinates: [[lon, lat]] }
@@ -80,6 +81,9 @@
     const coord = [lon, lat];
     marker.setLngLat(coord);
     trail.geometry.coordinates.push(coord);
+    if (trail.geometry.coordinates.length > MAX_TRAIL_POINTS) {
+      trail.geometry.coordinates.splice(0, trail.geometry.coordinates.length - MAX_TRAIL_POINTS);
+    }
     const src = map.getSource('path');
     if (src) src.setData(trail);
   };
