@@ -3,7 +3,7 @@
     <file>images/images/PyDracula.png</file>
     <file>images/images/PyDracula_vertical.png</file>
     <file>images/images/fetchimage.jpg</file>
-    <file>images/images/logo.png</file>
+    <file>images/images/noFilter.png</file>
   </qresource>
   <qresource prefix="icons">
     <file>images/icons/cil-3d.png</file>

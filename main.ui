@@ -1889,7 +1889,7 @@ li.checked::marker { content: &quot;\2612&quot;; }
                      </property>
                      <widget class="QWidget" name="home">
                       <property name="styleSheet">
-                       <string notr="true">background-image: url(:/images/images/images/logo.png);
+                       <string notr="true">background-image: url(:/images/images/images/noFilter.png);
 background-position: center;
 background-repeat: no-repeat;</string>
                       </property>
