@@ -10,6 +10,16 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 from typing import Optional
 
+# When running on Windows, the combination of Qt's hardware accelerated scene
+# graph and Chromium's GPU pipeline inside ``QWebEngineView`` would eventually
+# exhaust the Direct3D device.  The GUI would continually allocate new staging
+# textures until the driver reset, leading to "device loss" errors and the
+# application's memory usage climbing until it crashed.  Force both Qt and the
+# embedded Chromium instance to fall back to software rendering so resource
+# allocation stays bounded.
+os.environ.setdefault("QT_OPENGL", "software")
+os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
+
 logging.basicConfig(
     filename="debug.log",
     level=logging.ERROR,
@@ -2483,6 +2493,7 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
