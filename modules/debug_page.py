@@ -179,10 +179,10 @@ class DebugPage:
             pitch, roll, yaw = values[:3]
             detail = f"pitch={pitch:.2f}\u00b0 roll={roll:.2f}\u00b0 yaw={yaw:.2f}\u00b0"
         elif packet_type == "gps" and len(values) >= 6:
-            lat, lon, altitude, speed, course, sats = values[:6]
+            lat, lon, alt_ft, speed_mph, course, sats = values[:6]
             detail = (
-                f"lat={lat:.6f} lon={lon:.6f} alt={altitude:.1f} ft "
-                f"speed={speed:.1f} mph course={course:.1f}\u00b0 sats={int(sats)}"
+                f"lat={lat:.6f} lon={lon:.6f} alt={alt_ft:.0f} ft "
+                f"speed={speed_mph:.1f} mph course={course:.1f}\u00b0 sats={int(sats)}"
             )
         elif packet_type == "battery" and len(values) >= 3:
             voltage, current, capacity = values[:3]

@@ -2,12 +2,8 @@ import os
 import time
 import csv
 import logging
-import threading
-import re
 from collections import deque
 from datetime import datetime
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from functools import partial
 from typing import Optional
 
 # When running on Windows, the combination of Qt's hardware accelerated scene
@@ -39,86 +35,6 @@ def log_uncaught_exceptions(exctype, value, tb):
 sys.excepthook = log_uncaught_exceptions
 atexit.register(_logfile.close)
 
-
-class RangeRequestHandler(SimpleHTTPRequestHandler):
-    """HTTP handler that adds Content-Length and Range support."""
-
-    def send_head(self):
-        path = self.translate_path(self.path)
-        if os.path.isdir(path):
-            return super().send_head()
-
-        ctype = self.guess_type(path)
-        try:
-            f = open(path, "rb")
-        except OSError:
-            self.send_error(404, "File not found")
-            return None
-
-        fs = os.fstat(f.fileno())
-        total_length = fs.st_size
-        start = 0
-        end = total_length - 1
-        if "Range" in self.headers:
-            m = re.match(r"bytes=(\d+)-(\d+)?", self.headers["Range"])
-            if m:
-                start = int(m.group(1))
-                if m.group(2):
-                    end = min(int(m.group(2)), end)
-                length = end - start + 1
-                f.seek(start)
-                self.send_response(206)
-                self.send_header("Content-Range", f"bytes {start}-{end}/{total_length}")
-            else:
-                length = total_length
-                self.send_response(200)
-        else:
-            length = total_length
-            self.send_response(200)
-
-        self.send_header("Content-type", ctype)
-        self.send_header("Content-Length", str(length))
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
-        self.end_headers()
-        self._range_length = length
-        return f
-
-    def do_GET(self):
-        f = self.send_head()
-        if f:
-            try:
-                self.copyfile_range(f, self.wfile, self._range_length)
-            finally:
-                f.close()
-
-    def do_HEAD(self):
-        f = self.send_head()
-        if f:
-            f.close()
-
-    def copyfile_range(self, source, output, length, bufsize=64 * 1024):
-        while length > 0:
-            chunk = source.read(min(bufsize, length))
-            if not chunk:
-                break
-            try:
-                output.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
-                logging.debug(
-                    "Client disconnected while streaming %s: %s", self.path, exc
-                )
-                break
-            length -= len(chunk)
-
-
-def start_static_server():
-    """Start a tiny HTTP server to serve local map assets."""
-    web_dir = os.path.dirname(__file__)
-    handler = partial(RangeRequestHandler, directory=web_dir)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -152,8 +68,6 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
 )
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile
 from PySide6.QtGui import QIcon, QColor, QShortcut, QKeySequence, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import shiboken6
@@ -286,23 +200,13 @@ class MainWindow(QMainWindow):
 
         # Load configuration before building settings-dependent UI
         self.config = load_config()
-        self.map_cfg = self.config.setdefault(
-            "map", {"center": [0, 0], "zoom": 2, "enabled": False}
-        )
-        self.map_cfg.setdefault("enabled", False)
         self.aircraft_cfg = self.config.setdefault("aircraft", {})
         self.aircraft_cfg.setdefault("battery_cells", "3s")
         self._battery_full_voltage = 0.0
         self._update_battery_full_voltage()
 
-        # Prepare the offline map view based on the stored preference
+        # Keep a placeholder for the GPS map area without loading any assets
         self.map_view = self.ui.mapframe
-        self.map_server = None
-        self._map_tile_warning_shown = False
-        self.map_enabled = bool(self.map_cfg.get("enabled", False))
-        if self.map_enabled:
-            self._initialize_map_view()
-        self._update_map_visibility()
 
         self._setup_command_sidebar()
         self._setup_sortie_section()
@@ -677,7 +581,6 @@ class MainWindow(QMainWindow):
 
         stats_labels = [
             getattr(self.ui, "attitudeRateLabel", None),
-            getattr(self.ui, "gpsRateLabel", None),
             getattr(self.ui, "totalRateLabel", None),
         ]
         for label in stats_labels:
@@ -711,62 +614,6 @@ class MainWindow(QMainWindow):
 
             if child_layout is not None:
                 self._clear_layout(child_layout)
-
-
-    def _initialize_map_view(self) -> None:
-        """Ensure the offline map server is running and the view is loaded."""
-
-        if self.map_view is None:
-            return
-
-        map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
-        if not os.path.exists(map_file):
-            if not getattr(self, "_map_tile_warning_shown", False):
-                QMessageBox.warning(
-                    self,
-                    "Missing map tiles",
-                    "Offline map tiles 'map1.pmtiles' not found in the map directory."
-                    " The GPS map will remain blank.",
-                )
-                self._map_tile_warning_shown = True
-            return
-
-        if self.map_server is None:
-            self.map_server = start_static_server()
-
-        port = self.map_server.server_address[1]
-        lat, lon = self.map_cfg.get("center", [0, 0])
-        zoom = self.map_cfg.get("zoom", 2)
-        map_url = QUrl(
-            f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
-        )
-        self.map_view.setUrl(map_url)
-
-        profile = self.map_view.page().profile()
-        profile.setHttpCacheType(QWebEngineProfile.NoCache)
-        profile.clearHttpCache()
-
-
-    def _update_map_visibility(self) -> None:
-        """Show or hide the map widget according to the preference."""
-
-        if self.map_view is None:
-            return
-
-        self.map_view.setVisible(self.map_enabled)
-
-
-    def on_map_toggled(self, checked: bool) -> None:
-        """Persist and apply the GPS map visibility preference."""
-
-        self.map_enabled = checked
-        self.map_cfg["enabled"] = checked
-
-        if checked:
-            self._initialize_map_view()
-
-        self._update_map_visibility()
-        save_config(self.config)
 
 
     def _setup_command_sidebar(self) -> None:
@@ -1027,27 +874,119 @@ class MainWindow(QMainWindow):
         self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
         self._update_sortie_ui_state()
 
-        map_container = QWidget(settings_container)
-        map_container.setObjectName("mapSettingsContainer")
+        if telemetry_section is not None:
+            telemetry_section.setParent(frame)
+            telemetry_section.setStyleSheet(panel_style)
+            telemetry_section.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            )
 
-        map_layout = QVBoxLayout(map_container)
-        map_layout.setContentsMargins(0, 12, 0, 0)
-        map_layout.setSpacing(8)
+            telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
+            if telemetry_layout is not None:
+                telemetry_layout.setContentsMargins(12, 12, 12, 12)
+                telemetry_layout.setSpacing(10)
 
-        map_title = QLabel("Map", map_container)
-        map_title.setObjectName("mapSettingsTitle")
-        map_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        map_title.setStyleSheet(self._settings_title_style)
-        map_layout.addWidget(map_title)
+            stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
+            if stats_row_layout is not None:
+                stats_row_layout.setContentsMargins(0, 0, 0, 0)
+                stats_row_layout.setSpacing(16)
+                stats_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                for index in range(stats_row_layout.count()):
+                    stats_row_layout.setStretch(index, 1)
 
-        self.ui.mapVisibilityCheckbox = QCheckBox("Enable GPS map", map_container)
-        self.ui.mapVisibilityCheckbox.setObjectName("mapVisibilityCheckbox")
-        self.ui.mapVisibilityCheckbox.setCursor(Qt.PointingHandCursor)
-        self.ui.mapVisibilityCheckbox.setChecked(self.map_enabled)
-        self.ui.mapVisibilityCheckbox.toggled.connect(self.on_map_toggled)
-        map_layout.addWidget(self.ui.mapVisibilityCheckbox, 0, Qt.AlignLeft)
+            telemetry_title = getattr(self.ui, "telemetryStatsTitle", None)
+            if telemetry_title is not None:
+                telemetry_title.setParent(telemetry_section)
+                telemetry_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        settings_layout.addWidget(map_container, 0, Qt.AlignTop)
+            for label in (
+                getattr(self.ui, "attitudeRateLabel", None),
+                getattr(self.ui, "totalRateLabel", None),
+            ):
+                if label is None:
+                    continue
+                label.setParent(telemetry_section)
+                label.setWordWrap(True)
+                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                label.setSizePolicy(
+                    QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                )
+
+            telemetry_section.adjustSize()
+            telemetry_section.setMinimumHeight(telemetry_section.sizeHint().height())
+            column_layout.addWidget(telemetry_section)
+
+        if command_spacer is not None:
+            command_spacer.setParent(frame)
+            command_spacer.setMinimumHeight(0)
+            command_spacer.setSizePolicy(
+                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            )
+            column_layout.addWidget(command_spacer, 1)
+
+        if column_layout.count() == 0:
+            column_layout.addStretch()
+
+    def _setup_sortie_section(self) -> None:
+        """Create the Sortie controls within the settings sidebar."""
+
+        settings_container = getattr(self.ui, "topMenus", None)
+        settings_layout = getattr(self.ui, "verticalLayout_14", None)
+        if settings_container is None or settings_layout is None:
+            return
+
+        sortie_container = QWidget(settings_container)
+        sortie_container.setObjectName("sortieSettingsContainer")
+
+        sortie_layout = QVBoxLayout(sortie_container)
+        sortie_layout.setContentsMargins(0, 12, 0, 0)
+        sortie_layout.setSpacing(8)
+
+        sorties_title = QLabel("Sortie", sortie_container)
+        sorties_title.setObjectName("sortiesTitle")
+        sorties_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sorties_title.setStyleSheet(self._settings_title_style)
+        sortie_layout.addWidget(sorties_title)
+
+        self.ui.sortieRecordButton = QPushButton(
+            "Awaiting Telemetry", sortie_container
+        )
+        self.ui.sortieRecordButton.setObjectName("sortieRecordButton")
+        self.ui.sortieRecordButton.setCursor(Qt.PointingHandCursor)
+        self.ui.sortieRecordButton.setFixedHeight(36)
+        self.ui.sortieRecordButton.setMinimumWidth(160)
+        sortie_layout.addWidget(self.ui.sortieRecordButton, 0, Qt.AlignLeft)
+
+        settings_layout.addWidget(sortie_container, 0, Qt.AlignTop)
+
+        self._sortie_idle_style = (
+            "QPushButton {"
+            "background-color: #2e7d32;"
+            "color: white;"
+            "border: 1px solid #1b5e20;"
+            "border-radius: 6px;"
+            "padding: 8px 18px;"
+            "}"
+            "QPushButton:hover {background-color: #388e3c;}"
+            "QPushButton:pressed {background-color: #1b5e20;}"
+            "QPushButton:disabled {background-color: #555555; color: #999999; border-color: #444444;}"
+        )
+        self._sortie_active_style = (
+            "QPushButton {"
+            "background-color: #c62828;"
+            "color: white;"
+            "border: 1px solid #8e0000;"
+            "border-radius: 6px;"
+            "padding: 8px 18px;"
+            "}"
+            "QPushButton:hover {background-color: #d32f2f;}"
+            "QPushButton:pressed {background-color: #b71c1c;}"
+        )
+
+        self.ui.sortieRecordButton.setEnabled(False)
+
+        self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
+        self._update_sortie_ui_state()
 
     def _update_sortie_ui_state(self) -> None:
         """Refresh the sortie button appearance and availability."""
@@ -1495,11 +1434,13 @@ class MainWindow(QMainWindow):
             self._prune_packet_times(queue, now)
 
         label_map = (
-            ("attitude", self.ui.attitudeRateLabel, "Attitude rate"),
-            ("gps", self.ui.gpsRateLabel, "GPS rate"),
-            ("total", self.ui.totalRateLabel, "Total rate"),
+            ("attitude", getattr(self.ui, "attitudeRateLabel", None), "Attitude rate"),
+            ("gps", getattr(self.ui, "gpsRateLabel", None), "GPS rate"),
+            ("total", getattr(self.ui, "totalRateLabel", None), "Total rate"),
         )
         for key, label, prefix in label_map:
+            if label is None:
+                continue
             queue = self._packet_times[key]
             if queue:
                 rate = len(queue) / self._rate_window_seconds
@@ -1777,10 +1718,6 @@ class MainWindow(QMainWindow):
             self.telemetry_state["ground_course"] = course
             self.telemetry_state["satellites"] = sats
             self.data_page.add_flight_metrics(alt, speed)
-            if self.map_enabled and getattr(self, "map_view", None):
-                self.map_view.page().runJavaScript(
-                    f"updateMarker({lat}, {lon});"
-                )
         elif packet_type == "battery":
             if len(values) >= 3:
                 voltage, current, capacity = values[:3]
@@ -2472,10 +2409,6 @@ class MainWindow(QMainWindow):
         if self.joystick:
             self.joystick.close()
             self.joystick = None
-        if getattr(self, "map_server", None):
-            self.map_server.shutdown()
-            self.map_server = None
-
     def closeEvent(self, event):
         """
         Releases resources when the window is closed.

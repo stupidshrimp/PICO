@@ -388,13 +388,11 @@ class CRSFPacketProcessor(QObject):
             logger.warning("GPS length byte unexpected: %d", data[1])
             return
         try:
-            # Extract the 15-byte payload
             payload = data[3:18]
             lat_raw, lon_raw, spd_raw, crs_raw, alt_raw, sats = struct.unpack(
                 ">iiHHHB", payload
             )
 
-            # Convert raw values to physical units
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
             speed_mph = spd_raw * 0.0621371  # km/h -> mph
@@ -403,11 +401,9 @@ class CRSFPacketProcessor(QObject):
             # CRSF implementation converts it to meters before adding the
             # offset (encoded_altitude = (alt_cm / 100) + 1000). Subtract 1000
             # to recover meters and convert to feet for the UI.
-            alt_ft = (alt_raw - 1000) * 3.28084  # meters -> feet
+            alt_ft = (alt_raw - 1000) * 3.28084
             course = crs_raw / 100.0
 
-            # Emit values in the order: lat, lon, alt (ft), speed (mph),
-            # ground course, satellites
             self.telemetry_ready.emit(
                 ("gps", lat, lon, alt_ft, speed_mph, course, sats)
             )
