@@ -8,4 +8,5 @@ Copy the following files into this directory:
 - `map1.pmtiles` – raster tiles bundle
 
 The application uses the `map1.pmtiles` database exclusively and will not fetch tiles
-from the internet. If this file is missing, the map area will show an error message.
+from the internet. If the file is missing or unreadable the GPS view will stay blank
+and display an error message instructing you to copy the archive into this directory.

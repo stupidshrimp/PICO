@@ -6,12 +6,27 @@
   <link rel="stylesheet" href="maplibre-gl.css" />
   <style>
     html, body, #map { height:100%; margin:0; }
-    #missing { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:#fff; padding:1em; border:1px solid #ccc; display:none; }
+    #message {
+      position:absolute;
+      top:50%;
+      left:50%;
+      transform:translate(-50%, -50%);
+      background:#fff;
+      padding:1em 1.5em;
+      border:1px solid #ccc;
+      border-radius:6px;
+      box-shadow:0 2px 6px rgba(0,0,0,0.15);
+      display:none;
+      max-width:320px;
+      text-align:center;
+      font-family:system-ui, sans-serif;
+      line-height:1.4;
+    }
   </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="missing">Offline tiles not found in /map.</div>
+<div id="message">Offline tiles not found in /map.</div>
 <script src="maplibre-gl.js"></script>
 <script src="pmtiles.js"></script>
 <script>
@@ -21,36 +36,71 @@
   const lon = parseFloat(params.get('lon')) || 0;
   const zoom = parseFloat(params.get('zoom')) || 2;
 
-  const missing = document.getElementById('missing');
-  const showError = (message) => {
-    missing.textContent = message;
-    missing.style.display = 'block';
+  const messageEl = document.getElementById('message');
+  const showMessage = (message) => {
+    messageEl.textContent = message;
+    messageEl.style.display = 'block';
   };
 
   const tilesUrl = new URL('map1.pmtiles', window.location.href).toString();
 
-  try {
-    const res = await fetch(tilesUrl, {method: 'HEAD'});
-    if (!res.ok) throw new Error('missing');
-  } catch (err) {
-    console.error('Offline map tiles are not reachable', err);
-    showError('Offline tiles not found in /map.');
-    return;
-  }
+  const createMap = (style, options = {}) => {
+    const map = new maplibregl.Map({
+      container: 'map',
+      style,
+      center: [lon, lat],
+      zoom,
+      ...options
+    });
+
+    const marker = new maplibregl.Marker({color: 'red'}).setLngLat([lon, lat]).addTo(map);
+    const MAX_TRAIL_POINTS = 500;
+    const trail = {
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[lon, lat]] }
+    };
+
+    map.on('load', () => {
+      map.addSource('path', { type: 'geojson', data: trail });
+      map.addLayer({ id: 'path', type: 'line', source: 'path', paint: { 'line-color': '#f00', 'line-width': 2 } });
+    });
+
+    map.on('error', (event) => {
+      if (!event || (event.error && event.error.message === 'Style is not done loading')) {
+        return;
+      }
+      const details = event && event.error ? event.error : event;
+      console.error('Map rendering error', details);
+      showMessage('Unable to render the map tiles.');
+    });
+
+    window.updateMarker = function(lat, lon) {
+      const coord = [lon, lat];
+      marker.setLngLat(coord);
+      trail.geometry.coordinates.push(coord);
+      if (trail.geometry.coordinates.length > MAX_TRAIL_POINTS) {
+        trail.geometry.coordinates.splice(0, trail.geometry.coordinates.length - MAX_TRAIL_POINTS);
+      }
+      const src = map.getSource('path');
+      if (src) src.setData(trail);
+    };
+  };
 
   const protocol = new pmtiles.Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
 
   const p = new pmtiles.PMTiles(tilesUrl);
   protocol.add(p);
+
   let header;
   try {
     header = await p.getHeader();
   } catch (err) {
     console.error('Failed to read PMTiles header', err);
-    showError('Failed to read the offline tile archive.');
+    showMessage('Failed to read the offline tile archive. Ensure map1.pmtiles is in the map folder.');
     return;
   }
+
   let tileSize = 256;
   try {
     const metadata = await p.getMetadata();
@@ -59,59 +109,24 @@
     // ignore missing metadata
   }
 
-  const map = new maplibregl.Map({
-    container: 'map',
-    style: {
-      version: 8,
-      sources: {
-        satellite: {
-          type: 'raster',
-          url: 'pmtiles://map1.pmtiles',
-          tileSize: tileSize,
-          maxzoom: header.maxZoom
-        }
-      },
-      layers: [{
-        id: 'satellite',
+  const style = {
+    version: 8,
+    sources: {
+      satellite: {
         type: 'raster',
-        source: 'satellite'
-      }]
+        url: 'pmtiles://map1.pmtiles',
+        tileSize,
+        maxzoom: header.maxZoom
+      }
     },
-    center: [lon, lat],
-    zoom: zoom
-  });
-
-  const marker = new maplibregl.Marker({color: 'red'}).setLngLat([lon, lat]).addTo(map);
-  const MAX_TRAIL_POINTS = 500;
-  const trail = {
-    type: 'Feature',
-    geometry: { type: 'LineString', coordinates: [[lon, lat]] }
+    layers: [{
+      id: 'satellite',
+      type: 'raster',
+      source: 'satellite'
+    }]
   };
 
-  map.on('load', () => {
-    map.addSource('path', { type: 'geojson', data: trail });
-    map.addLayer({ id: 'path', type: 'line', source: 'path', paint: { 'line-color': '#f00', 'line-width': 2 } });
-  });
-
-  map.on('error', (event) => {
-    if (!event || (event.error && event.error.message === 'Style is not done loading')) {
-      return;
-    }
-    const details = event && event.error ? event.error : event;
-    console.error('Map rendering error', details);
-    showError('Unable to render the offline map tiles.');
-  });
-
-  window.updateMarker = function(lat, lon) {
-    const coord = [lon, lat];
-    marker.setLngLat(coord);
-    trail.geometry.coordinates.push(coord);
-    if (trail.geometry.coordinates.length > MAX_TRAIL_POINTS) {
-      trail.geometry.coordinates.splice(0, trail.geometry.coordinates.length - MAX_TRAIL_POINTS);
-    }
-    const src = map.getSource('path');
-    if (src) src.setData(trail);
-  };
+  createMap(style, { maxZoom: header.maxZoom });
 })();
 </script>
 </body>
