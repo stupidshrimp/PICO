@@ -21,20 +21,36 @@
   const lon = parseFloat(params.get('lon')) || 0;
   const zoom = parseFloat(params.get('zoom')) || 2;
 
+  const missing = document.getElementById('missing');
+  const showError = (message) => {
+    missing.textContent = message;
+    missing.style.display = 'block';
+  };
+
+  const tilesUrl = new URL('map1.pmtiles', window.location.href).toString();
+
   try {
-    const res = await fetch('map1.pmtiles', {method: 'HEAD'});
+    const res = await fetch(tilesUrl, {method: 'HEAD'});
     if (!res.ok) throw new Error('missing');
   } catch (err) {
-    document.getElementById('missing').style.display = 'block';
+    console.error('Offline map tiles are not reachable', err);
+    showError('Offline tiles not found in /map.');
     return;
   }
 
   const protocol = new pmtiles.Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
 
-  const p = new pmtiles.PMTiles('map1.pmtiles');
+  const p = new pmtiles.PMTiles(tilesUrl);
   protocol.add(p);
-  const header = await p.getHeader();
+  let header;
+  try {
+    header = await p.getHeader();
+  } catch (err) {
+    console.error('Failed to read PMTiles header', err);
+    showError('Failed to read the offline tile archive.');
+    return;
+  }
   let tileSize = 256;
   try {
     const metadata = await p.getMetadata();
@@ -75,6 +91,15 @@
   map.on('load', () => {
     map.addSource('path', { type: 'geojson', data: trail });
     map.addLayer({ id: 'path', type: 'line', source: 'path', paint: { 'line-color': '#f00', 'line-width': 2 } });
+  });
+
+  map.on('error', (event) => {
+    if (!event || (event.error && event.error.message === 'Style is not done loading')) {
+      return;
+    }
+    const details = event && event.error ? event.error : event;
+    console.error('Map rendering error', details);
+    showError('Unable to render the offline map tiles.');
   });
 
   window.updateMarker = function(lat, lon) {
