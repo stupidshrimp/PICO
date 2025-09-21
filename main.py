@@ -123,6 +123,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QLayout,
     QProgressBar,
+    QCheckBox,
 )
 from PySide6.QtCore import (
     Qt,
@@ -189,9 +190,6 @@ def validate_port(name: str, port: str) -> bool:
     return True
 
 widgets = None
-
-# Temporarily disable the GPS map to troubleshoot memory usage
-MAP_ENABLED = False
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -270,6 +268,26 @@ class MainWindow(QMainWindow):
             if label is not None:
                 label.setStyleSheet(self._settings_title_style)
 
+        # Load configuration before building settings-dependent UI
+        self.config = load_config()
+        self.map_cfg = self.config.setdefault(
+            "map", {"center": [0, 0], "zoom": 2, "enabled": False}
+        )
+        self.map_cfg.setdefault("enabled", False)
+        self.aircraft_cfg = self.config.setdefault("aircraft", {})
+        self.aircraft_cfg.setdefault("battery_cells", "3s")
+        self._battery_full_voltage = 0.0
+        self._update_battery_full_voltage()
+
+        # Prepare the offline map view based on the stored preference
+        self.map_view = self.ui.mapframe
+        self.map_server = None
+        self._map_tile_warning_shown = False
+        self.map_enabled = bool(self.map_cfg.get("enabled", False))
+        if self.map_enabled:
+            self._initialize_map_view()
+        self._update_map_visibility()
+
         self._setup_command_sidebar()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
@@ -329,43 +347,6 @@ class MainWindow(QMainWindow):
         # Rename side tab buttons
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
-
-        # Load configuration early so map defaults are available
-        self.config = load_config()
-        self.map_cfg = self.config.setdefault("map", {"center": [0, 0], "zoom": 2})
-        self.aircraft_cfg = self.config.setdefault("aircraft", {})
-        self.aircraft_cfg.setdefault("battery_cells", "3s")
-        self._battery_full_voltage = 0.0
-        self._update_battery_full_voltage()
-
-        # Optionally start the local map server and load the map if enabled
-        self.httpd = None
-        if MAP_ENABLED:
-            self.map_view = self.ui.mapframe
-            map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
-            if not os.path.exists(map_file):
-                QMessageBox.warning(
-                    self,
-                    "Missing map tiles",
-                    "Offline map tiles 'map1.pmtiles' not found in the map directory."
-                    " The GPS map will remain blank.",
-                )
-            else:
-                self.httpd = start_static_server()
-                port = self.httpd.server_address[1]
-                lat, lon = self.map_cfg.get("center", [0, 0])
-                zoom = self.map_cfg.get("zoom", 2)
-                map_url = QUrl(
-                    f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
-                )
-                self.map_view.setUrl(map_url)
-                # Disable WebEngine HTTP caching to limit memory usage from map tiles
-                profile = self.map_view.page().profile()
-                profile.setHttpCacheType(QWebEngineProfile.NoCache)
-                profile.clearHttpCache()
-        else:
-            # Hide the map widget when the map feature is disabled
-            self.ui.mapframe.hide()
 
         # Add Data tab and associated graphs
         self.data_page = DataPage(self)
@@ -716,6 +697,62 @@ class MainWindow(QMainWindow):
                 self._clear_layout(child_layout)
 
 
+    def _initialize_map_view(self) -> None:
+        """Ensure the offline map server is running and the view is loaded."""
+
+        if self.map_view is None:
+            return
+
+        map_file = os.path.join(os.path.dirname(__file__), "map", "map1.pmtiles")
+        if not os.path.exists(map_file):
+            if not getattr(self, "_map_tile_warning_shown", False):
+                QMessageBox.warning(
+                    self,
+                    "Missing map tiles",
+                    "Offline map tiles 'map1.pmtiles' not found in the map directory."
+                    " The GPS map will remain blank.",
+                )
+                self._map_tile_warning_shown = True
+            return
+
+        if self.map_server is None:
+            self.map_server = start_static_server()
+
+        port = self.map_server.server_address[1]
+        lat, lon = self.map_cfg.get("center", [0, 0])
+        zoom = self.map_cfg.get("zoom", 2)
+        map_url = QUrl(
+            f"http://127.0.0.1:{port}/map/index.html?lat={lat}&lon={lon}&zoom={zoom}"
+        )
+        self.map_view.setUrl(map_url)
+
+        profile = self.map_view.page().profile()
+        profile.setHttpCacheType(QWebEngineProfile.NoCache)
+        profile.clearHttpCache()
+
+
+    def _update_map_visibility(self) -> None:
+        """Show or hide the map widget according to the preference."""
+
+        if self.map_view is None:
+            return
+
+        self.map_view.setVisible(self.map_enabled)
+
+
+    def on_map_toggled(self, checked: bool) -> None:
+        """Persist and apply the GPS map visibility preference."""
+
+        self.map_enabled = checked
+        self.map_cfg["enabled"] = checked
+
+        if checked:
+            self._initialize_map_view()
+
+        self._update_map_visibility()
+        save_config(self.config)
+
+
     def _setup_command_sidebar(self) -> None:
         """Lay out the command tab's right column with stacked sections."""
 
@@ -973,6 +1010,28 @@ class MainWindow(QMainWindow):
 
         self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
         self._update_sortie_ui_state()
+
+        map_container = QWidget(settings_container)
+        map_container.setObjectName("mapSettingsContainer")
+
+        map_layout = QVBoxLayout(map_container)
+        map_layout.setContentsMargins(0, 12, 0, 0)
+        map_layout.setSpacing(8)
+
+        map_title = QLabel("Map", map_container)
+        map_title.setObjectName("mapSettingsTitle")
+        map_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        map_title.setStyleSheet(self._settings_title_style)
+        map_layout.addWidget(map_title)
+
+        self.ui.mapVisibilityCheckbox = QCheckBox("Enable GPS map", map_container)
+        self.ui.mapVisibilityCheckbox.setObjectName("mapVisibilityCheckbox")
+        self.ui.mapVisibilityCheckbox.setCursor(Qt.PointingHandCursor)
+        self.ui.mapVisibilityCheckbox.setChecked(self.map_enabled)
+        self.ui.mapVisibilityCheckbox.toggled.connect(self.on_map_toggled)
+        map_layout.addWidget(self.ui.mapVisibilityCheckbox, 0, Qt.AlignLeft)
+
+        settings_layout.addWidget(map_container, 0, Qt.AlignTop)
 
     def _update_sortie_ui_state(self) -> None:
         """Refresh the sortie button appearance and availability."""
@@ -1702,7 +1761,7 @@ class MainWindow(QMainWindow):
             self.telemetry_state["ground_course"] = course
             self.telemetry_state["satellites"] = sats
             self.data_page.add_flight_metrics(alt, speed)
-            if MAP_ENABLED and hasattr(self, "map_view"):
+            if self.map_enabled and getattr(self, "map_view", None):
                 self.map_view.page().runJavaScript(
                     f"updateMarker({lat}, {lon});"
                 )
@@ -2397,9 +2456,9 @@ class MainWindow(QMainWindow):
         if self.joystick:
             self.joystick.close()
             self.joystick = None
-        if getattr(self, "httpd", None):
-            self.httpd.shutdown()
-            self.httpd = None
+        if getattr(self, "map_server", None):
+            self.map_server.shutdown()
+            self.map_server = None
 
     def closeEvent(self, event):
         """
