@@ -1142,6 +1142,15 @@ class MainWindow(QMainWindow):
     def handle_worker_error(self, message: str):
         """Handle errors emitted from worker threads."""
         logging.error("Worker error: %s", message)
+
+        if "Serial connection error" in message and self.joystick:
+            try:
+                self.joystick.close()
+            except Exception:  # noqa: BLE001 - best effort cleanup
+                pass
+            self.joystick = None
+            self.update_connection_status(self.control_status, False)
+            self.play_sound("flightcontrolsystemsoffline")
         # Suppress repetitive pop-ups for camera availability checks; the
         # VideoFeed class already overlays these messages on the feed. Showing
         # a QMessageBox for every check forces the user to constantly dismiss
