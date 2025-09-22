@@ -2615,6 +2615,7 @@ class MainWindow(QMainWindow):
         map_widget.setClearColor(QColor(32, 32, 32))
         context = map_widget.rootContext()
         context.setContextProperty("mapTileDirectory", os.path.abspath(self._map_tiles_directory))
+        context.setContextProperty("mapHasOfflineTiles", self._map_tiles_available)
         context.setContextProperty("mapInitialCenter", self.map_cfg.get("center", self._map_initial_center))
         context.setContextProperty("mapInitialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
         context.setContextProperty("mapMinimumZoom", self._map_min_zoom)
@@ -2644,6 +2645,7 @@ class MainWindow(QMainWindow):
         if root is None:
             return
         self._gps_map_root = root
+        root.setProperty("hasOfflineTiles", self._map_tiles_available)
         root.setProperty("tileDirectory", os.path.abspath(self._map_tiles_directory))
         root.setProperty("minimumZoomLevel", self._map_min_zoom)
         root.setProperty("maximumZoomLevel", self._map_max_zoom)
