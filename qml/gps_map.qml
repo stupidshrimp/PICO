@@ -74,7 +74,7 @@ Item {
         }
         PluginParameter {
             name: "osm.mapping.providersrepository.disabled"
-            value: true
+            value: root.hasOfflineTiles
         }
     }
 
