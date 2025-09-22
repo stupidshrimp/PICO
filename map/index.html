@@ -23,7 +23,7 @@
     const map = L.map('map', { zoomControl: true, keepBuffer: 1 })
                  .setView(defaultCenter, defaultZoom);
 
-    const tiles = L.tileLayer('chicago_xyz/{z}/{x}/{y}.jpg', {
+    const tiles = L.tileLayer('chicago_xyz/{z}/{x}/{y}.png', {
       minZoom: 0,
       maxZoom: maxAvailableZoom,
       attribution: ''
