@@ -16,7 +16,7 @@ Item {
     property real initialZoom: 8
     property int minimumZoomLevel: 0
     property int maximumZoomLevel: 15
-    property string tileDirectory: ""
+    property string tileDirectory: mapTileDirectory
 
     function clampZoom(value) {
         if (maximumZoomLevel < minimumZoomLevel) {
