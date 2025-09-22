@@ -5,7 +5,7 @@ import csv
 import logging
 from collections import deque
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 import re
 
 # When running on Windows, the combination of Qt's hardware accelerated scene
@@ -72,8 +72,11 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QEasingCurve,
     QParallelAnimationGroup,
+    Signal,
+    QObject,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import shiboken6
@@ -126,6 +129,55 @@ def validate_port(name: str, port: str) -> bool:
     return True
 
 widgets = None
+
+
+class MapBridge(QObject):
+    """Bridge used to send map updates to the embedded web page."""
+
+    gpsUpdated = Signal(float, float, bool)
+    initialViewSet = Signal(float, float, float)
+    maxZoomChanged = Signal(float)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._follow_enabled = True
+        self._last_fix: Optional[Tuple[float, float, bool]] = None
+        self._last_view: Optional[Tuple[float, float, float]] = None
+        self._last_max_zoom: Optional[float] = None
+
+    @Slot(float, float, bool)
+    def updateGPS(self, lat: float, lon: float, follow: bool) -> None:
+        """Forward the latest GPS position to any connected clients."""
+
+        self._follow_enabled = bool(follow)
+        lat_f = float(lat)
+        lon_f = float(lon)
+        self._last_fix = (lat_f, lon_f, self._follow_enabled)
+        self.gpsUpdated.emit(lat_f, lon_f, self._follow_enabled)
+
+    @Slot(float, float, float)
+    def setInitialView(self, lat: float, lon: float, zoom: float) -> None:
+        lat_f = float(lat)
+        lon_f = float(lon)
+        zoom_f = float(zoom)
+        self._last_view = (lat_f, lon_f, zoom_f)
+        self.initialViewSet.emit(lat_f, lon_f, zoom_f)
+
+    @Slot(float)
+    def setMaxZoom(self, zoom: float) -> None:
+        zoom_f = float(zoom)
+        self._last_max_zoom = zoom_f
+        self.maxZoomChanged.emit(zoom_f)
+
+    @Slot()
+    def requestState(self) -> None:
+        if self._last_max_zoom is not None:
+            self.maxZoomChanged.emit(self._last_max_zoom)
+        if self._last_view is not None:
+            self.initialViewSet.emit(*self._last_view)
+        if self._last_fix is not None:
+            self.gpsUpdated.emit(*self._last_fix)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -2349,6 +2401,9 @@ class MainWindow(QMainWindow):
         self._gps_map_placeholder_label = None
         self._gps_map_container_layout = None
         self._gps_map_ready = False
+        self._map_bridge = MapBridge(self)
+        self._map_channel = None
+        self._map_channel_page = None
         self._map_html_url = (
             QUrl.fromLocalFile(self._map_html_path)
             if self._map_html_available
@@ -2425,6 +2480,27 @@ class MainWindow(QMainWindow):
             return []
         return sorted(zoom_levels)
 
+    def _ensure_map_channel(self, page) -> None:
+        if page is None:
+            return
+        if self._map_channel_page is page and self._map_channel is not None:
+            return
+
+        channel = QWebChannel(page)
+        channel.registerObject("mapBridge", self._map_bridge)
+        page.setWebChannel(channel)
+        self._map_channel = channel
+        self._map_channel_page = page
+
+    def _teardown_map_channel(self) -> None:
+        if self._map_channel_page is not None:
+            try:
+                self._map_channel_page.setWebChannel(None)
+            except RuntimeError:
+                pass
+        self._map_channel = None
+        self._map_channel_page = None
+
     def _setup_gps_map(self):
         container = self.ui.mapframe
         existing_layout = container.layout()
@@ -2444,6 +2520,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(placeholder)
         self._gps_map_placeholder_label = placeholder
 
+        # Always release any previous web channel before configuring a new map view.
+        self._gps_map_ready = False
+        self._teardown_map_channel()
+
         if not self._map_tiles_available:
             message = self._map_tiles_status_message
             if not message:
@@ -2451,18 +2531,21 @@ class MainWindow(QMainWindow):
                 message = f"Offline map tiles not found at\n{tiles_path}"
             placeholder.setText(message)
             self._gps_map_widget = None
+            self._teardown_map_channel()
             self._update_map_enabled_state()
             return
 
         if not self._map_html_available or self._map_html_url is None:
             placeholder.setText(self._map_tiles_status_message or "Map page not available.")
             self._gps_map_widget = None
+            self._teardown_map_channel()
             self._update_map_enabled_state()
             return
 
         map_widget = QWebEngineView(container)
         map_widget.setContextMenuPolicy(Qt.NoContextMenu)
         layout.addWidget(map_widget)
+        self._ensure_map_channel(map_widget.page())
         map_widget.loadFinished.connect(self._on_gps_map_load_finished)
         map_widget.load(self._map_html_url)
         self._gps_map_widget = map_widget
@@ -2472,6 +2555,7 @@ class MainWindow(QMainWindow):
     def _on_gps_map_load_finished(self, ok: bool) -> None:
         if not ok:
             self._gps_map_ready = False
+            self._teardown_map_channel()
             if self._gps_map_placeholder_label is not None:
                 self._gps_map_placeholder_label.setText(
                     "Failed to load GPS map. Check that index.html and Leaflet assets are present."
@@ -2481,9 +2565,9 @@ class MainWindow(QMainWindow):
 
         self._gps_map_ready = True
         if self._gps_map_widget is not None:
-            self._gps_map_widget.page().runJavaScript(
-                f"window.setMaxZoom({int(self._map_max_zoom)});"
-            )
+            page = self._gps_map_widget.page()
+            self._ensure_map_channel(page)
+            self._map_bridge.setMaxZoom(float(self._map_max_zoom))
         self._apply_initial_map_view()
         self._sync_follow_state_to_map()
         if self._latest_gps_fix is not None:
@@ -2499,8 +2583,7 @@ class MainWindow(QMainWindow):
         zoom = float(self.map_cfg.get("zoom", self._map_initial_zoom))
         lat = float(center[0]) if len(center) >= 1 else self._map_initial_center[0]
         lon = float(center[1]) if len(center) >= 2 else self._map_initial_center[1]
-        script = f"window.setInitialView({lat:.8f}, {lon:.8f}, {zoom});"
-        self._gps_map_widget.page().runJavaScript(script)
+        self._map_bridge.setInitialView(float(lat), float(lon), float(zoom))
 
     def _sync_follow_state_to_map(self) -> None:
         if not self._gps_map_ready:
@@ -2512,9 +2595,7 @@ class MainWindow(QMainWindow):
     def _invoke_update_gps(self, lat: float, lon: float) -> None:
         if self._gps_map_widget is None or not self._gps_map_ready:
             return
-        follow = "true" if self._gps_follow_enabled else "false"
-        script = f"window.updateGPS({lat:.8f}, {lon:.8f}, {follow});"
-        self._gps_map_widget.page().runJavaScript(script)
+        self._map_bridge.updateGPS(float(lat), float(lon), bool(self._gps_follow_enabled))
 
     def _push_gps_to_map(self):
         if not self.map_cfg.get("enabled", True):
