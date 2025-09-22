@@ -27,3 +27,5 @@ dist/
 Thumbs.db
 *.mbtiles
 sortie data/
+
+**/map1_tiles/
