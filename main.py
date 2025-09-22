@@ -75,7 +75,7 @@ from PySide6.QtCore import (
     Signal,
     QObject,
 )
-from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
@@ -2494,6 +2494,14 @@ class MainWindow(QMainWindow):
         self._map_channel = channel
         self._map_channel_page = page
 
+    def _release_map_profile(self) -> None:
+        if self._map_profile is not None:
+            try:
+                self._map_profile.deleteLater()
+            except RuntimeError:
+                pass
+            self._map_profile = None
+
     def _teardown_map_channel(self) -> None:
         if self._map_channel_page is not None:
             try:
@@ -2556,6 +2564,7 @@ class MainWindow(QMainWindow):
             placeholder.setText(message)
             self._gps_map_widget = None
             self._teardown_map_channel()
+            self._release_map_profile()
             self._update_map_enabled_state()
             return
 
@@ -2563,18 +2572,29 @@ class MainWindow(QMainWindow):
             placeholder.setText(self._map_tiles_status_message or "Map page not available.")
             self._gps_map_widget = None
             self._teardown_map_channel()
+            self._release_map_profile()
             self._update_map_enabled_state()
             return
 
         map_widget = QWebEngineView(container)
         map_widget.setContextMenuPolicy(Qt.NoContextMenu)
+        profile = self._map_profile
+        if profile is None:
+            profile = QWebEngineProfile(self)
+            profile.setHttpCacheType(QWebEngineProfile.NoCache)
+            profile.setPersistentCookiesPolicy(QWebEngineProfile.NoPersistentCookies)
+            profile.setSpellCheckEnabled(False)
+            profile.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+            profile.settings().setAttribute(QWebEngineSettings.LocalStorageEnabled, False)
+            self._map_profile = profile
+
+        page = QWebEnginePage(profile, map_widget)
+        map_widget.setPage(page)
+
         settings = map_widget.settings()
         settings.setAttribute(QWebEngineSettings.WebGLEnabled, False)
         settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, False)
-        profile = map_widget.page().profile()
-        self._map_profile = profile
-        profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
-        profile.setHttpCacheMaximumSize(0)
+        settings.setAttribute(QWebEngineSettings.PluginsEnabled, False)
         layout.addWidget(map_widget)
         self._ensure_map_channel(map_widget.page())
         map_widget.loadFinished.connect(self._on_gps_map_load_finished)
@@ -2736,6 +2756,7 @@ class MainWindow(QMainWindow):
         self.stop_sortie_recording()
         self.stop_debug_monitoring()
         self._clear_map_http_cache()
+        self._release_map_profile()
         if self.joystick:
             self.joystick.close()
             self.joystick = None
