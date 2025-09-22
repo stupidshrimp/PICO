@@ -641,7 +641,6 @@ class MainWindow(QMainWindow):
         column_layout = frame.layout()
         if column_layout is None:
             column_layout = QVBoxLayout(frame)
-        telemetry_section = getattr(self.ui, "telemetryStatsSection", None)
         command_spacer = getattr(self.ui, "commandVideoSpacer", None)
 
         self._clear_layout(column_layout)
@@ -777,49 +776,6 @@ class MainWindow(QMainWindow):
 
         column_layout.addWidget(autopilot_container)
 
-        if telemetry_section is not None:
-            telemetry_section.setParent(frame)
-            telemetry_section.setStyleSheet(panel_style)
-            telemetry_section.setSizePolicy(
-                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            )
-
-            telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
-            if telemetry_layout is not None:
-                telemetry_layout.setContentsMargins(12, 12, 12, 12)
-                telemetry_layout.setSpacing(10)
-
-            stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
-            if stats_row_layout is not None:
-                stats_row_layout.setContentsMargins(0, 0, 0, 0)
-                stats_row_layout.setSpacing(16)
-                stats_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                for index in range(stats_row_layout.count()):
-                    stats_row_layout.setStretch(index, 1)
-
-            telemetry_title = getattr(self.ui, "telemetryStatsTitle", None)
-            if telemetry_title is not None:
-                telemetry_title.setParent(telemetry_section)
-                telemetry_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-            for label in (
-                getattr(self.ui, "attitudeRateLabel", None),
-                getattr(self.ui, "gpsRateLabel", None),
-                getattr(self.ui, "totalRateLabel", None),
-            ):
-                if label is None:
-                    continue
-                label.setParent(telemetry_section)
-                label.setWordWrap(True)
-                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                label.setSizePolicy(
-                    QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                )
-
-            telemetry_section.adjustSize()
-            telemetry_section.setMinimumHeight(telemetry_section.sizeHint().height())
-            column_layout.addWidget(telemetry_section)
-
         if command_spacer is not None:
             command_spacer.setParent(frame)
             command_spacer.setMinimumHeight(0)
@@ -891,48 +847,6 @@ class MainWindow(QMainWindow):
 
         self.ui.sortieRecordButton.clicked.connect(self.toggle_sortie_recording)
         self._update_sortie_ui_state()
-
-        if telemetry_section is not None:
-            telemetry_section.setParent(frame)
-            telemetry_section.setStyleSheet(panel_style)
-            telemetry_section.setSizePolicy(
-                QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            )
-
-            telemetry_layout = getattr(self.ui, "telemetryStatsSectionLayout", None)
-            if telemetry_layout is not None:
-                telemetry_layout.setContentsMargins(12, 12, 12, 12)
-                telemetry_layout.setSpacing(10)
-
-            stats_row_layout = getattr(self.ui, "telemetryStatsRowLayout", None)
-            if stats_row_layout is not None:
-                stats_row_layout.setContentsMargins(0, 0, 0, 0)
-                stats_row_layout.setSpacing(16)
-                stats_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                for index in range(stats_row_layout.count()):
-                    stats_row_layout.setStretch(index, 1)
-
-            telemetry_title = getattr(self.ui, "telemetryStatsTitle", None)
-            if telemetry_title is not None:
-                telemetry_title.setParent(telemetry_section)
-                telemetry_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-            for label in (
-                getattr(self.ui, "attitudeRateLabel", None),
-                getattr(self.ui, "totalRateLabel", None),
-            ):
-                if label is None:
-                    continue
-                label.setParent(telemetry_section)
-                label.setWordWrap(True)
-                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                label.setSizePolicy(
-                    QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                )
-
-            telemetry_section.adjustSize()
-            telemetry_section.setMinimumHeight(telemetry_section.sizeHint().height())
-            column_layout.addWidget(telemetry_section)
 
         if command_spacer is not None:
             command_spacer.setParent(frame)
