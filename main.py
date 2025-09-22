@@ -2367,6 +2367,8 @@ class MainWindow(QMainWindow):
                 "No zoom level folders were found in the offline map tiles directory.",
             )
 
+        tile_extensions = (".png", ".jpg", ".jpeg")
+        extensions_display = ", ".join(ext.lstrip(".").upper() for ext in tile_extensions)
         sample_tile: Optional[str] = None
         for zoom in sorted(zoom_levels):
             zoom_dir = os.path.join(directory, str(zoom))
@@ -2383,7 +2385,7 @@ class MainWindow(QMainWindow):
                     tiles = [
                         entry
                         for entry in os.listdir(x_dir)
-                        if entry.lower().endswith(".jpg")
+                        if entry.lower().endswith(tile_extensions)
                     ]
                 except OSError as exc:
                     return (
@@ -2399,7 +2401,7 @@ class MainWindow(QMainWindow):
         if not sample_tile:
             return (
                 False,
-                "No JPG tiles were found in the offline map tiles directory.",
+                f"No {extensions_display} tiles were found in the offline map tiles directory.",
             )
 
         try:
