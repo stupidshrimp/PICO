@@ -17,6 +17,7 @@ Item {
     property int minimumZoomLevel: 0
     property int maximumZoomLevel: 15
     property string tileDirectory: mapTileDirectory
+    property string tileDirectoryUrl: (typeof mapTileDirectoryUrl !== "undefined") ? mapTileDirectoryUrl : ""
     property bool hasOfflineTiles: (typeof mapHasOfflineTiles !== "undefined") ? mapHasOfflineTiles : false
     property string offlineStatus: (typeof mapOfflineStatus !== "undefined") ? mapOfflineStatus : ""
     property var mapObject: null
@@ -79,16 +80,24 @@ Item {
         id: offlinePlugin
         name: "osm"
         PluginParameter {
-            name: "osm.mapping.offline.directory"
-            value: root.hasOfflineTiles ? root.tileDirectory : ""
+            name: "osm.mapping.providersrepository.disabled"
+            value: true
+        }
+        PluginParameter {
+            name: "osm.mapping.providersrepository.enabled"
+            value: false
+        }
+        PluginParameter {
+            name: "osm.mapping.custom.host"
+            value: root.hasOfflineTiles ? root.tileDirectoryUrl : ""
         }
         PluginParameter {
             name: "osm.mapping.highdpi_tiles"
             value: true
         }
         PluginParameter {
-            name: "osm.mapping.providersrepository.enabled"
-            value: false
+            name: "osm.mapping.offline.directory"
+            value: ""
         }
     }
 
@@ -103,7 +112,6 @@ Item {
                 anchors.fill: parent
                 plugin: offlinePlugin
                 copyrightsVisible: false
-                activeMapType: supportedMapTypes.length > 0 ? supportedMapTypes[0] : null
 
                 MapQuickItem {
                     id: gpsMarker
@@ -146,6 +154,16 @@ Item {
 
                 Component.onCompleted: {
                     root.applyInitialView();
+                    for (var i = 0; i < supportedMapTypes.length; ++i) {
+                        var type = supportedMapTypes[i];
+                        if (type.name && type.name.toLowerCase().indexOf("custom") !== -1) {
+                            activeMapType = type;
+                            break;
+                        }
+                    }
+                    if (!activeMapType && supportedMapTypes.length > 0) {
+                        activeMapType = supportedMapTypes[0];
+                    }
                 }
             }
         }

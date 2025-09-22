@@ -5,6 +5,7 @@ import csv
 import logging
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 # When running on Windows, the combination of Qt's hardware accelerated scene
@@ -2285,11 +2286,13 @@ class MainWindow(QMainWindow):
     def _initialize_map_configuration(self):
         self.map_cfg.setdefault("enabled", True)
         self.map_cfg.setdefault("follow", True)
-        self.map_cfg.setdefault("center", [0.0, 0.0])
-        self.map_cfg.setdefault("zoom", 8)
+        self.map_cfg.setdefault("center", [41.818, -87.7855])
+        self.map_cfg.setdefault("zoom", 13)
 
         self._app_root = os.path.dirname(os.path.abspath(__file__))
-        self._map_tiles_directory = os.path.join(self._app_root, "map", "chicago_sat_tiles")
+        self._map_tiles_directory = os.path.join(
+            self._app_root, "map", "chicago_sat_tiles_png"
+        )
         (
             self._map_tiles_available,
             self._map_tiles_status_message,
@@ -2305,7 +2308,7 @@ class MainWindow(QMainWindow):
             self._map_max_zoom = max(zoom_levels)
         else:
             self._map_min_zoom = 0
-            self._map_max_zoom = 15
+            self._map_max_zoom = 13
 
         metadata = self._load_map_metadata(self._map_tiles_directory)
         self._map_metadata = metadata
@@ -2506,7 +2509,11 @@ class MainWindow(QMainWindow):
         map_widget.setResizeMode(QQuickWidget.SizeRootObjectToView)
         map_widget.setClearColor(QColor(32, 32, 32))
         context = map_widget.rootContext()
-        context.setContextProperty("mapTileDirectory", os.path.abspath(self._map_tiles_directory))
+        tile_directory = os.path.abspath(self._map_tiles_directory)
+        context.setContextProperty("mapTileDirectory", tile_directory)
+        context.setContextProperty(
+            "mapTileDirectoryUrl", self._path_to_file_url(tile_directory)
+        )
         context.setContextProperty("mapHasOfflineTiles", self._map_tiles_available)
         context.setContextProperty(
             "mapOfflineStatus",
@@ -2546,7 +2553,9 @@ class MainWindow(QMainWindow):
             return
         self._gps_map_root = root
         root.setProperty("hasOfflineTiles", self._map_tiles_available)
-        root.setProperty("tileDirectory", os.path.abspath(self._map_tiles_directory))
+        tile_directory = os.path.abspath(self._map_tiles_directory)
+        root.setProperty("tileDirectory", tile_directory)
+        root.setProperty("tileDirectoryUrl", self._path_to_file_url(tile_directory))
         root.setProperty("minimumZoomLevel", self._map_min_zoom)
         root.setProperty("maximumZoomLevel", self._map_max_zoom)
         root.setProperty("initialCenter", self.map_cfg.get("center", self._map_initial_center))
@@ -2573,6 +2582,15 @@ class MainWindow(QMainWindow):
         self._gps_map_root.setProperty("initialCenter", center)
         self._gps_map_root.setProperty("initialZoom", zoom)
         QMetaObject.invokeMethod(self._gps_map_root, "applyInitialView")
+
+    @staticmethod
+    def _path_to_file_url(path: str) -> str:
+        if not path:
+            return ""
+        try:
+            return Path(path).resolve().as_uri()
+        except ValueError:
+            return QUrl.fromLocalFile(path).toString()
 
     def _push_gps_to_map(self):
         if not self.map_cfg.get("enabled", True):
