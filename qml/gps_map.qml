@@ -77,9 +77,6 @@ Item {
         id: map
         anchors.fill: parent
         plugin: offlinePlugin
-        gesture: MapGestureArea {
-            enabled: true
-        }
         copyrightsVisible: false
         activeMapType: supportedMapTypes.length > 0 ? supportedMapTypes[0] : null
 
