@@ -17,6 +17,7 @@ Item {
     property int minimumZoomLevel: 0
     property int maximumZoomLevel: 15
     property string tileDirectory: mapTileDirectory
+    property bool hasOfflineTiles: (typeof mapHasOfflineTiles !== "undefined") ? mapHasOfflineTiles : true
 
     function clampZoom(value) {
         if (maximumZoomLevel < minimumZoomLevel) {
@@ -65,10 +66,14 @@ Item {
         name: "osm"
         PluginParameter {
             name: "osm.mapping.offline.directory"
-            value: root.tileDirectory
+            value: root.hasOfflineTiles ? root.tileDirectory : ""
         }
         PluginParameter {
             name: "osm.mapping.highdpi_tiles"
+            value: true
+        }
+        PluginParameter {
+            name: "osm.mapping.providersrepository.disabled"
             value: true
         }
     }
