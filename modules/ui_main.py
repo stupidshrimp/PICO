@@ -15,14 +15,13 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplication, QCheckBox,
     QComboBox, QCommandLinkButton, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QPlainTextEdit, QPushButton, QRadioButton,
     QScrollArea, QScrollBar, QSizePolicy, QSlider,
-    QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout, QWidget)
+    QSpacerItem, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QTextEdit, QVBoxLayout, QWidget)
 import resources_rc
 
 class Ui_MainWindow(object):
@@ -1435,18 +1434,110 @@ class Ui_MainWindow(object):
         self.altitudeosd = QWidget(self.frame_2)
         self.altitudeosd.setObjectName(u"altitudeosd")
         self.altitudeosd.setGeometry(QRect(855, 120, 75, 300))
+        self.controlSectionFrame = QFrame(self.frame)
+        self.controlSectionFrame.setObjectName(u"controlSectionFrame")
+        self.controlSectionFrame.setGeometry(QRect(0, 720, 960, 140))
+        self.controlSectionFrame.setFrameShape(QFrame.Shape.StyledPanel)
+        self.controlSectionFrame.setFrameShadow(QFrame.Shadow.Raised)
+        self.controlSectionLayout = QVBoxLayout(self.controlSectionFrame)
+        self.controlSectionLayout.setSpacing(8)
+        self.controlSectionLayout.setObjectName(u"controlSectionLayout")
+        self.controlSectionLayout.setContentsMargins(12, 12, 12, 12)
+        self.controlInputsLayout = QHBoxLayout()
+        self.controlInputsLayout.setSpacing(16)
+        self.controlInputsLayout.setObjectName(u"controlInputsLayout")
+        self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
+        self.controlInputsColumn = QVBoxLayout()
+        self.controlInputsColumn.setSpacing(8)
+        self.controlInputsColumn.setObjectName(u"controlInputsColumn")
+        self.controlInputsColumn.setContentsMargins(0, 0, 0, 0)
+        self.InputsLabel = QLabel(self.controlSectionFrame)
+        self.InputsLabel.setObjectName(u"InputsLabel")
+        font5 = QFont()
+        font5.setBold(True)
+        font5.setUnderline(True)
+        self.InputsLabel.setFont(font5)
+        self.InputsLabel.setAlignment(Qt.AlignCenter)
+
+        self.controlInputsColumn.addWidget(self.InputsLabel)
+
+        self.controlInputsRow = QHBoxLayout()
+        self.controlInputsRow.setSpacing(16)
+        self.controlInputsRow.setObjectName(u"controlInputsRow")
+        self.controlInputsRow.setContentsMargins(0, 0, 0, 0)
+        self.pitchInput = QWidget(self.controlSectionFrame)
+        self.pitchInput.setObjectName(u"pitchInput")
+        self.pitchInput.setMinimumSize(QSize(15, 60))
+        self.pitchInput.setMaximumSize(QSize(15, 60))
+
+        self.controlInputsRow.addWidget(self.pitchInput)
+
+        self.rollInput = QWidget(self.controlSectionFrame)
+        self.rollInput.setObjectName(u"rollInput")
+        self.rollInput.setMinimumSize(QSize(60, 15))
+        self.rollInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.rollInput)
+
+        self.yawInput = QWidget(self.controlSectionFrame)
+        self.yawInput.setObjectName(u"yawInput")
+        self.yawInput.setMinimumSize(QSize(60, 15))
+        self.yawInput.setMaximumSize(QSize(60, 15))
+
+        self.controlInputsRow.addWidget(self.yawInput)
+
+        self.throttleInput = QWidget(self.controlSectionFrame)
+        self.throttleInput.setObjectName(u"throttleInput")
+        self.throttleInput.setMinimumSize(QSize(15, 60))
+        self.throttleInput.setMaximumSize(QSize(15, 60))
+
+        self.controlInputsRow.addWidget(self.throttleInput)
+
+
+        self.controlInputsColumn.addLayout(self.controlInputsRow)
+
+
+        self.controlInputsLayout.addLayout(self.controlInputsColumn)
+
+        self.controlModeLayout = QVBoxLayout()
+        self.controlModeLayout.setSpacing(4)
+        self.controlModeLayout.setObjectName(u"controlModeLayout")
+        self.controlModeLayout.setContentsMargins(0, 8, 0, 0)
+        self.controlModeTitle = QLabel(self.controlSectionFrame)
+        self.controlModeTitle.setObjectName(u"controlModeTitle")
+        self.controlModeTitle.setFont(font5)
+        self.controlModeTitle.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.controlModeLayout.addWidget(self.controlModeTitle)
+
+        self.controlModeLabel = QLabel(self.controlSectionFrame)
+        self.controlModeLabel.setObjectName(u"controlModeLabel")
+        self.controlModeLabel.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.controlModeLayout.addWidget(self.controlModeLabel)
+
+
+        self.controlInputsLayout.addLayout(self.controlModeLayout)
+
+        self.controlInputsRightSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.controlInputsLayout.addItem(self.controlInputsRightSpacer)
+
+
+        self.controlSectionLayout.addLayout(self.controlInputsLayout)
+
         self.frame_3 = QFrame(self.frame)
         self.frame_3.setObjectName(u"frame_3")
-        self.frame_3.setGeometry(QRect(978, -1, 882, 381))
+        self.frame_3.setGeometry(QRect(978, -1, 600, 381))
         self.frame_3.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_3.setFrameShadow(QFrame.Shadow.Raised)
-        self.mapframe = QWebEngineView(self.frame_3)
+        self.mapframe = QWidget(self.frame_3)
         self.mapframe.setObjectName(u"mapframe")
-        self.mapframe.setGeometry(QRect(-1, -1, 882, 381))
+        self.mapframe.setGeometry(QRect(-1, -1, 600, 381))
         self.mapframe.setStyleSheet(u"background-color: black;")
         self.frame_4 = QFrame(self.frame)
         self.frame_4.setObjectName(u"frame_4")
-        self.frame_4.setGeometry(QRect(978, 381, 882, 520))
+        self.frame_4.setGeometry(QRect(978, 381, 600, 520))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
         self.frame4Layout = QVBoxLayout(self.frame_4)
@@ -1455,9 +1546,6 @@ class Ui_MainWindow(object):
         self.frame4Layout.setContentsMargins(12, 12, 12, 12)
         self.signalHealthTitle = QLabel(self.frame_4)
         self.signalHealthTitle.setObjectName(u"signalHealthTitle")
-        font5 = QFont()
-        font5.setBold(True)
-        font5.setUnderline(True)
         self.signalHealthTitle.setFont(font5)
         self.signalHealthTitle.setAlignment(Qt.AlignCenter)
 
@@ -1507,98 +1595,8 @@ class Ui_MainWindow(object):
 
         self.frame4Layout.addLayout(self.signalMetricsGrid)
 
+
         self.verticalLayout_20.addWidget(self.frame)
-
-        self.controlSectionFrame = QFrame(self.new_page)
-        self.controlSectionFrame.setObjectName(u"controlSectionFrame")
-        self.controlSectionFrame.setMinimumSize(QSize(0, 140))
-        self.controlSectionFrame.setMaximumSize(QSize(16777215, 140))
-        self.controlSectionFrame.setFrameShape(QFrame.Shape.StyledPanel)
-        self.controlSectionFrame.setFrameShadow(QFrame.Shadow.Raised)
-        self.controlSectionLayout = QVBoxLayout(self.controlSectionFrame)
-        self.controlSectionLayout.setObjectName(u"controlSectionLayout")
-        self.controlSectionLayout.setSpacing(8)
-        self.controlSectionLayout.setContentsMargins(12, 12, 12, 12)
-        self.controlInputsLayout = QHBoxLayout()
-        self.controlInputsLayout.setObjectName(u"controlInputsLayout")
-        self.controlInputsLayout.setSpacing(16)
-        self.controlInputsLayout.setContentsMargins(0, 0, 0, 0)
-        self.controlInputsColumn = QVBoxLayout()
-        self.controlInputsColumn.setObjectName(u"controlInputsColumn")
-        self.controlInputsColumn.setSpacing(8)
-        self.controlInputsColumn.setContentsMargins(0, 0, 0, 0)
-        self.InputsLabel = QLabel(self.controlSectionFrame)
-        self.InputsLabel.setObjectName(u"InputsLabel")
-        self.InputsLabel.setFont(font5)
-        self.InputsLabel.setAlignment(Qt.AlignCenter)
-
-        self.controlInputsColumn.addWidget(self.InputsLabel)
-
-        self.controlInputsRow = QHBoxLayout()
-        self.controlInputsRow.setObjectName(u"controlInputsRow")
-        self.controlInputsRow.setSpacing(16)
-        self.controlInputsRow.setContentsMargins(0, 0, 0, 0)
-        self.pitchInput = QWidget(self.controlSectionFrame)
-        self.pitchInput.setObjectName(u"pitchInput")
-        self.pitchInput.setMinimumSize(QSize(15, 60))
-        self.pitchInput.setMaximumSize(QSize(15, 60))
-
-        self.controlInputsRow.addWidget(self.pitchInput)
-
-        self.rollInput = QWidget(self.controlSectionFrame)
-        self.rollInput.setObjectName(u"rollInput")
-        self.rollInput.setMinimumSize(QSize(60, 15))
-        self.rollInput.setMaximumSize(QSize(60, 15))
-
-        self.controlInputsRow.addWidget(self.rollInput)
-
-        self.yawInput = QWidget(self.controlSectionFrame)
-        self.yawInput.setObjectName(u"yawInput")
-        self.yawInput.setMinimumSize(QSize(60, 15))
-        self.yawInput.setMaximumSize(QSize(60, 15))
-
-        self.controlInputsRow.addWidget(self.yawInput)
-
-        self.throttleInput = QWidget(self.controlSectionFrame)
-        self.throttleInput.setObjectName(u"throttleInput")
-        self.throttleInput.setMinimumSize(QSize(15, 60))
-        self.throttleInput.setMaximumSize(QSize(15, 60))
-
-        self.controlInputsRow.addWidget(self.throttleInput)
-
-
-        self.controlInputsColumn.addLayout(self.controlInputsRow)
-
-
-        self.controlInputsLayout.addLayout(self.controlInputsColumn)
-
-        self.controlModeLayout = QVBoxLayout()
-        self.controlModeLayout.setObjectName(u"controlModeLayout")
-        self.controlModeLayout.setSpacing(4)
-        self.controlModeLayout.setContentsMargins(0, 8, 0, 0)
-        self.controlModeTitle = QLabel(self.controlSectionFrame)
-        self.controlModeTitle.setObjectName(u"controlModeTitle")
-        self.controlModeTitle.setFont(font5)
-        self.controlModeTitle.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
-
-        self.controlModeLayout.addWidget(self.controlModeTitle)
-
-        self.controlModeLabel = QLabel(self.controlSectionFrame)
-        self.controlModeLabel.setObjectName(u"controlModeLabel")
-        self.controlModeLabel.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
-
-        self.controlModeLayout.addWidget(self.controlModeLabel)
-
-
-        self.controlInputsLayout.addLayout(self.controlModeLayout)
-
-        self.controlInputsRightSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-
-        self.controlInputsLayout.addItem(self.controlInputsRightSpacer)
-
-        self.controlSectionLayout.addLayout(self.controlInputsLayout)
-
-        self.verticalLayout_20.addWidget(self.controlSectionFrame)
 
         self.stackedWidget.addWidget(self.new_page)
 
@@ -1663,6 +1661,36 @@ class Ui_MainWindow(object):
         self.chk_attitude.setChecked(True)
 
         self.verticalLayout_14.addWidget(self.chk_attitude)
+
+        self.attitudeSmoothingLabel = QLabel(self.topMenus)
+        self.attitudeSmoothingLabel.setObjectName(u"attitudeSmoothingLabel")
+
+        self.verticalLayout_14.addWidget(self.attitudeSmoothingLabel)
+
+        self.attitudeSmoothingContainer = QWidget(self.topMenus)
+        self.attitudeSmoothingContainer.setObjectName(u"attitudeSmoothingContainer")
+        self.attitudeSmoothingLayout = QHBoxLayout(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingLayout.setSpacing(6)
+        self.attitudeSmoothingLayout.setObjectName(u"attitudeSmoothingLayout")
+        self.attitudeSmoothingLayout.setContentsMargins(0, 0, 0, 0)
+        self.attitudeSmoothingSlider = QSlider(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingSlider.setObjectName(u"attitudeSmoothingSlider")
+        self.attitudeSmoothingSlider.setMinimum(1)
+        self.attitudeSmoothingSlider.setMaximum(100)
+        self.attitudeSmoothingSlider.setValue(20)
+        self.attitudeSmoothingSlider.setOrientation(Qt.Horizontal)
+
+        self.attitudeSmoothingLayout.addWidget(self.attitudeSmoothingSlider)
+
+        self.attitudeSmoothingValue = QLabel(self.attitudeSmoothingContainer)
+        self.attitudeSmoothingValue.setObjectName(u"attitudeSmoothingValue")
+        self.attitudeSmoothingValue.setMinimumSize(QSize(40, 0))
+        self.attitudeSmoothingValue.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
+
+        self.attitudeSmoothingLayout.addWidget(self.attitudeSmoothingValue)
+
+
+        self.verticalLayout_14.addWidget(self.attitudeSmoothingContainer)
 
         self.chk_compass = QCheckBox(self.topMenus)
         self.chk_compass.setObjectName(u"chk_compass")
@@ -1888,6 +1916,9 @@ class Ui_MainWindow(object):
         self.tableWidget.setSortingEnabled(__sortingEnabled)
 
         self.VideoLabel.setText("")
+        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
+        self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
+        self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
         self.signalHealthTitle.setText(QCoreApplication.translate("MainWindow", u"Signal health", None))
         self.rssiALabel.setText(QCoreApplication.translate("MainWindow", u"RSSI A: --", None))
         self.rssiBLabel.setText(QCoreApplication.translate("MainWindow", u"RSSI B: --", None))
@@ -1895,13 +1926,12 @@ class Ui_MainWindow(object):
         self.snrLabel.setText(QCoreApplication.translate("MainWindow", u"SNR: --", None))
         self.downlinkQualityLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink quality: --", None))
         self.downlinkSnrLabel.setText(QCoreApplication.translate("MainWindow", u"Downlink SNR: --", None))
-        self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
-        self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
-        self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
         self.osdLabel.setText(QCoreApplication.translate("MainWindow", u"OSD", None))
         self.chk_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Indicator", None))
         self.chk_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Indicator", None))
         self.chk_attitude.setText(QCoreApplication.translate("MainWindow", u"Attitude Indicator", None))
+        self.attitudeSmoothingLabel.setText(QCoreApplication.translate("MainWindow", u"Attitude smoothing", None))
+        self.attitudeSmoothingValue.setText(QCoreApplication.translate("MainWindow", u"20%", None))
         self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.telemetryWarningLabel.setText(QCoreApplication.translate("MainWindow", u"Telemetry Warning System", None))
         self.chk_alarm_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Alarm", None))

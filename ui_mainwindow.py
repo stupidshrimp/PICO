@@ -15,7 +15,6 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplication, QCheckBox,
     QComboBox, QCommandLinkButton, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -1524,6 +1523,7 @@ class Ui_MainWindow(object):
 
         self.controlInputsLayout.addItem(self.controlInputsRightSpacer)
 
+
         self.controlSectionLayout.addLayout(self.controlInputsLayout)
 
         self.frame_3 = QFrame(self.frame)
@@ -1531,7 +1531,7 @@ class Ui_MainWindow(object):
         self.frame_3.setGeometry(QRect(978, -1, 600, 381))
         self.frame_3.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_3.setFrameShadow(QFrame.Shadow.Raised)
-        self.mapframe = QWebEngineView(self.frame_3)
+        self.mapframe = QWidget(self.frame_3)
         self.mapframe.setObjectName(u"mapframe")
         self.mapframe.setGeometry(QRect(-1, -1, 600, 381))
         self.mapframe.setStyleSheet(u"background-color: black;")
@@ -1594,6 +1594,7 @@ class Ui_MainWindow(object):
 
 
         self.frame4Layout.addLayout(self.signalMetricsGrid)
+
 
         self.verticalLayout_20.addWidget(self.frame)
 
@@ -1684,9 +1685,10 @@ class Ui_MainWindow(object):
         self.attitudeSmoothingValue = QLabel(self.attitudeSmoothingContainer)
         self.attitudeSmoothingValue.setObjectName(u"attitudeSmoothingValue")
         self.attitudeSmoothingValue.setMinimumSize(QSize(40, 0))
-        self.attitudeSmoothingValue.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        self.attitudeSmoothingValue.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
 
         self.attitudeSmoothingLayout.addWidget(self.attitudeSmoothingValue)
+
 
         self.verticalLayout_14.addWidget(self.attitudeSmoothingContainer)
 

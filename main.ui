@@ -3072,7 +3072,7 @@ background-repeat: no-repeat;</string>
                           <property name="frameShadow">
                            <enum>QFrame::Shadow::Raised</enum>
                           </property>
-                          <widget class="QWebEngineView" name="mapframe" native="true">
+                          <widget class="QWidget" name="mapframe" native="true">
                            <property name="geometry">
                             <rect>
                              <x>-1</x>
@@ -3589,14 +3589,7 @@ background-repeat: no-repeat;</string>
    </layout>
   </widget>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>QWebEngineView</class>
-   <extends>QWidget</extends>
-   <header>PyQtWebEngine.h</header>
-   <container>1</container>
-  </customwidget>
- </customwidgets>
+
  <resources>
   <include location="resources.qrc"/>
  </resources>

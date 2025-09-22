@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import csv
 import logging
@@ -56,6 +57,9 @@ from PySide6.QtWidgets import (
     QLayout,
     QProgressBar,
     QCheckBox,
+    QStackedLayout,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 from PySide6.QtCore import (
     Qt,
@@ -68,6 +72,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
 )
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtGui import QIcon, QColor, QShortcut, QKeySequence, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import shiboken6
@@ -200,6 +205,8 @@ class MainWindow(QMainWindow):
 
         # Load configuration before building settings-dependent UI
         self.config = load_config()
+        self.map_cfg = self.config.setdefault("map", {})
+        self._initialize_map_configuration()
         self.aircraft_cfg = self.config.setdefault("aircraft", {})
         self.aircraft_cfg.setdefault("battery_cells", "3s")
         self._battery_full_voltage = 0.0
@@ -207,6 +214,7 @@ class MainWindow(QMainWindow):
 
         # Keep a placeholder for the GPS map area without loading any assets
         self.map_view = self.ui.mapframe
+        self._setup_gps_map()
 
         self._setup_command_sidebar()
         self._setup_sortie_section()
@@ -462,6 +470,10 @@ class MainWindow(QMainWindow):
         self.telemetry_yaw = None
         self.gps_lat = None
         self.gps_lon = None
+        self._latest_gps_fix = None
+        self._latest_gps_fix_seq = 0
+        self._last_pushed_gps_fix_seq = 0
+        self._gps_first_fix_sent = False
         self.current_altitude = None
         self.current_airspeed = None
         self.telemetry_state = {field: None for field in self._sortie_fields}
@@ -480,6 +492,11 @@ class MainWindow(QMainWindow):
         self.transmit_timer.timeout.connect(self.transmit_data)
         # Throttle default packet rate to reduce GUI load
         self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 15))
+
+        self._gps_map_timer = QTimer(self)
+        self._gps_map_timer.setInterval(1000)
+        self._gps_map_timer.timeout.connect(self._push_gps_to_map)
+        self._gps_map_timer.start()
 
         # --------------------------------------------------------------------
         # OSD Overlay Setup - Create and initialize the RollPitchOSD widget
@@ -1707,17 +1724,26 @@ class MainWindow(QMainWindow):
             # Order: latitude, longitude, altitude (ft), speed (mph),
             # ground course, satellites
             lat, lon, alt, speed, course, sats = values
-            self.gps_lat = lat
-            self.gps_lon = lon
+            try:
+                lat_value = float(lat)
+                lon_value = float(lon)
+            except (TypeError, ValueError):
+                lat_value = None
+                lon_value = None
+            self.gps_lat = lat_value if lat_value is not None else lat
+            self.gps_lon = lon_value if lon_value is not None else lon
             self.current_altitude = alt
             self.current_airspeed = speed
-            self.telemetry_state["latitude"] = lat
-            self.telemetry_state["longitude"] = lon
+            self.telemetry_state["latitude"] = lat_value if lat_value is not None else lat
+            self.telemetry_state["longitude"] = lon_value if lon_value is not None else lon
             self.telemetry_state["altitude_ft"] = alt
             self.telemetry_state["airspeed_mph"] = speed
             self.telemetry_state["ground_course"] = course
             self.telemetry_state["satellites"] = sats
             self.data_page.add_flight_metrics(alt, speed)
+            if lat_value is not None and lon_value is not None:
+                self._latest_gps_fix = (lat_value, lon_value)
+                self._latest_gps_fix_seq += 1
         elif packet_type == "battery":
             if len(values) >= 3:
                 voltage, current, capacity = values[:3]
@@ -2005,6 +2031,57 @@ class MainWindow(QMainWindow):
 
         add_separator()
 
+        map_layout, _ = add_section("GPS Map Settings", show_status=False)
+        self.map_enabled_checkbox = QCheckBox("Enable offline map rendering")
+        self.map_enabled_checkbox.setChecked(self.map_cfg.get("enabled", True))
+        map_layout.addWidget(self.map_enabled_checkbox)
+
+        follow_row = QHBoxLayout()
+        self.map_follow_checkbox = QCheckBox("Follow GPS position")
+        self.map_follow_checkbox.setChecked(self._gps_follow_enabled)
+        follow_row.addWidget(self.map_follow_checkbox)
+        follow_row.addStretch()
+        map_layout.addLayout(follow_row)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(QLabel("Default zoom"))
+        self.map_zoom_spin = QSpinBox()
+        self.map_zoom_spin.setRange(self._map_min_zoom, self._map_max_zoom)
+        self.map_zoom_spin.setValue(int(self.map_cfg.get("zoom", self._map_initial_zoom)))
+        zoom_row.addWidget(self.map_zoom_spin)
+        zoom_row.addStretch()
+        map_layout.addLayout(zoom_row)
+
+        center_row = QHBoxLayout()
+        center_row.addWidget(QLabel("Default center"))
+        self.map_lat_spin = QDoubleSpinBox()
+        self.map_lat_spin.setRange(-90.0, 90.0)
+        self.map_lat_spin.setDecimals(6)
+        self.map_lat_spin.setValue(float(self.map_cfg.get("center", [0.0, 0.0])[0]))
+        center_row.addWidget(self.map_lat_spin)
+        self.map_lon_spin = QDoubleSpinBox()
+        self.map_lon_spin.setRange(-180.0, 180.0)
+        self.map_lon_spin.setDecimals(6)
+        self.map_lon_spin.setValue(float(self.map_cfg.get("center", [0.0, 0.0])[1]))
+        center_row.addWidget(self.map_lon_spin)
+        center_row.addStretch()
+        map_layout.addLayout(center_row)
+
+        if not self._map_tiles_available:
+            self.map_enabled_checkbox.setEnabled(False)
+            self.map_follow_checkbox.setEnabled(False)
+            self.map_zoom_spin.setEnabled(False)
+            self.map_lat_spin.setEnabled(False)
+            self.map_lon_spin.setEnabled(False)
+
+        self.map_enabled_checkbox.toggled.connect(self.on_map_enabled_toggled)
+        self.map_follow_checkbox.toggled.connect(self.on_map_follow_toggled)
+        self.map_zoom_spin.valueChanged.connect(self.on_map_zoom_changed)
+        self.map_lat_spin.valueChanged.connect(self.on_map_center_changed)
+        self.map_lon_spin.valueChanged.connect(self.on_map_center_changed)
+
+        add_separator()
+
         # VTX settings (video receiver is treated as a camera device, so no
         # serial port configuration is required)
         vtx_layout, self.vtx_status = add_section(
@@ -2170,6 +2247,36 @@ class MainWindow(QMainWindow):
         self.update_connection_status(self.control_status, self.joystick is not None)
         save_config(self.config)
 
+    def on_map_enabled_toggled(self, checked: bool):
+        self.map_cfg["enabled"] = bool(checked)
+        self._update_map_enabled_state()
+        save_config(self.config)
+
+    def on_map_follow_toggled(self, checked: bool):
+        self.map_cfg["follow"] = bool(checked)
+        self._gps_follow_enabled = bool(checked)
+        self._sync_follow_state_to_qml()
+        save_config(self.config)
+
+    def on_map_zoom_changed(self, value: int):
+        try:
+            zoom = int(value)
+        except (TypeError, ValueError):
+            zoom = self.map_cfg.get("zoom", self._map_initial_zoom)
+        zoom = max(self._map_min_zoom, min(self._map_max_zoom, zoom))
+        self.map_cfg["zoom"] = zoom
+        if not self._gps_first_fix_sent:
+            self._apply_initial_map_view()
+        save_config(self.config)
+
+    def on_map_center_changed(self):
+        lat = float(self.map_lat_spin.value())
+        lon = float(self.map_lon_spin.value())
+        self.map_cfg["center"] = [lat, lon]
+        if not self._gps_first_fix_sent:
+            self._apply_initial_map_view()
+        save_config(self.config)
+
     def on_elrs_port_selected(self, port: str):
         """Handle selection of ELRS transmitter port."""
         self.crsf_cfg["port"] = port
@@ -2331,6 +2438,267 @@ class MainWindow(QMainWindow):
             label.setStyleSheet("color: red;")
             if label not in self.status_timers:
                 self.start_blinking(label)
+
+    @staticmethod
+    def _is_valid_coordinate(value) -> bool:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return False
+        try:
+            lat = float(value[0])
+            lon = float(value[1])
+        except (TypeError, ValueError):
+            return False
+        return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+    def _initialize_map_configuration(self):
+        self.map_cfg.setdefault("enabled", True)
+        self.map_cfg.setdefault("follow", True)
+        self.map_cfg.setdefault("center", [0.0, 0.0])
+        self.map_cfg.setdefault("zoom", 8)
+
+        self._app_root = os.path.dirname(os.path.abspath(__file__))
+        self._map_tiles_directory = os.path.join(self._app_root, "map", "map1_tiles")
+        self._map_tiles_available = os.path.isdir(self._map_tiles_directory)
+
+        zoom_levels = self._detect_map_zoom_levels(self._map_tiles_directory) if self._map_tiles_available else []
+        if zoom_levels:
+            self._map_min_zoom = min(zoom_levels)
+            self._map_max_zoom = max(zoom_levels)
+        else:
+            self._map_min_zoom = 0
+            self._map_max_zoom = 15
+
+        metadata = self._load_map_metadata(self._map_tiles_directory)
+        self._map_metadata = metadata
+        metadata_min_zoom = metadata.get("minzoom") or metadata.get("min_zoom")
+        metadata_max_zoom = metadata.get("maxzoom") or metadata.get("max_zoom")
+        if metadata_min_zoom is not None:
+            try:
+                self._map_min_zoom = int(metadata_min_zoom)
+            except (TypeError, ValueError):
+                pass
+        if metadata_max_zoom is not None:
+            try:
+                self._map_max_zoom = int(metadata_max_zoom)
+            except (TypeError, ValueError):
+                pass
+        if self._map_min_zoom > self._map_max_zoom:
+            self._map_min_zoom, self._map_max_zoom = self._map_max_zoom, self._map_min_zoom
+
+        center = self.map_cfg.get("center", [0.0, 0.0])
+        if not self._is_valid_coordinate(center):
+            center = [0.0, 0.0]
+        metadata_center = self._derive_center_from_metadata(metadata)
+        if metadata_center and (not self._is_valid_coordinate(self.map_cfg.get("center")) or self.map_cfg.get("center") == [0.0, 0.0]):
+            center = metadata_center
+            self.map_cfg["center"] = center
+
+        zoom = self.map_cfg.get("zoom", 8)
+        try:
+            zoom = int(zoom)
+        except (TypeError, ValueError):
+            zoom = 8
+        zoom = max(self._map_min_zoom, min(self._map_max_zoom, zoom))
+        self.map_cfg["zoom"] = zoom
+
+        self._map_initial_center = [float(center[0]), float(center[1])]
+        self._map_initial_zoom = zoom
+        self._gps_follow_enabled = bool(self.map_cfg.get("follow", True))
+
+        self._gps_map_widget = None
+        self._gps_map_placeholder_label = None
+        self._gps_map_container_layout = None
+        self._gps_map_root = None
+        self._gps_map_ready = False
+
+    def _detect_map_zoom_levels(self, directory: str) -> list[int]:
+        zoom_levels: list[int] = []
+        try:
+            for entry in os.listdir(directory):
+                if entry.isdigit():
+                    zoom_levels.append(int(entry))
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return []
+        return sorted(zoom_levels)
+
+    def _load_map_metadata(self, directory: str) -> dict:
+        metadata_path = os.path.join(directory, "metadata.json")
+        if not os.path.isfile(metadata_path):
+            return {}
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception as exc:
+            print(f"Warning: failed to read map metadata '{metadata_path}': {exc}")
+            return {}
+
+    def _derive_center_from_metadata(self, metadata: dict) -> Optional[list[float]]:
+        if not isinstance(metadata, dict):
+            return None
+
+        center = metadata.get("center")
+        if isinstance(center, (list, tuple)) and len(center) >= 2:
+            try:
+                return [float(center[0]), float(center[1])]
+            except (TypeError, ValueError):
+                pass
+        if isinstance(center, dict):
+            lat = center.get("lat") or center.get("latitude")
+            lon = center.get("lon") or center.get("lng") or center.get("longitude")
+            if lat is not None and lon is not None:
+                try:
+                    return [float(lat), float(lon)]
+                except (TypeError, ValueError):
+                    pass
+
+        bounds = metadata.get("bounds") or metadata.get("bbox")
+        if isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
+            try:
+                west, south, east, north = map(float, bounds[:4])
+            except (TypeError, ValueError):
+                pass
+            else:
+                return [(south + north) / 2.0, (west + east) / 2.0]
+        if isinstance(bounds, dict):
+            south = bounds.get("south") or bounds.get("minLat") or bounds.get("min_lat")
+            north = bounds.get("north") or bounds.get("maxLat") or bounds.get("max_lat")
+            west = bounds.get("west") or bounds.get("minLon") or bounds.get("min_lon") or bounds.get("minLng")
+            east = bounds.get("east") or bounds.get("maxLon") or bounds.get("max_lon") or bounds.get("maxLng")
+            if None not in (south, north, west, east):
+                try:
+                    south_f = float(south)
+                    north_f = float(north)
+                    west_f = float(west)
+                    east_f = float(east)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    return [(south_f + north_f) / 2.0, (west_f + east_f) / 2.0]
+
+        return None
+
+    def _setup_gps_map(self):
+        container = self.ui.mapframe
+        existing_layout = container.layout()
+        if existing_layout is not None:
+            QWidget().setLayout(existing_layout)  # type: ignore[arg-type]
+
+        layout = QStackedLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setStackingMode(QStackedLayout.StackOne)
+        container.setLayout(layout)
+        self._gps_map_container_layout = layout
+
+        placeholder = QLabel("GPS map disabled in settings.", container)
+        placeholder.setWordWrap(True)
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("color: rgb(200, 200, 200);")
+        layout.addWidget(placeholder)
+        self._gps_map_placeholder_label = placeholder
+
+        if not self._map_tiles_available:
+            tiles_path = os.path.abspath(self._map_tiles_directory)
+            placeholder.setText(f"Offline map tiles not found at\n{tiles_path}")
+            self._gps_map_widget = None
+            self._update_map_enabled_state()
+            return
+
+        qml_path = os.path.join(self._app_root, "qml", "gps_map.qml")
+        if not os.path.isfile(qml_path):
+            placeholder.setText(f"GPS map QML not found at\n{qml_path}")
+            self._gps_map_widget = None
+            self._update_map_enabled_state()
+            return
+
+        map_widget = QQuickWidget(container)
+        map_widget.setResizeMode(QQuickWidget.SizeRootObjectToView)
+        map_widget.setClearColor(QColor(32, 32, 32))
+        context = map_widget.rootContext()
+        context.setContextProperty("mapTileDirectory", os.path.abspath(self._map_tiles_directory))
+        context.setContextProperty("mapInitialCenter", self.map_cfg.get("center", self._map_initial_center))
+        context.setContextProperty("mapInitialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
+        context.setContextProperty("mapMinimumZoom", self._map_min_zoom)
+        context.setContextProperty("mapMaximumZoom", self._map_max_zoom)
+        layout.addWidget(map_widget)
+        map_widget.statusChanged.connect(self._on_gps_map_status_changed)
+        map_widget.setSource(QUrl.fromLocalFile(qml_path))
+        self._gps_map_widget = map_widget
+
+        self._update_map_enabled_state()
+
+    def _on_gps_map_status_changed(self, status):
+        if status == QQuickWidget.Status.Error and self._gps_map_widget is not None:
+            errors = "\n".join(error.description() for error in self._gps_map_widget.errors())
+            if self._gps_map_placeholder_label is not None:
+                self._gps_map_placeholder_label.setText(
+                    "Failed to load GPS map:\n" + (errors or "Unknown error")
+                )
+            self._gps_map_ready = False
+            self._update_map_enabled_state()
+            return
+
+        if status != QQuickWidget.Status.Ready or self._gps_map_widget is None:
+            return
+
+        root = self._gps_map_widget.rootObject()
+        if root is None:
+            return
+        self._gps_map_root = root
+        root.setProperty("tileDirectory", os.path.abspath(self._map_tiles_directory))
+        root.setProperty("minimumZoomLevel", self._map_min_zoom)
+        root.setProperty("maximumZoomLevel", self._map_max_zoom)
+        root.setProperty("initialCenter", self.map_cfg.get("center", self._map_initial_center))
+        root.setProperty("initialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
+        root.setProperty("followGps", self._gps_follow_enabled)
+        QMetaObject.invokeMethod(root, "applyInitialView")
+        self._gps_map_ready = True
+        self._sync_follow_state_to_qml()
+        self._update_map_enabled_state()
+
+    def _sync_follow_state_to_qml(self):
+        if self._gps_map_root is None:
+            return
+        self._gps_map_root.setProperty("followGps", self._gps_follow_enabled)
+
+    def _apply_initial_map_view(self):
+        if not self.map_cfg.get("enabled", True):
+            return
+        if not self._gps_map_ready or self._gps_map_root is None:
+            return
+        center = self.map_cfg.get("center", self._map_initial_center)
+        zoom = float(self.map_cfg.get("zoom", self._map_initial_zoom))
+        self._gps_map_root.setProperty("initialCenter", center)
+        self._gps_map_root.setProperty("initialZoom", zoom)
+        QMetaObject.invokeMethod(self._gps_map_root, "applyInitialView")
+
+    def _push_gps_to_map(self):
+        if not self.map_cfg.get("enabled", True):
+            return
+        if not self._gps_map_ready or self._gps_map_root is None:
+            return
+        if self._latest_gps_fix is None:
+            return
+        if self._latest_gps_fix_seq == self._last_pushed_gps_fix_seq:
+            return
+
+        lat, lon = self._latest_gps_fix
+        self._gps_map_root.setProperty("gpsLat", float(lat))
+        self._gps_map_root.setProperty("gpsLon", float(lon))
+        self._last_pushed_gps_fix_seq = self._latest_gps_fix_seq
+        if not self._gps_first_fix_sent:
+            self._gps_first_fix_sent = True
+
+    def _update_map_enabled_state(self):
+        if self._gps_map_container_layout is None or self._gps_map_placeholder_label is None:
+            return
+        if self._gps_map_widget is None or not self._map_tiles_available:
+            self._gps_map_container_layout.setCurrentWidget(self._gps_map_placeholder_label)
+            return
+        if self.map_cfg.get("enabled", True):
+            self._gps_map_container_layout.setCurrentWidget(self._gps_map_widget)
+        else:
+            self._gps_map_placeholder_label.setText("GPS map disabled in settings.")
+            self._gps_map_container_layout.setCurrentWidget(self._gps_map_placeholder_label)
 
     def buttonClick(self):
         # GET BUTTON CLICKED
