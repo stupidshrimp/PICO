@@ -75,6 +75,7 @@ from PySide6.QtCore import (
     Signal,
     QObject,
 )
+from PySide6.QtWebEngineCore import QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
@@ -2404,6 +2405,7 @@ class MainWindow(QMainWindow):
         self._map_bridge = MapBridge(self)
         self._map_channel = None
         self._map_channel_page = None
+        self._map_profile: Optional[QWebEngineProfile] = None
         self._map_html_url = (
             QUrl.fromLocalFile(self._map_html_path)
             if self._map_html_available
@@ -2500,6 +2502,28 @@ class MainWindow(QMainWindow):
                 pass
         self._map_channel = None
         self._map_channel_page = None
+        self._clear_map_http_cache()
+
+    def _get_map_profile(self) -> Optional[QWebEngineProfile]:
+        if self._gps_map_widget is not None:
+            try:
+                page = self._gps_map_widget.page()
+            except RuntimeError:
+                page = None
+            if page is not None:
+                try:
+                    profile = page.profile()
+                except RuntimeError:
+                    profile = None
+                else:
+                    self._map_profile = profile
+                    return profile
+        return self._map_profile
+
+    def _clear_map_http_cache(self) -> None:
+        profile = self._get_map_profile()
+        if profile is not None:
+            profile.clearHttpCache()
 
     def _setup_gps_map(self):
         container = self.ui.mapframe
@@ -2544,6 +2568,10 @@ class MainWindow(QMainWindow):
 
         map_widget = QWebEngineView(container)
         map_widget.setContextMenuPolicy(Qt.NoContextMenu)
+        profile = map_widget.page().profile()
+        self._map_profile = profile
+        profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
+        profile.setHttpCacheMaximumSize(0)
         layout.addWidget(map_widget)
         self._ensure_map_channel(map_widget.page())
         map_widget.loadFinished.connect(self._on_gps_map_load_finished)
@@ -2628,6 +2656,7 @@ class MainWindow(QMainWindow):
         else:
             self._gps_map_placeholder_label.setText("GPS map disabled in settings.")
             self._gps_map_container_layout.setCurrentWidget(self._gps_map_placeholder_label)
+            self._clear_map_http_cache()
 
     def buttonClick(self):
         # GET BUTTON CLICKED
@@ -2703,6 +2732,7 @@ class MainWindow(QMainWindow):
         """Clean up peripheral resources if they exist."""
         self.stop_sortie_recording()
         self.stop_debug_monitoring()
+        self._clear_map_http_cache()
         if self.joystick:
             self.joystick.close()
             self.joystick = None
