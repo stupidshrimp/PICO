@@ -7,6 +7,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import re
 
 # When running on Windows, the combination of Qt's hardware accelerated scene
 # graph and Chromium's GPU pipeline inside ``QWebEngineView`` would eventually
