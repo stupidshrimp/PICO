@@ -19,13 +19,25 @@
     const defaultCenter = [41.8781, -87.6298];
     const defaultZoom = 11;
     let maxAvailableZoom = 13;
+    const followRecenterMeters = 1.0;
     let lastFix = L.latLng(defaultCenter[0], defaultCenter[1]);
     let followMode = true;
     let activeBridge = null;
     let gpsHandler = null;
+    let lastViewCenter = null;
+    let lastViewZoom = null;
 
-    const map = L.map('map', { zoomControl: true, keepBuffer: 1 })
+    const map = L.map('map', {
+                   zoomControl: true,
+                   keepBuffer: 0,
+                   preferCanvas: true,
+                   inertia: false,
+                   updateWhenIdle: true
+                 })
                  .setView(defaultCenter, defaultZoom);
+
+    lastViewCenter = map.getCenter();
+    lastViewZoom = map.getZoom();
 
     const tiles = L.tileLayer('chicago_xyz/{z}/{x}/{y}.png', {
       minZoom: 0,
@@ -49,6 +61,7 @@
       if (map.getZoom() > maxAvailableZoom) {
         map.setZoom(maxAvailableZoom);
       }
+      lastViewZoom = map.getZoom();
     }
 
     function applyInitialView(lat, lon, zoom) {
@@ -59,6 +72,8 @@
       gps.setLatLng(lastFix);
       const targetZoom = Number.isFinite(zoom) ? Math.min(maxAvailableZoom, zoom) : map.getZoom();
       map.setView(lastFix, targetZoom, { animate: false });
+      lastViewCenter = map.getCenter();
+      lastViewZoom = map.getZoom();
     }
 
     function handleGpsUpdate(lat, lon, follow) {
@@ -68,8 +83,21 @@
       lastFix = L.latLng(lat, lon);
       gps.setLatLng(lastFix);
       followMode = follow !== false;
+      const currentZoom = map.getZoom();
       if (followMode) {
-        map.setView(lastFix, map.getZoom(), { animate: false });
+        const currentCenter = map.getCenter();
+        const needsRecentering =
+          !lastViewCenter ||
+          currentCenter.distanceTo(lastFix) > followRecenterMeters ||
+          currentZoom !== lastViewZoom;
+        if (needsRecentering) {
+          map.setView(lastFix, currentZoom, { animate: false });
+          lastViewCenter = map.getCenter();
+          lastViewZoom = map.getZoom();
+        }
+      } else {
+        lastViewCenter = map.getCenter();
+        lastViewZoom = currentZoom;
       }
     }
 
@@ -84,13 +112,6 @@
         }
       } catch (error) {
         console.warn('Failed to disconnect gpsUpdated handler', error);
-      }
-      try {
-        if (gpsHandler && activeBridge.updateGPS && typeof activeBridge.updateGPS.disconnect === 'function') {
-          activeBridge.updateGPS.disconnect(gpsHandler);
-        }
-      } catch (error) {
-        console.warn('Failed to disconnect updateGPS handler', error);
       }
       try {
         if (activeBridge.initialViewSet && typeof activeBridge.initialViewSet.disconnect === 'function') {
@@ -121,9 +142,6 @@
       gpsHandler = (lat, lon, follow) => handleGpsUpdate(lat, lon, follow);
       if (bridge.gpsUpdated && typeof bridge.gpsUpdated.connect === 'function') {
         bridge.gpsUpdated.connect(gpsHandler);
-      }
-      if (bridge.updateGPS && typeof bridge.updateGPS.connect === 'function') {
-        bridge.updateGPS.connect(gpsHandler);
       }
       if (bridge.initialViewSet && typeof bridge.initialViewSet.connect === 'function') {
         bridge.initialViewSet.connect(applyInitialView);

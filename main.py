@@ -75,7 +75,7 @@ from PySide6.QtCore import (
     Signal,
     QObject,
 )
-from PySide6.QtWebEngineCore import QWebEngineProfile
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
@@ -2568,6 +2568,9 @@ class MainWindow(QMainWindow):
 
         map_widget = QWebEngineView(container)
         map_widget.setContextMenuPolicy(Qt.NoContextMenu)
+        settings = map_widget.settings()
+        settings.setAttribute(QWebEngineSettings.WebGLEnabled, False)
+        settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, False)
         profile = map_widget.page().profile()
         self._map_profile = profile
         profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
