@@ -28,11 +28,12 @@
     },
     "map": {
         "center": [
-            0,
-            0
+            0.0,
+            0.0
         ],
-        "zoom": 2,
-        "enabled": false
+        "zoom": 8,
+        "enabled": true,
+        "follow": true
     },
     "aircraft": {
         "battery_cells": "3s"

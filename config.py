@@ -40,9 +40,10 @@ DEFAULT_CONFIG = {
     },
     "map": {
         # Initial center [lat, lon] and zoom level for the offline map
-        "center": [0, 0],
-        "zoom": 2,
-        "enabled": False,
+        "center": [0.0, 0.0],
+        "zoom": 8,
+        "enabled": True,
+        "follow": True,
     },
     "aircraft": {
         "battery_cells": "3s",
