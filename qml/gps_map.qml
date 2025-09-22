@@ -17,7 +17,9 @@ Item {
     property int minimumZoomLevel: 0
     property int maximumZoomLevel: 15
     property string tileDirectory: mapTileDirectory
-    property bool hasOfflineTiles: (typeof mapHasOfflineTiles !== "undefined") ? mapHasOfflineTiles : true
+    property bool hasOfflineTiles: (typeof mapHasOfflineTiles !== "undefined") ? mapHasOfflineTiles : false
+    property string offlineStatus: (typeof mapOfflineStatus !== "undefined") ? mapOfflineStatus : ""
+    property var mapObject: null
 
     function clampZoom(value) {
         if (maximumZoomLevel < minimumZoomLevel) {
@@ -27,6 +29,10 @@ Item {
     }
 
     function applyInitialView() {
+        var map = mapLoader.item;
+        if (!map) {
+            return;
+        }
         if (initialCenter.length === 2) {
             map.center = QtPositioning.coordinate(initialCenter[0], initialCenter[1]);
         }
@@ -39,9 +45,13 @@ Item {
         if (!isFinite(root.gpsLat) || !isFinite(root.gpsLon)) {
             return;
         }
+        var map = mapLoader.item;
+        if (!map || !map.gpsMarkerItem) {
+            return;
+        }
         var coordinate = QtPositioning.coordinate(root.gpsLat, root.gpsLon);
-        gpsMarker.coordinate = coordinate;
-        gpsMarker.visible = true;
+        map.gpsMarkerItem.coordinate = coordinate;
+        map.gpsMarkerItem.visible = true;
         if (!root.firstFixReceived) {
             root.firstFixReceived = true;
             map.center = coordinate;
@@ -51,6 +61,10 @@ Item {
     }
 
     function setZoomLevel(value) {
+        var map = mapLoader.item;
+        if (!map) {
+            return;
+        }
         map.zoomLevel = clampZoom(value);
     }
 
@@ -78,54 +92,89 @@ Item {
         }
     }
 
-    Map {
-        id: map
+    Loader {
+        id: mapLoader
         anchors.fill: parent
-        plugin: offlinePlugin
-        copyrightsVisible: false
-        activeMapType: supportedMapTypes.length > 0 ? supportedMapTypes[0] : null
+        active: root.hasOfflineTiles
+        sourceComponent: Component {
+            Map {
+                id: map
+                property alias gpsMarkerItem: gpsMarker
+                anchors.fill: parent
+                plugin: offlinePlugin
+                copyrightsVisible: false
+                activeMapType: supportedMapTypes.length > 0 ? supportedMapTypes[0] : null
 
-        MapQuickItem {
-            id: gpsMarker
-            anchorPoint.x: markerVisual.width / 2
-            anchorPoint.y: markerVisual.height
-            visible: false
-            sourceItem: Item {
-                id: markerVisual
-                width: 24
-                height: 24
+                MapQuickItem {
+                    id: gpsMarker
+                    anchorPoint.x: markerVisual.width / 2
+                    anchorPoint.y: markerVisual.height
+                    visible: false
+                    sourceItem: Item {
+                        id: markerVisual
+                        width: 24
+                        height: 24
 
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: 20
-                    height: 20
-                    radius: width / 2
-                    color: "#ff3b30"
-                    border.width: 2
-                    border.color: "white"
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 20
+                            height: 20
+                            radius: width / 2
+                            color: "#ff3b30"
+                            border.width: 2
+                            border.color: "white"
+                        }
+
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            width: 4
+                            height: 8
+                            radius: 2
+                            color: "#ff3b30"
+                        }
+                    }
                 }
 
-                Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
-                    width: 4
-                    height: 8
-                    radius: 2
-                    color: "#ff3b30"
+                onZoomLevelChanged: {
+                    if (map.zoomLevel > root.maximumZoomLevel) {
+                        map.zoomLevel = root.maximumZoomLevel;
+                    } else if (map.zoomLevel < root.minimumZoomLevel) {
+                        map.zoomLevel = root.minimumZoomLevel;
+                    }
+                }
+
+                Component.onCompleted: {
+                    root.applyInitialView();
                 }
             }
         }
 
-        onZoomLevelChanged: {
-            if (map.zoomLevel > root.maximumZoomLevel) {
-                map.zoomLevel = root.maximumZoomLevel;
-            } else if (map.zoomLevel < root.minimumZoomLevel) {
-                map.zoomLevel = root.minimumZoomLevel;
+        onStatusChanged: {
+            if (status === Loader.Ready && item) {
+                root.mapObject = item;
+                root.applyInitialView();
+                root.updateGpsMarker();
+            } else if (status === Loader.Error || status === Loader.Null) {
+                root.mapObject = null;
             }
         }
+    }
 
-        Component.onCompleted: {
-            applyInitialView();
+    Rectangle {
+        anchors.fill: parent
+        visible: !root.hasOfflineTiles
+        color: "#101820"
+        border.color: "#2c3e50"
+        border.width: 1
+
+        Text {
+            anchors.centerIn: parent
+            width: parent.width * 0.8
+            text: root.offlineStatus && root.offlineStatus.length > 0 ? root.offlineStatus : "Offline map tiles unavailable."
+            color: "#f0f0f0"
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
         }
     }
 
@@ -134,8 +183,40 @@ Item {
 
     onFollowGpsChanged: {
         if (root.followGps && root.firstFixReceived && isFinite(root.gpsLat) && isFinite(root.gpsLon)) {
+            var map = mapLoader.item;
+            if (!map) {
+                return;
+            }
             var coord = QtPositioning.coordinate(root.gpsLat, root.gpsLon);
             map.center = coord;
+        }
+    }
+
+    onMinimumZoomLevelChanged: {
+        var map = mapLoader.item;
+        if (!map) {
+            return;
+        }
+        map.minimumZoomLevel = minimumZoomLevel;
+        if (map.zoomLevel < minimumZoomLevel) {
+            map.zoomLevel = minimumZoomLevel;
+        }
+    }
+
+    onMaximumZoomLevelChanged: {
+        var map = mapLoader.item;
+        if (!map) {
+            return;
+        }
+        map.maximumZoomLevel = maximumZoomLevel;
+        if (map.zoomLevel > maximumZoomLevel) {
+            map.zoomLevel = maximumZoomLevel;
+        }
+    }
+
+    onHasOfflineTilesChanged: {
+        if (!hasOfflineTiles) {
+            mapObject = null;
         }
     }
 }

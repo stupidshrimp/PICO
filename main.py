@@ -75,6 +75,7 @@ from PySide6.QtCore import (
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtGui import QIcon, QColor, QShortcut, QKeySequence, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtLocation import QGeoServiceProvider
 import shiboken6
 
 from serial.tools import list_ports
@@ -2458,9 +2459,16 @@ class MainWindow(QMainWindow):
 
         self._app_root = os.path.dirname(os.path.abspath(__file__))
         self._map_tiles_directory = os.path.join(self._app_root, "map", "chicago_sat_tiles")
-        self._map_tiles_available = os.path.isdir(self._map_tiles_directory)
+        (
+            self._map_tiles_available,
+            self._map_tiles_status_message,
+        ) = self._verify_map_tiles_directory(self._map_tiles_directory)
 
-        zoom_levels = self._detect_map_zoom_levels(self._map_tiles_directory) if self._map_tiles_available else []
+        zoom_levels = (
+            self._detect_map_zoom_levels(self._map_tiles_directory)
+            if self._map_tiles_available
+            else []
+        )
         if zoom_levels:
             self._map_min_zoom = min(zoom_levels)
             self._map_max_zoom = max(zoom_levels)
@@ -2510,6 +2518,56 @@ class MainWindow(QMainWindow):
         self._gps_map_container_layout = None
         self._gps_map_root = None
         self._gps_map_ready = False
+
+    def _verify_map_tiles_directory(self, directory: str) -> tuple[bool, str]:
+        abs_directory = os.path.abspath(directory)
+        if not os.path.isdir(directory):
+            return False, f"Offline map tiles not found at\n{abs_directory}"
+
+        metadata_path = os.path.join(directory, "metadata.json")
+        if not os.path.isfile(metadata_path):
+            return (
+                False,
+                f"Offline map metadata not found at\n{metadata_path}",
+            )
+
+        try:
+            directory_entries = os.listdir(directory)
+        except OSError as exc:
+            return (
+                False,
+                f"Unable to read offline map tiles directory:\n{abs_directory}\n{exc}",
+            )
+
+        has_zoom_level_directories = any(
+            entry.isdigit()
+            and os.path.isdir(os.path.join(directory, entry))
+            for entry in directory_entries
+        )
+        has_mbtiles_archive = any(
+            entry.lower().endswith(".mbtiles")
+            and os.path.isfile(os.path.join(directory, entry))
+            for entry in directory_entries
+        )
+
+        if not has_zoom_level_directories and not has_mbtiles_archive:
+            return (
+                False,
+                "No offline map tiles were found. Expected zoom level folders or an .mbtiles archive.",
+            )
+
+        try:
+            providers = QGeoServiceProvider.availableServiceProviders()
+        except Exception:
+            providers = []
+
+        if "osm" not in providers:
+            return (
+                False,
+                "The QtLocation 'osm' plugin is unavailable. Install the plugin to enable offline maps.",
+            )
+
+        return True, ""
 
     def _detect_map_zoom_levels(self, directory: str) -> list[int]:
         zoom_levels: list[int] = []
@@ -2597,8 +2655,11 @@ class MainWindow(QMainWindow):
         self._gps_map_placeholder_label = placeholder
 
         if not self._map_tiles_available:
-            tiles_path = os.path.abspath(self._map_tiles_directory)
-            placeholder.setText(f"Offline map tiles not found at\n{tiles_path}")
+            message = self._map_tiles_status_message
+            if not message:
+                tiles_path = os.path.abspath(self._map_tiles_directory)
+                message = f"Offline map tiles not found at\n{tiles_path}"
+            placeholder.setText(message)
             self._gps_map_widget = None
             self._update_map_enabled_state()
             return
@@ -2616,6 +2677,10 @@ class MainWindow(QMainWindow):
         context = map_widget.rootContext()
         context.setContextProperty("mapTileDirectory", os.path.abspath(self._map_tiles_directory))
         context.setContextProperty("mapHasOfflineTiles", self._map_tiles_available)
+        context.setContextProperty(
+            "mapOfflineStatus",
+            self._map_tiles_status_message,
+        )
         context.setContextProperty("mapInitialCenter", self.map_cfg.get("center", self._map_initial_center))
         context.setContextProperty("mapInitialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
         context.setContextProperty("mapMinimumZoom", self._map_min_zoom)
@@ -2634,6 +2699,10 @@ class MainWindow(QMainWindow):
                 self._gps_map_placeholder_label.setText(
                     "Failed to load GPS map:\n" + (errors or "Unknown error")
                 )
+            root_obj = self._gps_map_widget.rootObject() if self._gps_map_widget is not None else None
+            if root_obj is not None:
+                root_obj.setProperty("offlineStatus", errors or "Failed to load GPS map.")
+                root_obj.setProperty("hasOfflineTiles", False)
             self._gps_map_ready = False
             self._update_map_enabled_state()
             return
@@ -2652,6 +2721,7 @@ class MainWindow(QMainWindow):
         root.setProperty("initialCenter", self.map_cfg.get("center", self._map_initial_center))
         root.setProperty("initialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
         root.setProperty("followGps", self._gps_follow_enabled)
+        root.setProperty("offlineStatus", "")
         QMetaObject.invokeMethod(root, "applyInitialView")
         self._gps_map_ready = True
         self._sync_follow_state_to_qml()
