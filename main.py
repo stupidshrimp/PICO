@@ -5,7 +5,6 @@ import csv
 import logging
 from collections import deque
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 import re
 
@@ -74,10 +73,9 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
 )
-from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtGui import QIcon, QColor, QShortcut, QKeySequence, QPixmap
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtLocation import QGeoServiceProvider
 import shiboken6
 
 from serial.tools import list_ports
@@ -1901,7 +1899,7 @@ class MainWindow(QMainWindow):
         center_row.addStretch()
         map_layout.addLayout(center_row)
 
-        if not self._map_tiles_available:
+        if not (self._map_tiles_available and self._map_html_available):
             self.map_enabled_checkbox.setEnabled(False)
             self.map_follow_checkbox.setEnabled(False)
             self.map_zoom_spin.setEnabled(False)
@@ -2089,7 +2087,7 @@ class MainWindow(QMainWindow):
     def on_map_follow_toggled(self, checked: bool):
         self.map_cfg["follow"] = bool(checked)
         self._gps_follow_enabled = bool(checked)
-        self._sync_follow_state_to_qml()
+        self._sync_follow_state_to_map()
         save_config(self.config)
 
     def on_map_zoom_changed(self, value: int):
@@ -2291,9 +2289,8 @@ class MainWindow(QMainWindow):
         self.map_cfg.setdefault("zoom", 13)
 
         self._app_root = os.path.dirname(os.path.abspath(__file__))
-        self._map_tiles_directory = os.path.join(
-            self._app_root, "map", "chicago_sat_tiles_png"
-        )
+        self._map_directory = os.path.join(self._app_root, "map")
+        self._map_tiles_directory = os.path.join(self._map_directory, "chicago_xyz")
         (
             self._map_tiles_available,
             self._map_tiles_status_message,
@@ -2311,36 +2308,15 @@ class MainWindow(QMainWindow):
             self._map_min_zoom = 0
             self._map_max_zoom = 13
 
-        metadata = self._load_map_metadata(self._map_tiles_directory)
-        self._map_metadata = metadata
-        metadata_min_zoom = metadata.get("minzoom") or metadata.get("min_zoom")
-        metadata_max_zoom = metadata.get("maxzoom") or metadata.get("max_zoom")
-        if metadata_min_zoom is not None:
-            try:
-                self._map_min_zoom = int(metadata_min_zoom)
-            except (TypeError, ValueError):
-                pass
-        if metadata_max_zoom is not None:
-            try:
-                self._map_max_zoom = int(metadata_max_zoom)
-            except (TypeError, ValueError):
-                pass
-        if self._map_min_zoom > self._map_max_zoom:
-            self._map_min_zoom, self._map_max_zoom = self._map_max_zoom, self._map_min_zoom
-
         center = self.map_cfg.get("center", [0.0, 0.0])
         if not self._is_valid_coordinate(center):
             center = [0.0, 0.0]
-        metadata_center = self._derive_center_from_metadata(metadata)
-        if metadata_center and (not self._is_valid_coordinate(self.map_cfg.get("center")) or self.map_cfg.get("center") == [0.0, 0.0]):
-            center = metadata_center
-            self.map_cfg["center"] = center
 
-        zoom = self.map_cfg.get("zoom", 8)
+        zoom = self.map_cfg.get("zoom", self._map_max_zoom)
         try:
             zoom = int(zoom)
         except (TypeError, ValueError):
-            zoom = 8
+            zoom = self._map_max_zoom
         zoom = max(self._map_min_zoom, min(self._map_max_zoom, zoom))
         self.map_cfg["zoom"] = zoom
 
@@ -2348,58 +2324,83 @@ class MainWindow(QMainWindow):
         self._map_initial_zoom = zoom
         self._gps_follow_enabled = bool(self.map_cfg.get("follow", True))
 
+        self._map_html_path = os.path.join(self._map_directory, "index.html")
+        self._map_html_available = os.path.isfile(self._map_html_path)
+        if not self._map_tiles_available and not self._map_tiles_status_message:
+            tiles_path = os.path.abspath(self._map_tiles_directory)
+            self._map_tiles_status_message = f"Offline map tiles not found at\n{tiles_path}"
+        if not self._map_html_available:
+            html_path = os.path.abspath(self._map_html_path)
+            self._map_tiles_status_message = (
+                f"Offline map page not found at\n{html_path}"
+                if not self._map_tiles_status_message
+                else self._map_tiles_status_message
+            )
+
         self._gps_map_widget = None
         self._gps_map_placeholder_label = None
         self._gps_map_container_layout = None
-        self._gps_map_root = None
         self._gps_map_ready = False
+        self._map_html_url = (
+            QUrl.fromLocalFile(self._map_html_path)
+            if self._map_html_available
+            else None
+        )
 
     def _verify_map_tiles_directory(self, directory: str) -> tuple[bool, str]:
         abs_directory = os.path.abspath(directory)
         if not os.path.isdir(directory):
             return False, f"Offline map tiles not found at\n{abs_directory}"
 
-        metadata_path = os.path.join(directory, "metadata.json")
-        if not os.path.isfile(metadata_path):
+        zoom_levels = self._detect_map_zoom_levels(directory)
+        if not zoom_levels:
             return (
                 False,
-                f"Offline map metadata not found at\n{metadata_path}",
+                "No zoom level folders were found in the offline map tiles directory.",
+            )
+
+        sample_tile: Optional[str] = None
+        for zoom in sorted(zoom_levels):
+            zoom_dir = os.path.join(directory, str(zoom))
+            try:
+                x_entries = [entry for entry in os.listdir(zoom_dir) if entry.isdigit()]
+            except OSError as exc:
+                return (
+                    False,
+                    f"Unable to read zoom level folder {zoom_dir}:\n{exc}",
+                )
+            for x_entry in x_entries:
+                x_dir = os.path.join(zoom_dir, x_entry)
+                try:
+                    tiles = [
+                        entry
+                        for entry in os.listdir(x_dir)
+                        if entry.lower().endswith(".jpg")
+                    ]
+                except OSError as exc:
+                    return (
+                        False,
+                        f"Unable to read tile column folder {x_dir}:\n{exc}",
+                    )
+                if tiles:
+                    sample_tile = os.path.join(x_dir, tiles[0])
+                    break
+            if sample_tile:
+                break
+
+        if not sample_tile:
+            return (
+                False,
+                "No JPG tiles were found in the offline map tiles directory.",
             )
 
         try:
-            directory_entries = os.listdir(directory)
+            if os.path.getsize(sample_tile) <= 0:
+                return False, f"Sample tile is empty:\n{sample_tile}"
         except OSError as exc:
             return (
                 False,
-                f"Unable to read offline map tiles directory:\n{abs_directory}\n{exc}",
-            )
-
-        has_zoom_level_directories = any(
-            entry.isdigit()
-            and os.path.isdir(os.path.join(directory, entry))
-            for entry in directory_entries
-        )
-        has_mbtiles_archive = any(
-            entry.lower().endswith(".mbtiles")
-            and os.path.isfile(os.path.join(directory, entry))
-            for entry in directory_entries
-        )
-
-        if not has_zoom_level_directories and not has_mbtiles_archive:
-            return (
-                False,
-                "No offline map tiles were found. Expected zoom level folders or an .mbtiles archive.",
-            )
-
-        try:
-            providers = QGeoServiceProvider.availableServiceProviders()
-        except Exception:
-            providers = []
-
-        if "osm" not in providers:
-            return (
-                False,
-                "The QtLocation 'osm' plugin is unavailable. Install the plugin to enable offline maps.",
+                f"Unable to inspect sample tile {sample_tile}:\n{exc}",
             )
 
         return True, ""
@@ -2413,62 +2414,6 @@ class MainWindow(QMainWindow):
         except (FileNotFoundError, NotADirectoryError, PermissionError):
             return []
         return sorted(zoom_levels)
-
-    def _load_map_metadata(self, directory: str) -> dict:
-        metadata_path = os.path.join(directory, "metadata.json")
-        if not os.path.isfile(metadata_path):
-            return {}
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except Exception as exc:
-            print(f"Warning: failed to read map metadata '{metadata_path}': {exc}")
-            return {}
-
-    def _derive_center_from_metadata(self, metadata: dict) -> Optional[list[float]]:
-        if not isinstance(metadata, dict):
-            return None
-
-        center = metadata.get("center")
-        if isinstance(center, (list, tuple)) and len(center) >= 2:
-            try:
-                return [float(center[0]), float(center[1])]
-            except (TypeError, ValueError):
-                pass
-        if isinstance(center, dict):
-            lat = center.get("lat") or center.get("latitude")
-            lon = center.get("lon") or center.get("lng") or center.get("longitude")
-            if lat is not None and lon is not None:
-                try:
-                    return [float(lat), float(lon)]
-                except (TypeError, ValueError):
-                    pass
-
-        bounds = metadata.get("bounds") or metadata.get("bbox")
-        if isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
-            try:
-                west, south, east, north = map(float, bounds[:4])
-            except (TypeError, ValueError):
-                pass
-            else:
-                return [(south + north) / 2.0, (west + east) / 2.0]
-        if isinstance(bounds, dict):
-            south = bounds.get("south") or bounds.get("minLat") or bounds.get("min_lat")
-            north = bounds.get("north") or bounds.get("maxLat") or bounds.get("max_lat")
-            west = bounds.get("west") or bounds.get("minLon") or bounds.get("min_lon") or bounds.get("minLng")
-            east = bounds.get("east") or bounds.get("maxLon") or bounds.get("max_lon") or bounds.get("maxLng")
-            if None not in (south, north, west, east):
-                try:
-                    south_f = float(south)
-                    north_f = float(north)
-                    west_f = float(west)
-                    east_f = float(east)
-                except (TypeError, ValueError):
-                    pass
-                else:
-                    return [(south_f + north_f) / 2.0, (west_f + east_f) / 2.0]
-
-        return None
 
     def _setup_gps_map(self):
         container = self.ui.mapframe
@@ -2499,104 +2444,72 @@ class MainWindow(QMainWindow):
             self._update_map_enabled_state()
             return
 
-        qml_path = os.path.join(self._app_root, "qml", "gps_map.qml")
-        if not os.path.isfile(qml_path):
-            placeholder.setText(f"GPS map QML not found at\n{qml_path}")
+        if not self._map_html_available or self._map_html_url is None:
+            placeholder.setText(self._map_tiles_status_message or "Map page not available.")
             self._gps_map_widget = None
             self._update_map_enabled_state()
             return
 
-        map_widget = QQuickWidget(container)
-        map_widget.setResizeMode(QQuickWidget.SizeRootObjectToView)
-        map_widget.setClearColor(QColor(32, 32, 32))
-        context = map_widget.rootContext()
-        tile_directory = os.path.abspath(self._map_tiles_directory)
-        context.setContextProperty("mapTileDirectory", tile_directory)
-        context.setContextProperty(
-            "mapTileDirectoryUrl", self._path_to_file_url(tile_directory)
-        )
-        context.setContextProperty("mapHasOfflineTiles", self._map_tiles_available)
-        context.setContextProperty(
-            "mapOfflineStatus",
-            self._map_tiles_status_message,
-        )
-        context.setContextProperty("mapInitialCenter", self.map_cfg.get("center", self._map_initial_center))
-        context.setContextProperty("mapInitialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
-        context.setContextProperty("mapMinimumZoom", self._map_min_zoom)
-        context.setContextProperty("mapMaximumZoom", self._map_max_zoom)
+        map_widget = QWebEngineView(container)
+        map_widget.setContextMenuPolicy(Qt.NoContextMenu)
         layout.addWidget(map_widget)
-        map_widget.statusChanged.connect(self._on_gps_map_status_changed)
-        map_widget.setSource(QUrl.fromLocalFile(qml_path))
+        map_widget.loadFinished.connect(self._on_gps_map_load_finished)
+        map_widget.load(self._map_html_url)
         self._gps_map_widget = map_widget
 
         self._update_map_enabled_state()
 
-    def _on_gps_map_status_changed(self, status):
-        if status == QQuickWidget.Status.Error and self._gps_map_widget is not None:
-            errors = "\n".join(error.description() for error in self._gps_map_widget.errors())
+    def _on_gps_map_load_finished(self, ok: bool) -> None:
+        if not ok:
+            self._gps_map_ready = False
             if self._gps_map_placeholder_label is not None:
                 self._gps_map_placeholder_label.setText(
-                    "Failed to load GPS map:\n" + (errors or "Unknown error")
+                    "Failed to load GPS map. Check that index.html and Leaflet assets are present."
                 )
-            root_obj = self._gps_map_widget.rootObject() if self._gps_map_widget is not None else None
-            if root_obj is not None:
-                root_obj.setProperty("offlineStatus", errors or "Failed to load GPS map.")
-                root_obj.setProperty("hasOfflineTiles", False)
-            self._gps_map_ready = False
             self._update_map_enabled_state()
             return
 
-        if status != QQuickWidget.Status.Ready or self._gps_map_widget is None:
-            return
-
-        root = self._gps_map_widget.rootObject()
-        if root is None:
-            return
-        self._gps_map_root = root
-        root.setProperty("hasOfflineTiles", self._map_tiles_available)
-        tile_directory = os.path.abspath(self._map_tiles_directory)
-        root.setProperty("tileDirectory", tile_directory)
-        root.setProperty("tileDirectoryUrl", self._path_to_file_url(tile_directory))
-        root.setProperty("minimumZoomLevel", self._map_min_zoom)
-        root.setProperty("maximumZoomLevel", self._map_max_zoom)
-        root.setProperty("initialCenter", self.map_cfg.get("center", self._map_initial_center))
-        root.setProperty("initialZoom", float(self.map_cfg.get("zoom", self._map_initial_zoom)))
-        root.setProperty("followGps", self._gps_follow_enabled)
-        root.setProperty("offlineStatus", "")
-        QMetaObject.invokeMethod(root, "applyInitialView")
         self._gps_map_ready = True
-        self._sync_follow_state_to_qml()
-        self._update_map_enabled_state()
-
-    def _sync_follow_state_to_qml(self):
-        if self._gps_map_root is None:
-            return
-        self._gps_map_root.setProperty("followGps", self._gps_follow_enabled)
+        if self._gps_map_widget is not None:
+            self._gps_map_widget.page().runJavaScript(
+                f"window.setMaxZoom({int(self._map_max_zoom)});"
+            )
+        self._apply_initial_map_view()
+        self._sync_follow_state_to_map()
+        if self._latest_gps_fix is not None:
+            lat, lon = self._latest_gps_fix
+            self._invoke_update_gps(float(lat), float(lon))
 
     def _apply_initial_map_view(self):
         if not self.map_cfg.get("enabled", True):
             return
-        if not self._gps_map_ready or self._gps_map_root is None:
+        if not self._gps_map_ready or self._gps_map_widget is None:
             return
         center = self.map_cfg.get("center", self._map_initial_center)
         zoom = float(self.map_cfg.get("zoom", self._map_initial_zoom))
-        self._gps_map_root.setProperty("initialCenter", center)
-        self._gps_map_root.setProperty("initialZoom", zoom)
-        QMetaObject.invokeMethod(self._gps_map_root, "applyInitialView")
+        lat = float(center[0]) if len(center) >= 1 else self._map_initial_center[0]
+        lon = float(center[1]) if len(center) >= 2 else self._map_initial_center[1]
+        script = f"window.setInitialView({lat:.8f}, {lon:.8f}, {zoom});"
+        self._gps_map_widget.page().runJavaScript(script)
 
-    @staticmethod
-    def _path_to_file_url(path: str) -> str:
-        if not path:
-            return ""
-        try:
-            return Path(path).resolve().as_uri()
-        except ValueError:
-            return QUrl.fromLocalFile(path).toString()
+    def _sync_follow_state_to_map(self) -> None:
+        if not self._gps_map_ready:
+            return
+        if self._latest_gps_fix is None:
+            return
+        self._invoke_update_gps(float(self._latest_gps_fix[0]), float(self._latest_gps_fix[1]))
+
+    def _invoke_update_gps(self, lat: float, lon: float) -> None:
+        if self._gps_map_widget is None or not self._gps_map_ready:
+            return
+        follow = "true" if self._gps_follow_enabled else "false"
+        script = f"window.updateGPS({lat:.8f}, {lon:.8f}, {follow});"
+        self._gps_map_widget.page().runJavaScript(script)
 
     def _push_gps_to_map(self):
         if not self.map_cfg.get("enabled", True):
             return
-        if not self._gps_map_ready or self._gps_map_root is None:
+        if not self._gps_map_ready or self._gps_map_widget is None:
             return
         if self._latest_gps_fix is None:
             return
@@ -2604,8 +2517,7 @@ class MainWindow(QMainWindow):
             return
 
         lat, lon = self._latest_gps_fix
-        self._gps_map_root.setProperty("gpsLat", float(lat))
-        self._gps_map_root.setProperty("gpsLon", float(lon))
+        self._invoke_update_gps(float(lat), float(lon))
         self._last_pushed_gps_fix_seq = self._latest_gps_fix_seq
         if not self._gps_first_fix_sent:
             self._gps_first_fix_sent = True
@@ -2613,7 +2525,11 @@ class MainWindow(QMainWindow):
     def _update_map_enabled_state(self):
         if self._gps_map_container_layout is None or self._gps_map_placeholder_label is None:
             return
-        if self._gps_map_widget is None or not self._map_tiles_available:
+        if (
+            self._gps_map_widget is None
+            or not self._map_tiles_available
+            or not self._map_html_available
+        ):
             self._gps_map_container_layout.setCurrentWidget(self._gps_map_placeholder_label)
             return
         if self.map_cfg.get("enabled", True):

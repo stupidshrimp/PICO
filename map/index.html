@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Offline XYZ Map</title>
+  <link rel="stylesheet" href="leaflet.css">
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="leaflet.js"></script>
+  <script>
+    const defaultCenter = [41.8781, -87.6298];
+    const defaultZoom = 11;
+    let maxAvailableZoom = 13;
+    let lastFix = L.latLng(defaultCenter[0], defaultCenter[1]);
+
+    const map = L.map('map', { zoomControl: true, keepBuffer: 1 })
+                 .setView(defaultCenter, defaultZoom);
+
+    const tiles = L.tileLayer('chicago_xyz/{z}/{x}/{y}.jpg', {
+      minZoom: 0,
+      maxZoom: maxAvailableZoom,
+      attribution: ''
+    }).addTo(map);
+
+    const gps = L.circleMarker(lastFix, { radius: 6 }).addTo(map);
+
+    window.setMaxZoom = function(zoom) {
+      if (!Number.isFinite(zoom)) {
+        return;
+      }
+      maxAvailableZoom = Math.max(0, zoom);
+      tiles.setMaxZoom(maxAvailableZoom);
+      if (map.setMaxZoom) {
+        map.setMaxZoom(maxAvailableZoom);
+      } else {
+        map.options.maxZoom = maxAvailableZoom;
+      }
+    };
+
+    window.setInitialView = function(lat, lon, zoom) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return;
+      }
+      lastFix = L.latLng(lat, lon);
+      gps.setLatLng(lastFix);
+      const targetZoom = Number.isFinite(zoom) ? Math.min(maxAvailableZoom, zoom) : map.getZoom();
+      map.setView(lastFix, targetZoom, { animate: false });
+    };
+
+    window.updateGPS = function(lat, lon, follow = true) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return;
+      }
+      lastFix = L.latLng(lat, lon);
+      gps.setLatLng(lastFix);
+      if (follow) {
+        map.setView(lastFix, map.getZoom(), { animate: false });
+      }
+    };
+  </script>
+</body>
+</html>
