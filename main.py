@@ -2508,12 +2508,19 @@ class MainWindow(QMainWindow):
         self._map_channel_page = page
 
     def _release_map_profile(self) -> None:
-        if self._map_profile is not None:
-            try:
-                self._map_profile.deleteLater()
-            except RuntimeError:
-                pass
-            self._map_profile = None
+        if self._map_profile is None:
+            return
+        if self._gps_map_widget is not None:
+            return
+        if self._map_channel_page is not None:
+            return
+
+        profile = self._map_profile
+        self._map_profile = None
+        try:
+            profile.deleteLater()
+        except RuntimeError:
+            pass
 
     def _teardown_map_channel(self) -> None:
         if self._map_channel_page is not None:
@@ -2524,6 +2531,34 @@ class MainWindow(QMainWindow):
         self._map_channel = None
         self._map_channel_page = None
         self._clear_map_http_cache()
+
+    def _destroy_gps_map_widget(self) -> None:
+        widget = self._gps_map_widget
+        if widget is None:
+            return
+
+        self._gps_map_widget = None
+        self._gps_map_ready = False
+
+        try:
+            widget.loadFinished.disconnect(self._on_gps_map_load_finished)
+        except (RuntimeError, TypeError):
+            pass
+
+        layout = self._gps_map_container_layout
+        if layout is not None:
+            try:
+                layout.removeWidget(widget)
+            except RuntimeError:
+                pass
+
+        self._teardown_map_channel()
+
+        try:
+            widget.setParent(None)
+            widget.deleteLater()
+        except RuntimeError:
+            pass
 
     def _get_map_profile(self) -> Optional[QWebEngineProfile]:
         if self._gps_map_widget is not None:
@@ -2547,6 +2582,9 @@ class MainWindow(QMainWindow):
             profile.clearHttpCache()
 
     def _setup_gps_map(self):
+        self._destroy_gps_map_widget()
+        self._gps_map_placeholder_label = None
+
         container = self.ui.mapframe
         existing_layout = container.layout()
         if existing_layout is not None:
@@ -2565,26 +2603,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(placeholder)
         self._gps_map_placeholder_label = placeholder
 
-        # Always release any previous web channel before configuring a new map view.
-        self._gps_map_ready = False
-        self._teardown_map_channel()
-
         if not self._map_tiles_available:
             message = self._map_tiles_status_message
             if not message:
                 tiles_path = os.path.abspath(self._map_tiles_directory)
                 message = f"Offline map tiles not found at\n{tiles_path}"
             placeholder.setText(message)
-            self._gps_map_widget = None
-            self._teardown_map_channel()
             self._release_map_profile()
             self._update_map_enabled_state()
             return
 
         if not self._map_html_available or self._map_html_url is None:
             placeholder.setText(self._map_tiles_status_message or "Map page not available.")
-            self._gps_map_widget = None
-            self._teardown_map_channel()
             self._release_map_profile()
             self._update_map_enabled_state()
             return
@@ -2770,6 +2800,7 @@ class MainWindow(QMainWindow):
         """Clean up peripheral resources if they exist."""
         self.stop_sortie_recording()
         self.stop_debug_monitoring()
+        self._destroy_gps_map_widget()
         self._clear_map_http_cache()
         self._release_map_profile()
         if self.joystick:
