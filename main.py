@@ -8,15 +8,28 @@ from datetime import datetime
 from typing import Optional, Tuple
 import re
 
-# When running on Windows, the combination of Qt's hardware accelerated scene
-# graph and Chromium's GPU pipeline inside ``QWebEngineView`` would eventually
-# exhaust the Direct3D device.  The GUI would continually allocate new staging
-# textures until the driver reset, leading to "device loss" errors and the
-# application's memory usage climbing until it crashed.  Force both Qt and the
-# embedded Chromium instance to fall back to software rendering so resource
-# allocation stays bounded.
-os.environ.setdefault("QT_OPENGL", "software")
-os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
+# Older Windows systems used to exhaust the Direct3D device when Qt's scene
+# graph and Chromium's GPU pipeline were both enabled.  That failure mode is no
+# longer the default; hardware acceleration now remains available unless
+# explicitly disabled via the ``FEATHER_FORCE_SOFTWARE_RENDERING`` environment
+# variable.  Operators can set that flag back to ``1`` (or ``true``/``yes``) on
+# machines that still require the fallback.
+
+
+def _force_software_rendering() -> bool:
+    """Return ``True`` if software rendering should be forced for Qt/Chromium."""
+
+    value = os.getenv("FEATHER_FORCE_SOFTWARE_RENDERING")
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+FORCE_SOFTWARE_RENDERING = _force_software_rendering()
+
+if FORCE_SOFTWARE_RENDERING:
+    os.environ.setdefault("QT_OPENGL", "software")
+    os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
 
 logging.basicConfig(
     filename="debug.log",
@@ -2592,8 +2605,10 @@ class MainWindow(QMainWindow):
         map_widget.setPage(page)
 
         settings = map_widget.settings()
-        settings.setAttribute(QWebEngineSettings.WebGLEnabled, False)
-        settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, False)
+        settings.setAttribute(QWebEngineSettings.WebGLEnabled, not FORCE_SOFTWARE_RENDERING)
+        settings.setAttribute(
+            QWebEngineSettings.Accelerated2dCanvasEnabled, not FORCE_SOFTWARE_RENDERING
+        )
         settings.setAttribute(QWebEngineSettings.PluginsEnabled, False)
         layout.addWidget(map_widget)
         self._ensure_map_channel(map_widget.page())
@@ -2777,7 +2792,8 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
+    if FORCE_SOFTWARE_RENDERING:
+        QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
