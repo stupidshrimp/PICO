@@ -19,13 +19,15 @@
     const defaultCenter = [41.8781, -87.6298];
     const defaultZoom = 11;
     let maxAvailableZoom = 13;
-    const followRecenterMeters = 1.0;
+    const RECENTER_METERS = 100;
+    const RECENTER_MIN_MS = 2000;
     let lastFix = L.latLng(defaultCenter[0], defaultCenter[1]);
     let followMode = true;
     let activeBridge = null;
     let gpsHandler = null;
     let lastViewCenter = null;
     let lastViewZoom = null;
+    let lastRecenterAt = 0;
 
     const map = L.map('map', {
                    zoomControl: true,
@@ -86,14 +88,15 @@
       const currentZoom = map.getZoom();
       if (followMode) {
         const currentCenter = map.getCenter();
-        const needsRecentering =
-          !lastViewCenter ||
-          currentCenter.distanceTo(lastFix) > followRecenterMeters ||
-          currentZoom !== lastViewZoom;
-        if (needsRecentering) {
+        const now = performance.now();
+        const moved = !lastViewCenter || currentCenter.distanceTo(lastFix) > RECENTER_METERS;
+        const zoomChanged = currentZoom !== lastViewZoom;
+        const timeOk = (now - lastRecenterAt) >= RECENTER_MIN_MS;
+        if ((moved || zoomChanged) && timeOk) {
           map.setView(lastFix, currentZoom, { animate: false });
           lastViewCenter = map.getCenter();
           lastViewZoom = map.getZoom();
+          lastRecenterAt = now;
         }
       } else {
         lastViewCenter = map.getCenter();
