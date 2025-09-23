@@ -459,9 +459,9 @@ class CRSFPacketProcessor(QObject):
             # original angles in degrees.
             pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", data[3:9])
 
-            roll = math.degrees(roll_raw / 1000.0)
-            pitch = math.degrees(-pitch_raw / 1000.0)
-            yaw = math.degrees(yaw_raw / 1000.0)
+            roll = math.degrees(roll_raw / 10000.0)
+            pitch = math.degrees(-pitch_raw / 10000.0)
+            yaw = math.degrees(yaw_raw / 10000.0)
 
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
         except Exception:

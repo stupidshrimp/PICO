@@ -22,9 +22,9 @@
         "altitude_alarm_airspeed": 20,
         "altitude_alarm_altitude": 17,
         "roll_angle": 45,
-        "stall_alarm_enabled": true,
-        "altitude_alarm_enabled": true,
-        "bank_angle_alarm_enabled": true
+        "stall_alarm_enabled": false,
+        "altitude_alarm_enabled": false,
+        "bank_angle_alarm_enabled": false
     },
     "map": {
         "center": [
@@ -32,8 +32,8 @@
             -87.816288
         ],
         "zoom": 13,
-        "enabled": false,
-        "follow": false
+        "enabled": true,
+        "follow": true
     },
     "aircraft": {
         "battery_cells": "3s"
