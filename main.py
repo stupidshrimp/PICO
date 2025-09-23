@@ -307,6 +307,20 @@ class MainWindow(QMainWindow):
         self.osd_cfg = self.config.setdefault("osd", {})
         smoothing_percent = int(self.osd_cfg.get("attitude_smoothing", 20))
         self.osd_cfg["attitude_smoothing"] = smoothing_percent
+        self._fbw_roll_limit_deg = 45.0
+        self._fbw_pitch_limit_deg = 25.0
+        try:
+            self._fbw_roll_limit_deg = float(
+                self.osd_cfg.get("fbw_roll_limit_deg", self._fbw_roll_limit_deg)
+            )
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._fbw_pitch_limit_deg = float(
+                self.osd_cfg.get("fbw_pitch_limit_deg", self._fbw_pitch_limit_deg)
+            )
+        except (TypeError, ValueError):
+            pass
         if hasattr(self.ui, "attitudeSmoothingSlider"):
             self.ui.attitudeSmoothingSlider.setMinimum(1)
             self.ui.attitudeSmoothingSlider.setMaximum(100)
@@ -508,6 +522,9 @@ class MainWindow(QMainWindow):
         self.rollpitch_osd = RollPitchOSD(self.ui.rollpitchosd)
         self.rollpitch_osd.set_smoothing(
             self.osd_cfg.get("attitude_smoothing", 20) / 100.0
+        )
+        self.rollpitch_osd.setFlightDirectorRanges(
+            self._fbw_roll_limit_deg, self._fbw_pitch_limit_deg
         )
         self.rollpitch_osd.resize(self.ui.rollpitchosd.size())
         self.rollpitch_osd.show()
@@ -1051,6 +1068,7 @@ class MainWindow(QMainWindow):
         # Joystick values update the label texts
         # ------------------------------------------------------------------
         joy_pitch = joy_roll = None
+        desired_pitch_deg = desired_roll_deg = None
         if self.joystick:
             try:
                 joy_pitch, joy_roll = self.joystick.get_raw_values()
@@ -1072,6 +1090,14 @@ class MainWindow(QMainWindow):
             norm_roll = (joy_roll - 512) / 512
             self.pitch_indicator.setValue(norm_pitch)
             self.roll_indicator.setValue(norm_roll)
+            desired_pitch_deg = max(
+                -self._fbw_pitch_limit_deg,
+                min(self._fbw_pitch_limit_deg, norm_pitch * self._fbw_pitch_limit_deg),
+            )
+            desired_roll_deg = max(
+                -self._fbw_roll_limit_deg,
+                min(self._fbw_roll_limit_deg, norm_roll * self._fbw_roll_limit_deg),
+            )
         self.yaw_indicator.setValue(self.yaw_value)
         self.throttle_indicator.setValue(self.throttle_percent)
 
@@ -1083,6 +1109,7 @@ class MainWindow(QMainWindow):
             self.altitude_osd.setAltitude(self.current_altitude or 0.0)
             self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
             self.compass_osd.setYaw(self.telemetry_yaw or 0.0)
+            self.rollpitch_osd.setDesiredAttitude(None, None)
             return
 
         self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
@@ -1092,6 +1119,15 @@ class MainWindow(QMainWindow):
             self.airspeed_osd.setAirspeed(self.current_airspeed)
         if self.telemetry_yaw is not None:
             self.compass_osd.setYaw(self.telemetry_yaw)
+
+        if (
+            self.control_mode == "Fly-By-Wire"
+            and desired_roll_deg is not None
+            and desired_pitch_deg is not None
+        ):
+            self.rollpitch_osd.setDesiredAttitude(desired_roll_deg, desired_pitch_deg)
+        else:
+            self.rollpitch_osd.setDesiredAttitude(None, None)
 
     def cut_throttle(self) -> None:
         """Immediately drop the throttle to zero."""

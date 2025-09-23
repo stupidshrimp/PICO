@@ -22,6 +22,10 @@ class RollPitchOSD(QWidget):
         self._roll = 0.0
         self._initialized = False
         self._smoothing = 0.2  # Weight for new samples
+        self._desired_roll = None
+        self._desired_pitch = None
+        self._fd_roll_range = 45.0
+        self._fd_pitch_range = 25.0
         self.setMinimumSize(300, 300)
 
     def set_smoothing(self, weight: float) -> None:
@@ -68,6 +72,47 @@ class RollPitchOSD(QWidget):
             self._roll = self._roll * (1 - self._smoothing) + roll_deg * self._smoothing
             self._pitch = self._pitch * (1 - self._smoothing) + pitch_deg * self._smoothing
         self.update()
+
+    def setDesiredAttitude(self, roll_deg, pitch_deg) -> None:
+        """Display a flight director cue indicating the desired attitude."""
+
+        if roll_deg is None or pitch_deg is None:
+            if self._desired_roll is not None or self._desired_pitch is not None:
+                self._desired_roll = None
+                self._desired_pitch = None
+                self.update()
+            return
+
+        try:
+            new_roll = float(roll_deg)
+            new_pitch = float(pitch_deg)
+        except (TypeError, ValueError):
+            return
+
+        if self._desired_roll != new_roll or self._desired_pitch != new_pitch:
+            self._desired_roll = new_roll
+            self._desired_pitch = new_pitch
+            self.update()
+
+    def setFlightDirectorRanges(self, roll_range: float, pitch_range: float) -> None:
+        """Configure the range in degrees used for the flight director cue."""
+
+        try:
+            roll_range = float(roll_range)
+            pitch_range = float(pitch_range)
+        except (TypeError, ValueError):
+            return
+
+        roll_range = max(1.0, abs(roll_range))
+        pitch_range = max(1.0, abs(pitch_range))
+
+        if (
+            self._fd_roll_range != roll_range
+            or self._fd_pitch_range != pitch_range
+        ):
+            self._fd_roll_range = roll_range
+            self._fd_pitch_range = pitch_range
+            self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -182,4 +227,52 @@ class RollPitchOSD(QWidget):
         painter.drawLine(center_x, center_y - CROSS_SIZE, center_x, center_y + CROSS_SIZE)
         painter.drawLine(center_x - CROSS_SIZE, center_y, center_x + CROSS_SIZE, center_y)
 
+        self._draw_flight_director(painter, center_x, center_y, SCALE)
+
         painter.end()
+
+    def _draw_flight_director(self, painter: QPainter, center_x: float, center_y: float, scale: float) -> None:
+        """Render magenta crossbars that indicate the desired attitude."""
+
+        if self._desired_roll is None or self._desired_pitch is None:
+            return
+
+        roll_error = self._desired_roll - self._roll
+        pitch_error = self._desired_pitch - self._pitch
+
+        half_width = self.width() / 2
+        half_height = self.height() / 2
+        margin = 20
+
+        if half_width <= margin or half_height <= margin:
+            return
+
+        if self._fd_roll_range > 0:
+            roll_scale_px = (half_width - margin) / self._fd_roll_range
+        else:
+            roll_scale_px = 0.0
+        x_offset = roll_error * roll_scale_px
+        x_offset = max(-half_width + margin, min(half_width - margin, x_offset))
+
+        y_offset = -pitch_error * scale
+        y_offset = max(-half_height + margin, min(half_height - margin, y_offset))
+
+        bar_length = min(self.width(), self.height()) * 0.25
+        bar_length = max(30.0, bar_length)
+        bar_half = bar_length / 2
+
+        cue_pen = QPen(QColor(255, 0, 255), 4)
+        cue_pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(cue_pen)
+
+        painter.drawLine(center_x - bar_half, center_y + y_offset, center_x + bar_half, center_y + y_offset)
+        painter.drawLine(center_x + x_offset, center_y - bar_half, center_x + x_offset, center_y + bar_half)
+
+        size = 6
+        painter.fillRect(
+            center_x + x_offset - size / 2,
+            center_y + y_offset - size / 2,
+            size,
+            size,
+            QColor(255, 0, 255),
+        )

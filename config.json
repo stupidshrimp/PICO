@@ -13,7 +13,9 @@
         "packet_interval": 3
     },
     "osd": {
-        "attitude_smoothing": 100
+        "attitude_smoothing": 100,
+        "fbw_roll_limit_deg": 45.0,
+        "fbw_pitch_limit_deg": 25.0
     },
     "vtx": {},
     "warnings": {

@@ -20,6 +20,9 @@ DEFAULT_CONFIG = {
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator
         "attitude_smoothing": 20,
+        # Maximum FBW attitude targets (degrees) used for the flight director cue
+        "fbw_roll_limit_deg": 45.0,
+        "fbw_pitch_limit_deg": 25.0,
     },
     # ``device_index`` is optional so that automatic capture device detection
     # can run when no explicit index is configured.
