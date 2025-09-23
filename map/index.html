@@ -54,7 +54,11 @@
         return;
       }
       maxAvailableZoom = Math.max(0, zoom);
-      tiles.setMaxZoom(maxAvailableZoom);
+      if (tiles && typeof tiles.setMaxZoom === 'function') {
+        tiles.setMaxZoom(maxAvailableZoom);
+      } else if (tiles && tiles.options) {
+        tiles.options.maxZoom = maxAvailableZoom;
+      }
       if (typeof map.setMaxZoom === 'function') {
         map.setMaxZoom(maxAvailableZoom);
       } else {
