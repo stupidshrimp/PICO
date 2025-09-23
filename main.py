@@ -355,11 +355,6 @@ class MainWindow(QMainWindow):
         self.last_link_stats_packet_time = None
         self.link_stats_first_received_time = None
         self.link_stats_connected = False
-        self._combined_event_times = {
-            "connect": {"attitude": None, "link_stats": None},
-            "disconnect": {"attitude": None, "link_stats": None},
-        }
-
         self.attitude_monitor_timer = QTimer(self)
         self.attitude_monitor_timer.timeout.connect(
             self.check_attitude_connection
@@ -1391,7 +1386,7 @@ class MainWindow(QMainWindow):
         self.sound_players[name] = (player, output)
 
     def _handle_connection_sound(self, source: str, connected: bool) -> None:
-        """Play connection or disconnection sounds and combined alerts."""
+        """Play the connection or disconnection sound for ``source``."""
 
         sound_map = {
             ("attitude", True): "telemetryonline",
@@ -1399,19 +1394,8 @@ class MainWindow(QMainWindow):
             ("link_stats", True): "connectedalarm",
             ("link_stats", False): "disconnectedalarm",
         }
-        event_type = "connect" if connected else "disconnect"
-        now = time.monotonic()
-        other_source = "link_stats" if source == "attitude" else "attitude"
 
         self.play_sound_sequence([sound_map[(source, connected)]])
-
-        last_other_time = self._combined_event_times[event_type][other_source]
-        self._combined_event_times[event_type][source] = now
-        if last_other_time is not None and now - last_other_time <= 0.5:
-            combined_sound = "elrsconnected" if connected else "elrsdisconnected"
-            self.play_sound_sequence([combined_sound])
-            self._combined_event_times[event_type][source] = None
-            self._combined_event_times[event_type][other_source] = None
 
     def check_attitude_connection(self):
         """Monitor attitude packet reception and play connection sounds."""
