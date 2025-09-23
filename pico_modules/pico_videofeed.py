@@ -282,6 +282,14 @@ class VideoFeed(QObject):
 
     def remove_opacity_effect(self):
         """Remove the opacity effect from the QLabel."""
+        if self.text_animation is not None:
+            if self.text_animation.state() == QAbstractAnimation.Running:
+                self.text_animation.stop()
+            self.text_animation.deleteLater()
+            self.text_animation = None
         if hasattr(self.label, "_opacity_effect"):
+            effect = self.label._opacity_effect
             self.label.setGraphicsEffect(None)  # Remove the effect
+            if effect is not None:
+                effect.deleteLater()
             del self.label._opacity_effect  # Delete the reference to free resources
