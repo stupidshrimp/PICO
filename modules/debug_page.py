@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Iterable, Sequence
@@ -194,9 +195,33 @@ class DebugPage:
                 detail += f" percent={percent:.0f}%"
         elif packet_type == "link_stats" and len(values) >= 6:
             rssi_a, rssi_b, link_quality, snr, downlink_lq, downlink_snr = values[:6]
+            piggyback_info = ""
+            if len(values) >= 7:
+                piggyback_count_value = values[6]
+                try:
+                    piggyback_count = int(piggyback_count_value)
+                except (TypeError, ValueError):
+                    try:
+                        as_float = float(piggyback_count_value)
+                    except (TypeError, ValueError):
+                        piggyback_info = f" piggyback_packets={piggyback_count_value}"
+                    else:
+                        if math.isnan(as_float) or as_float <= 0:
+                            piggyback_info = " piggyback_packets=0"
+                        else:
+                            piggyback_info = f" piggyback_packets={as_float:g}"
+                else:
+                    piggyback_info = (
+                        f" piggyback_packets={piggyback_count}" if piggyback_count else ""
+                    )
+                    if piggyback_info == "":
+                        piggyback_info = " piggyback_packets=0"
+            if piggyback_info == "":
+                piggyback_info = " piggyback_packets=0"
             detail = (
                 f"RSSI_A={rssi_a} RSSI_B={rssi_b} LQ={link_quality}% "
                 f"SNR={snr} dB Downlink_LQ={downlink_lq}% Downlink_SNR={downlink_snr} dB"
+                f"{piggyback_info}"
             )
         elif packet_type == "joystick" and len(values) >= 2:
             pitch, roll = values[:2]

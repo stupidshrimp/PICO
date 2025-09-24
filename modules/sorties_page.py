@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 from datetime import datetime
 from typing import Optional
@@ -49,7 +50,9 @@ class SortiesPage:
         button.setMinimumSize(self._ui.btn_home.minimumSize())
         button.setFont(self._ui.btn_home.font())
         button.setCursor(QCursor(Qt.PointingHandCursor))
-        button.setStyleSheet("background-image: url(:/icons/images/icons/cil-airplane-mode.png);")
+        button.setStyleSheet(
+            "background-image: url(:/icons/images/icons/cil-history.png);"
+        )
         button.setText("Sorties")
         self._ui.verticalLayout_8.addWidget(button)
         self._ui.btn_sorties = button
@@ -87,6 +90,11 @@ class SortiesPage:
         self.status_label = QLabel("Select a sortie to view its telemetry plots.")
         self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(self.status_label)
+
+        self.piggyback_label = QLabel("")
+        self.piggyback_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.piggyback_label.hide()
+        layout.addWidget(self.piggyback_label)
 
         # Plot widgets stacked vertically for clarity
         self.roll_plot, self.roll_actual_curve, self.roll_stick_curve = self._create_dual_plot(
@@ -213,6 +221,7 @@ class SortiesPage:
         if not files:
             self.status_label.setText("No sortie logs found. Record a flight to get started.")
             self._clear_plots()
+            self.piggyback_label.hide()
             return
 
         if current_path:
@@ -230,6 +239,7 @@ class SortiesPage:
         if not path:
             self._clear_plots()
             self.status_label.setText("Select a sortie to view its telemetry plots.")
+            self.piggyback_label.hide()
             return
 
         dataset = self._parse_sortie_file(path)
@@ -237,15 +247,29 @@ class SortiesPage:
             self._clear_plots()
             basename = os.path.basename(path)
             self.status_label.setText(f"Failed to load {basename}. File may be empty or corrupted.")
+            self.piggyback_label.hide()
             return
 
         self._update_plots(dataset)
         basename = os.path.basename(path)
         duration = dataset["time"][-1] if dataset["time"].size else 0.0
         samples = dataset["time"].size
+        piggyback_indicator = dataset.get("link_piggyback_indicator")
+        piggyback_events = 0
+        if piggyback_indicator is not None and piggyback_indicator.size:
+            piggyback_events = int(np.nansum(piggyback_indicator))
         self.status_label.setText(
             f"{basename} — {samples} samples, duration {duration:.1f} s"
         )
+        if piggyback_events:
+            self.piggyback_label.setText(
+                f"{piggyback_events} link-stat packets carried piggyback telemetry."
+            )
+        else:
+            self.piggyback_label.setText(
+                "No piggyback telemetry was recorded in link statistics packets."
+            )
+        self.piggyback_label.show()
 
     # ------------------------------------------------------------------
     # Data parsing and plotting
@@ -271,7 +295,9 @@ class SortiesPage:
                     "link_quality": [],
                     "rssi_a": [],
                     "rssi_b": [],
+                    "link_piggyback_count": [],
                 }
+                piggyback_indicator: list[float] = []
                 for row in reader:
                     timestamp = row.get("timestamp")
                     if not timestamp:
@@ -286,6 +312,16 @@ class SortiesPage:
                     timestamps.append(dt)
                     for key in series.keys():
                         series[key].append(self._parse_float(row.get(key)))
+                    piggyback_value = series["link_piggyback_count"][-1]
+                    packet_type = (row.get("packet_type") or "").strip().lower()
+                    if (
+                        packet_type == "link_stats"
+                        and math.isfinite(piggyback_value)
+                        and piggyback_value > 0.0
+                    ):
+                        piggyback_indicator.append(1.0)
+                    else:
+                        piggyback_indicator.append(0.0)
         except OSError:
             return None
 
@@ -297,6 +333,7 @@ class SortiesPage:
         dataset: dict[str, np.ndarray] = {"time": times}
         for key, values in series.items():
             dataset[key] = self._to_array(values)
+        dataset["link_piggyback_indicator"] = self._to_array(piggyback_indicator)
         return dataset
 
     @staticmethod
@@ -379,6 +416,7 @@ class SortiesPage:
         ):
             if curve is not None:
                 curve.setData([], [])
+        self.piggyback_label.hide()
 
     def _scale_stick_angles(self, values: np.ndarray) -> np.ndarray:
         if values.size == 0:

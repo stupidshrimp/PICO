@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
             "snr",
             "downlink_quality",
             "downlink_snr",
+            "link_piggyback_count",
             "battery_voltage",
             "battery_current",
             "battery_capacity",
@@ -1640,20 +1641,33 @@ class MainWindow(QMainWindow):
             else:
                 self.link_stats_first_received_time = None
 
-            (
-                rssi_a,
-                rssi_b,
-                link_quality,
-                snr,
-                downlink_lq,
-                downlink_snr,
-            ) = values
+            piggyback_count = 0
+            if len(values) >= 7:
+                (
+                    rssi_a,
+                    rssi_b,
+                    link_quality,
+                    snr,
+                    downlink_lq,
+                    downlink_snr,
+                    piggyback_count,
+                ) = values[:7]
+            else:
+                (
+                    rssi_a,
+                    rssi_b,
+                    link_quality,
+                    snr,
+                    downlink_lq,
+                    downlink_snr,
+                ) = values[:6]
             self.telemetry_state["rssi_a"] = rssi_a
             self.telemetry_state["rssi_b"] = rssi_b
             self.telemetry_state["link_quality"] = link_quality
             self.telemetry_state["snr"] = snr
             self.telemetry_state["downlink_quality"] = downlink_lq
             self.telemetry_state["downlink_snr"] = downlink_snr
+            self.telemetry_state["link_piggyback_count"] = piggyback_count
             self.data_page.add_link_stats(
                 rssi_a,
                 rssi_b,
@@ -1661,6 +1675,7 @@ class MainWindow(QMainWindow):
                 downlink_lq,
                 snr,
                 downlink_snr,
+                piggyback_count,
             )
             _, color = self.classify_quality(link_quality)
             self.set_label(

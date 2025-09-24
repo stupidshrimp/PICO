@@ -229,6 +229,7 @@ class DataPage:
         downlink_quality: float,
         snr: float,
         downlink_snr: float,
+        piggyback_packets: float | int = 0,
     ) -> None:
         self.rssi_a_series.append(rssi_a)
         self.rssi_b_series.append(rssi_b)

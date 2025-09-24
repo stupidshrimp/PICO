@@ -361,27 +361,48 @@ class CRSFPacketProcessor(QObject):
                 downlink_lq,
                 downlink_snr,
             ) = struct.unpack("=bbBbBBBbBb", stats_bytes)
-
-            self.telemetry_ready.emit(
-                (
-                    "link_stats",
-                    rssi_a,
-                    rssi_b,
-                    link_quality,
-                    snr,
-                    downlink_lq,
-                    downlink_snr,
-                )
-            )
         except Exception:
             logger.exception("Failed to parse link statistics packet")
             return
 
+        remaining = stats_view[10:]
+        piggyback_count = 0
+        if remaining:
+            piggyback_count = self._count_piggyback_packets(remaining)
+
+        self.telemetry_ready.emit(
+            (
+                "link_stats",
+                rssi_a,
+                rssi_b,
+                link_quality,
+                snr,
+                downlink_lq,
+                downlink_snr,
+                piggyback_count,
+            )
+        )
+
         # Any remaining bytes are piggybacked telemetry that should be decoded
         # as if they arrived in a dedicated telemetry frame.
-        remaining = stats_view[10:]
         if remaining:
             self._decode_telemetry_stream(remaining.tobytes())
+
+    def _count_piggyback_packets(self, payload: memoryview) -> int:
+        """Return the number of recognised telemetry packets in ``payload``."""
+
+        index = 0
+        length = len(payload)
+        count = 0
+        while index < length:
+            packet_type = payload[index]
+            index += 1
+            consumed = self._decode_payload(packet_type, payload[index:], emit=False)
+            if not consumed:
+                break
+            index += consumed
+            count += 1
+        return count
 
 
     def _decode_telemetry_stream(self, payload: bytes) -> None:
@@ -407,7 +428,9 @@ class CRSFPacketProcessor(QObject):
             index += consumed
 
 
-    def _decode_payload(self, packet_type: int, payload: bytes | memoryview) -> int:
+    def _decode_payload(
+        self, packet_type: int, payload: bytes | memoryview, *, emit: bool = True
+    ) -> int:
         """Decode a single telemetry payload.
 
         Parameters
@@ -452,7 +475,10 @@ class CRSFPacketProcessor(QObject):
             alt_ft = (alt_raw - 1000) * 3.28084
             course = crs_raw / 100.0
 
-            self.telemetry_ready.emit(("gps", lat, lon, alt_ft, speed_mph, course, sats))
+            if emit:
+                self.telemetry_ready.emit(
+                    ("gps", lat, lon, alt_ft, speed_mph, course, sats)
+                )
             return needed
 
         if packet_type == 0x08:  # Battery
@@ -477,12 +503,14 @@ class CRSFPacketProcessor(QObject):
             current = current_raw / 10.0
 
             if percent is not None:
-                self.telemetry_ready.emit(
-                    ("battery", voltage, current, capacity, percent)
-                )
+                if emit:
+                    self.telemetry_ready.emit(
+                        ("battery", voltage, current, capacity, percent)
+                    )
                 return 7
 
-            self.telemetry_ready.emit(("battery", voltage, current, capacity))
+            if emit:
+                self.telemetry_ready.emit(("battery", voltage, current, capacity))
             return 6
 
         if packet_type == 0x1E:  # Attitude
@@ -505,7 +533,8 @@ class CRSFPacketProcessor(QObject):
             pitch = math.degrees(-pitch_raw / 10000.0)
             yaw = math.degrees(yaw_raw / 10000.0)
 
-            self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
+            if emit:
+                self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
             return needed
 
         if packet_type == 0xF0:  # Custom telemetry
