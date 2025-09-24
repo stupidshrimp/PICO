@@ -106,6 +106,7 @@ from config import load_config, save_config
 
 from modules.data_page import DataPage
 from modules.debug_page import DebugPage
+from modules.sorties_page import SortiesPage
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -159,6 +160,10 @@ class MainWindow(QMainWindow):
             "pitch",
             "roll",
             "yaw",
+            "stick_pitch",
+            "stick_roll",
+            "stick_yaw",
+            "stick_throttle",
             "latitude",
             "longitude",
             "altitude_ft",
@@ -279,6 +284,9 @@ class MainWindow(QMainWindow):
 
         # Add Data tab and associated graphs
         self.data_page = DataPage(self)
+
+        # Add Sorties tab for reviewing recorded telemetry logs
+        self.sorties_page = SortiesPage(self)
 
         # Add Debug tab for monitoring raw telemetry and joystick data
         self.debug_page = DebugPage(self)
@@ -449,6 +457,10 @@ class MainWindow(QMainWindow):
         self.throttle_indicator = ThrottleWidget(self.ui.throttleInput)
         self.throttle_indicator.resize(self.ui.throttleInput.size())
         self.throttle_indicator.show()
+        self._stick_angle_scale = 90.0
+        self._last_stick_pitch_norm: Optional[float] = None
+        self._last_stick_roll_norm: Optional[float] = None
+        self._stick_last_update = 0.0
 
         # Timer used to ramp the throttle toward its target value
         self.throttle_ramp_timer = QTimer(self)
@@ -547,6 +559,7 @@ class MainWindow(QMainWindow):
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
         widgets.btn_data.clicked.connect(self.buttonClick)
+        widgets.btn_sorties.clicked.connect(self.buttonClick)
         widgets.btn_debug.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
@@ -984,6 +997,10 @@ class MainWindow(QMainWindow):
         if not self.sortie_recording or not self.sortie_writer:
             return
 
+        # Ensure the recorded stick state reflects the most recent inputs.
+        if time.monotonic() - self._stick_last_update > 0.2:
+            self._capture_stick_state()
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         row = [timestamp, packet_type]
         for field in self._sortie_fields:
@@ -1003,6 +1020,47 @@ class MainWindow(QMainWindow):
                 "Telemetry recording stopped due to a write error.\n"
                 f"Details: {exc}",
             )
+
+    def _capture_stick_state(
+        self,
+    ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Update cached joystick values for UI, logging, and sortie records."""
+
+        joy_pitch = joy_roll = None
+        norm_pitch = norm_roll = None
+
+        if self.joystick:
+            try:
+                joy_pitch, joy_roll = self.joystick.get_raw_values()
+            except Exception:
+                joy_pitch = joy_roll = None
+
+        if joy_pitch is not None and joy_roll is not None:
+            norm_pitch = (joy_pitch - 512) / 512
+            norm_roll = (joy_roll - 512) / 512
+            norm_pitch = max(-1.0, min(1.0, norm_pitch))
+            norm_roll = max(-1.0, min(1.0, norm_roll))
+            self._last_stick_pitch_norm = norm_pitch
+            self._last_stick_roll_norm = norm_roll
+        else:
+            norm_pitch = self._last_stick_pitch_norm
+            norm_roll = self._last_stick_roll_norm
+
+        if norm_pitch is not None:
+            self.telemetry_state["stick_pitch"] = norm_pitch * self._stick_angle_scale
+        else:
+            self.telemetry_state["stick_pitch"] = None
+
+        if norm_roll is not None:
+            self.telemetry_state["stick_roll"] = norm_roll * self._stick_angle_scale
+        else:
+            self.telemetry_state["stick_roll"] = None
+
+        self.telemetry_state["stick_yaw"] = float(self.yaw_value) * self._stick_angle_scale
+        self.telemetry_state["stick_throttle"] = float(self.throttle_percent)
+        self._stick_last_update = time.monotonic()
+
+        return joy_pitch, joy_roll, norm_pitch, norm_roll
 
     @Slot(str)
     def handle_worker_error(self, message: str):
@@ -1045,26 +1103,19 @@ class MainWindow(QMainWindow):
         # ------------------------------------------------------------------
         # Joystick values update the label texts
         # ------------------------------------------------------------------
-        joy_pitch = joy_roll = None
-        if self.joystick:
-            try:
-                joy_pitch, joy_roll = self.joystick.get_raw_values()
-                if (
-                    self._debug_monitoring
-                    and self._debug_include_joystick
-                    and joy_pitch is not None
-                    and joy_roll is not None
-                ):
-                    self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
-            except Exception:
-                pass
+        joy_pitch, joy_roll, norm_pitch, norm_roll = self._capture_stick_state()
+        if (
+            self._debug_monitoring
+            and self._debug_include_joystick
+            and joy_pitch is not None
+            and joy_roll is not None
+        ):
+            self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
-        if joy_pitch is None:
+        if norm_pitch is None or norm_roll is None:
             self.pitch_indicator.setValue(0)
             self.roll_indicator.setValue(0)
         else:
-            norm_pitch = (joy_pitch - 512) / 512
-            norm_roll = (joy_roll - 512) / 512
             self.pitch_indicator.setValue(norm_pitch)
             self.roll_indicator.setValue(norm_roll)
         self.yaw_indicator.setValue(self.yaw_value)
@@ -2596,6 +2647,11 @@ class MainWindow(QMainWindow):
         # SHOW DATA PAGE
         if btnName == "btn_data":
             widgets.stackedWidget.setCurrentWidget(widgets.data_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        if btnName == "btn_sorties":
+            widgets.stackedWidget.setCurrentWidget(widgets.sorties_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
