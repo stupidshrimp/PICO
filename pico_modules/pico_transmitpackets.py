@@ -313,23 +313,23 @@ class CRSFPacketProcessor(QObject):
 
                 packet_type = packet[2]
 
+                # ``frame_end`` already accounts for the CRC byte at
+                # ``frame_end - 1``.  Everything between the packet type and the
+                # CRC forms the payload regardless of the envelope type.
+                payload = packet[3 : frame_end - 1]
+
                 # Ignore parameter setting packets (0x3A)
                 if packet_type == 0x3A:
                     continue
 
-                # Telemetry packets are processed without verbose debug logging
-
                 if packet_type == 0x14:
-                    self.decode_link_statistics(packet)
-                elif packet_type == 0x02:
-                    self.decode_gps(packet)
-                elif packet_type == 0x08:
-                    self.decode_battery(packet)
-                elif packet_type == 0x1E:
-                    self.decode_attitude(packet)
-                elif packet_type == 0xF0:
-                    self.decode_custom(packet)
-                else:
+                    self._decode_link_statistics_payload(payload)
+                    continue
+
+                # Treat any other recognised telemetry envelopes the same way
+                # regardless of whether they arrived as standalone frames or as
+                # piggybacked payload bytes from a link-stats packet.
+                if not self._decode_payload(packet_type, payload):
                     # Unknown packet type encountered
                     pass
 
@@ -338,27 +338,29 @@ class CRSFPacketProcessor(QObject):
             self.error.emit(f"Error reading serial data: {e}")
 
 
-    def decode_link_statistics(self, data):
-        """Decode link statistics telemetry packet and emit the info."""
-        if len(data) < 13:
-            logger.warning("Link statistics packet too short")
+    def _decode_link_statistics_payload(self, payload: bytes | memoryview) -> None:
+        """Decode link statistics and forward any embedded telemetry."""
+
+        if len(payload) < 10:
+            logger.warning("Link statistics payload too short: %d", len(payload))
             return
-        if data[1] < 12:
-            logger.warning("Link stats length byte unexpected: %d", data[1])
-            return
+
+        stats_view = memoryview(payload)
+        stats_bytes = stats_view[:10]
+
         try:
             (
                 rssi_a,
                 rssi_b,
                 link_quality,
                 snr,
-                active_antenna,
-                rf_mode,
-                tx_power_enum,
+                _active_antenna,
+                _rf_mode,
+                _tx_power_enum,
                 downlink_rssi,
                 downlink_lq,
                 downlink_snr,
-            ) = struct.unpack("=bbBbBBBbBb", data[3:13])
+            ) = struct.unpack("=bbBbBBBbBb", stats_bytes)
 
             self.telemetry_ready.emit(
                 (
@@ -373,25 +375,71 @@ class CRSFPacketProcessor(QObject):
             )
         except Exception:
             logger.exception("Failed to parse link statistics packet")
+            return
+
+        # Any remaining bytes are piggybacked telemetry that should be decoded
+        # as if they arrived in a dedicated telemetry frame.
+        remaining = stats_view[10:]
+        if remaining:
+            self._decode_telemetry_stream(remaining.tobytes())
 
 
-    def decode_gps(self, data):
-        """Decode a GPS telemetry packet from the radio link."""
-        # GPS packets have a 15 byte payload consisting of:
-        # latitude (4B), longitude (4B), speed (2B, km/h),
-        # ground course (2B, deg*100), altitude (2B, offset +1000 m),
-        # satellites (1B)
-        if len(data) < 19:
-            logger.warning("GPS packet too short")
-            return
-        if data[1] != 17:
-            logger.warning("GPS length byte unexpected: %d", data[1])
-            return
-        try:
-            payload = data[3:18]
-            lat_raw, lon_raw, spd_raw, crs_raw, alt_raw, sats = struct.unpack(
-                ">iiHHHB", payload
-            )
+    def _decode_telemetry_stream(self, payload: bytes) -> None:
+        """Decode one or more telemetry packets from ``payload``.
+
+        Telemetry data piggybacked inside link-stat frames is laid out as a
+        sequence of ``(packet_type, packet_payload)`` pairs.  Each payload has
+        a fixed size for the packet types we understand, allowing the decoder to
+        walk the stream and emit the embedded telemetry events.
+        """
+
+        index = 0
+        payload_len = len(payload)
+        while index < payload_len:
+            packet_type = payload[index]
+            index += 1
+            consumed = self._decode_payload(packet_type, payload[index:])
+            if not consumed:
+                logger.debug(
+                    "Piggyback telemetry type 0x%02X could not be parsed", packet_type
+                )
+                return
+            index += consumed
+
+
+    def _decode_payload(self, packet_type: int, payload: bytes | memoryview) -> int:
+        """Decode a single telemetry payload.
+
+        Parameters
+        ----------
+        packet_type:
+            Telemetry packet type identifier (e.g. ``0x1E`` for attitude).
+        payload:
+            Byte sequence immediately following the packet type.  The decoder
+            consumes only the bytes needed for the recognised telemetry format
+            and returns how many payload bytes were consumed.  Zero indicates
+            the packet type was not recognised.
+        """
+
+        view = memoryview(payload)
+
+        if packet_type == 0x02:  # GPS
+            needed = 15
+            if len(view) < needed:
+                logger.warning(
+                    "GPS payload too short: expected %d bytes, got %d",
+                    needed,
+                    len(view),
+                )
+                return 0
+
+            try:
+                lat_raw, lon_raw, spd_raw, crs_raw, alt_raw, sats = struct.unpack(
+                    ">iiHHHB", view[:15]
+                )
+            except Exception:
+                logger.exception("Failed to unpack GPS payload")
+                return 0
 
             lat = lat_raw / 1e7
             lon = lon_raw / 1e7
@@ -404,84 +452,77 @@ class CRSFPacketProcessor(QObject):
             alt_ft = (alt_raw - 1000) * 3.28084
             course = crs_raw / 100.0
 
-            self.telemetry_ready.emit(
-                ("gps", lat, lon, alt_ft, speed_mph, course, sats)
-            )
-        except Exception:
-            logger.exception("Failed to parse GPS packet")
+            self.telemetry_ready.emit(("gps", lat, lon, alt_ft, speed_mph, course, sats))
+            return needed
 
+        if packet_type == 0x08:  # Battery
+            minimum = 6
+            if len(view) < minimum:
+                logger.warning(
+                    "Battery payload too short: expected at least %d bytes, got %d",
+                    minimum,
+                    len(view),
+                )
+                return 0
 
-    def decode_battery(self, data):
-        """Decode battery telemetry packet."""
-        if len(data) < 9:
-            logger.warning("Battery packet too short")
-            return
+            try:
+                voltage_raw, current_raw, capacity = struct.unpack("<HHH", view[:6])
+            except Exception:
+                logger.exception("Failed to unpack battery payload")
+                return 0
 
-        payload_length = data[1] - 2 if data[1] >= 2 else 0
-        if payload_length < 6:
-            logger.warning("Battery payload too short: %d", payload_length)
-            return
-
-        try:
-            payload = data[3 : 3 + payload_length]
-            voltage_raw, current_raw, capacity = struct.unpack("<HHH", payload[:6])
-            percent = payload[6] if payload_length >= 7 else None
+            percent = float(view[6]) if len(view) > 6 else None
 
             voltage = (voltage_raw + 5) / 10.0
             current = current_raw / 10.0
 
             if percent is not None:
                 self.telemetry_ready.emit(
-                    ("battery", voltage, current, capacity, float(percent))
+                    ("battery", voltage, current, capacity, percent)
                 )
-            else:
-                self.telemetry_ready.emit(("battery", voltage, current, capacity))
-        except Exception:
-            logger.exception("Failed to parse battery packet")
+                return 7
 
+            self.telemetry_ready.emit(("battery", voltage, current, capacity))
+            return 6
 
-    def decode_attitude(self, data):
-        """Decode an attitude telemetry packet (0x1E)."""
-        if len(data) < 9:
-            logger.warning("Attitude packet too short")
-            return
-        if data[1] < 8:
-            logger.warning("Attitude length byte unexpected: %d", data[1])
-            return
-        try:
-            # Attitude packets encode signed 16-bit integers using big-endian
-            # order.  When the telemetry data is produced, the firmware writes
-            # ``pitch``, ``roll`` and ``yaw`` after converting each value from
-            # decidegrees to radians×10 000 (see ``_decidegreeToRadians`` in the
-            # transmitter firmware).  Pitch is negated before transmission.
-            # Mirror that encoding here by unpacking in ``pitch, roll, yaw``
-            # order and applying the inverse conversion so the UI sees the
-            # original angles in degrees.
-            pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", data[3:9])
+        if packet_type == 0x1E:  # Attitude
+            needed = 6
+            if len(view) < needed:
+                logger.warning(
+                    "Attitude payload too short: expected %d bytes, got %d",
+                    needed,
+                    len(view),
+                )
+                return 0
+
+            try:
+                pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", view[:6])
+            except Exception:
+                logger.exception("Failed to unpack attitude payload")
+                return 0
 
             roll = math.degrees(roll_raw / 10000.0)
             pitch = math.degrees(-pitch_raw / 10000.0)
             yaw = math.degrees(yaw_raw / 10000.0)
 
             self.telemetry_ready.emit(("attitude", pitch, roll, yaw))
-        except Exception:
-            logger.exception("Failed to parse attitude packet")
+            return needed
 
+        if packet_type == 0xF0:  # Custom telemetry
+            needed = 16
+            if len(view) < needed:
+                logger.warning(
+                    "Custom telemetry payload too short: expected %d bytes, got %d",
+                    needed,
+                    len(view),
+                )
+                return 0
 
-    def decode_custom(self, data):
-        """Decode a custom telemetry packet (0xF0) with 16 bytes of data."""
-        if len(data) < 20:
-            logger.warning("Custom telemetry packet too short")
-            return
-        if data[1] < 18:
-            logger.warning("Custom telemetry length byte unexpected: %d", data[1])
-            return
-        try:
-            payload = data[3:19]
-            crc = data[19]
-            # Custom telemetry data is parsed but not emitted.
-        except Exception:
-            logger.exception("Failed to parse custom telemetry packet")
+            # Custom telemetry is currently not emitted, but consuming the
+            # payload keeps the parser synchronised with any subsequent bytes.
+            return needed
+
+        return 0
 
 
     @Slot()
