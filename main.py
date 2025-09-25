@@ -76,7 +76,7 @@ from PySide6.QtCore import (
     QElapsedTimer,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap, QPalette, QColor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import shiboken6
 
@@ -3103,6 +3103,22 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(40, 44, 52))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(221, 221, 221))
+    palette.setColor(QPalette.ColorRole.Base, QColor(33, 37, 43))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(40, 44, 52))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(40, 44, 52))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.Text, QColor(221, 221, 221))
+    palette.setColor(QPalette.ColorRole.Button, QColor(33, 37, 43))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(221, 221, 221))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(46, 125, 50))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
+
     window = MainWindow()
     window.show()
     app.aboutToQuit.connect(window.cleanup)
