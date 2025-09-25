@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QStackedLayout,
     QSpinBox,
     QDoubleSpinBox,
+    QScrollArea,
 )
 from PySide6.QtCore import (
     Qt,
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._configure_metric_labels()
+        self._make_configuration_scrollable()
 
         self.battery_percent_bar = None
         self.autopilot_time_label = None
@@ -398,6 +400,39 @@ class MainWindow(QMainWindow):
         # not expose a serial interface. By starting unconditionally, any
         # available capture device at ``device_index`` will be used.
         self.video_feed.start()
+
+    def _make_configuration_scrollable(self) -> None:
+        """Wrap the configuration controls in a scroll area.
+
+        The configuration page contains many toggles and sliders that can
+        extend beyond the fixed application size.  Embedding the container
+        inside a ``QScrollArea`` ensures every control remains accessible
+        regardless of the window height.
+        """
+
+        layout = getattr(self.ui, "verticalLayout_13", None)
+        top_menus = getattr(self.ui, "topMenus", None)
+        content_settings = getattr(self.ui, "contentSettings", None)
+
+        if not layout or top_menus is None or content_settings is None:
+            return
+
+        scroll_area = QScrollArea(content_settings)
+        scroll_area.setObjectName("configurationScrollArea")
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        scroll_area.setContentsMargins(0, 0, 0, 0)
+
+        layout.removeWidget(top_menus)
+        top_menus.setParent(scroll_area)
+        top_menus.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        scroll_area.setWidget(top_menus)
+        layout.addWidget(scroll_area)
+
+        self._configuration_scroll_area = scroll_area
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
