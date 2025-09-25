@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QStackedLayout,
     QSpinBox,
     QDoubleSpinBox,
+    QScrollArea,
 )
 from PySide6.QtCore import (
     Qt,
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._configure_metric_labels()
+        self._make_configuration_scrollable()
 
         self.battery_percent_bar = None
         self.autopilot_time_label = None
@@ -346,58 +348,6 @@ class MainWindow(QMainWindow):
             )
             self.ui.chk_alarm_bank.toggled.connect(self.on_bank_alarm_toggled)
 
-        # Track last worker error to prevent dialog spam
-        self._last_error_message = None
-        self._last_error_time = 0
-
-        # Warning system state
-        self.stall_alarm_playing = False
-        self.altitude_alarm_playing = False
-        self.roll_alarm_playing = False
-        self.stall_alarm_start_time = None
-        self.altitude_alarm_start_time = None
-        self.roll_alarm_start_time = None
-        self.sound_players = {}
-        self.last_attitude_packet_time = None
-        self.attitude_first_received_time = None
-        self.attitude_connected = False
-        self.last_link_stats_packet_time = None
-        self.link_stats_first_received_time = None
-        self.link_stats_connected = False
-        self.attitude_monitor_timer = QTimer(self)
-        self.attitude_monitor_timer.timeout.connect(
-            self.check_attitude_connection
-        )
-        self.attitude_monitor_timer.start(200)
-
-        # Initialize the video feed.  If a specific capture device index is
-        # provided in the configuration it takes precedence.  Otherwise,
-        # automatically scan for an available device. ``detect_device_index``
-        # prefers the external VTX at index 1 but falls back to other indices
-        # if needed.
-        video_index = self.vtx_cfg.get("device_index")
-        if video_index is None:
-            video_index = VideoFeed.detect_device_index()
-            if video_index is not None:
-                print(
-                    f"Using auto-detected video capture device index: {video_index}"
-                )
-            else:
-                print(
-                    "No video capture device found; feed will remain disconnected."
-                )
-        else:
-            print(f"Using configured video capture device index: {video_index}")
-
-        self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
-        self.video_feed.worker.error.connect(self.handle_worker_error)
-
-        # Start the video feed immediately. The previous implementation
-        # attempted to validate a serial "port" before starting the
-        # feed, which prevented connection to USB video receivers that do
-        # not expose a serial interface. By starting unconditionally, any
-        # available capture device at ``device_index`` will be used.
-        self.video_feed.start()
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
@@ -483,6 +433,60 @@ class MainWindow(QMainWindow):
         self._latest_gps_fix_seq = 0
         self._last_pushed_gps_fix_seq = 0
         self._gps_first_fix_sent = False
+
+        # Track last worker error to prevent dialog spam
+        self._last_error_message = None
+        self._last_error_time = 0
+
+        # Warning system state
+        self.stall_alarm_playing = False
+        self.altitude_alarm_playing = False
+        self.roll_alarm_playing = False
+        self.stall_alarm_start_time = None
+        self.altitude_alarm_start_time = None
+        self.roll_alarm_start_time = None
+        self.sound_players = {}
+        self.last_attitude_packet_time = None
+        self.attitude_first_received_time = None
+        self.attitude_connected = False
+        self.last_link_stats_packet_time = None
+        self.link_stats_first_received_time = None
+        self.link_stats_connected = False
+        self.attitude_monitor_timer = QTimer(self)
+        self.attitude_monitor_timer.timeout.connect(
+            self.check_attitude_connection
+        )
+        self.attitude_monitor_timer.start(200)
+
+        # Initialize the video feed.  If a specific capture device index is
+        # provided in the configuration it takes precedence.  Otherwise,
+        # automatically scan for an available device. ``detect_device_index``
+        # prefers the external VTX at index 1 but falls back to other indices
+        # if needed.
+        video_index = self.vtx_cfg.get("device_index")
+        if video_index is None:
+            video_index = VideoFeed.detect_device_index()
+            if video_index is not None:
+                print(
+                    f"Using auto-detected video capture device index: {video_index}"
+                )
+            else:
+                print(
+                    "No video capture device found; feed will remain disconnected."
+                )
+        else:
+            print(f"Using configured video capture device index: {video_index}")
+
+        self.video_feed = VideoFeed(self.ui.VideoLabel, device_index=video_index)
+        self.video_feed.worker.error.connect(self.handle_worker_error)
+
+        # Start the video feed immediately. The previous implementation
+        # attempted to validate a serial "port" before starting the
+        # feed, which prevented connection to USB video receivers that do
+        # not expose a serial interface. By starting unconditionally, any
+        # available capture device at ``device_index`` will be used.
+        self.video_feed.start()
+
         self._gps_has_lock: Optional[bool] = None
         self.current_altitude = None
         self.current_airspeed = None
@@ -580,6 +584,39 @@ class MainWindow(QMainWindow):
         # SET HOME PAGE AND SELECT MENU
         widgets.stackedWidget.setCurrentWidget(widgets.home)
         widgets.btn_home.setStyleSheet(UIFunctions.selectMenu(widgets.btn_home.styleSheet()))
+
+    def _make_configuration_scrollable(self) -> None:
+        """Wrap the configuration controls in a scroll area.
+
+        The configuration page contains many toggles and sliders that can
+        extend beyond the fixed application size.  Embedding the container
+        inside a ``QScrollArea`` ensures every control remains accessible
+        regardless of the window height.
+        """
+
+        layout = getattr(self.ui, "verticalLayout_13", None)
+        top_menus = getattr(self.ui, "topMenus", None)
+        content_settings = getattr(self.ui, "contentSettings", None)
+
+        if not layout or top_menus is None or content_settings is None:
+            return
+
+        scroll_area = QScrollArea(content_settings)
+        scroll_area.setObjectName("configurationScrollArea")
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        scroll_area.setContentsMargins(0, 0, 0, 0)
+
+        layout.removeWidget(top_menus)
+        top_menus.setParent(scroll_area)
+        top_menus.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        scroll_area.setWidget(top_menus)
+        layout.addWidget(scroll_area)
+
+        self._configuration_scroll_area = scroll_area
 
 
     def _configure_metric_labels(self) -> None:
