@@ -470,6 +470,24 @@ class MainWindow(QMainWindow):
         else:
             print("CRSF disabled due to unavailable port.")
 
+        # Timer for transmitting data (default from config)
+        self.transmit_timer = QTimer(self)
+        self.transmit_timer.timeout.connect(self.transmit_data)
+        transmit_interval = self.crsf_cfg.get("packet_interval", 15)
+        self.transmit_timer.start(transmit_interval)
+
+        # Track transmission state and countdown handling for the configuration
+        # page's terminate/start button.
+        self.transmission_active = True
+        self._transmission_hold_timer = QTimer(self)
+        self._transmission_hold_timer.setInterval(1000)
+        self._transmission_hold_timer.timeout.connect(
+            self._on_transmission_hold_tick
+        )
+        self._transmission_hold_in_progress = False
+        self._transmission_hold_remaining = 0
+        self._transmission_pressed_while_inactive = False
+
         # Setup configuration page for COM port selections
         self.setup_configuration_page()
 
@@ -535,12 +553,6 @@ class MainWindow(QMainWindow):
         self.label_update_timer.timeout.connect(self.update_labels)
 
         self.label_update_timer.start(0)
-
-        # Timer for transmitting data (default from config)
-        self.transmit_timer = QTimer(self)
-        self.transmit_timer.timeout.connect(self.transmit_data)
-        # Throttle default packet rate to reduce GUI load
-        self.transmit_timer.start(self.crsf_cfg.get("packet_interval", 15))
 
         self._gps_map_timer = QTimer(self)
         self._gps_map_timer.setInterval(1000)
@@ -1387,15 +1399,26 @@ class MainWindow(QMainWindow):
     def play_sound(self, name: str):
         """Play a warning sound identified by ``name``.
 
-        MP3 files are expected to reside in an ``audio`` directory and be
-        named ``{name}.mp3``. The player instances are cached so repeated
-        alerts reuse the same player.
+        ``name`` may be provided without an extension (``elrsconnected``) or
+        with a full filename (``elrsinitiated.mp3``). Files are loaded from the
+        ``audio`` directory. Player instances are cached so repeated alerts
+        reuse the same player.
         """
-        file_path = os.path.join("audio", f"{name}.mp3")
+
+        if os.path.splitext(name)[1]:
+            file_path = os.path.join("audio", name)
+            cache_key = name
+        else:
+            file_path = os.path.join("audio", f"{name}.mp3")
+            cache_key = name
+
+        if not os.path.exists(file_path):
+            logging.warning("Sound file not found: %s", file_path)
+            return
 
         # Reuse an existing player if it hasn't been deleted; otherwise create
         # a fresh QMediaPlayer/QAudioOutput pair.
-        player_output = self.sound_players.get(name)
+        player_output = self.sound_players.get(cache_key)
         if player_output:
             player, output = player_output
             if not shiboken6.isValid(player) or not shiboken6.isValid(output):
@@ -1414,19 +1437,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        def handle_status(status, *, name=name, player=player, output=output):
+        def handle_status(status, *, cache_key=cache_key, player=player, output=output):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
                 try:
                     player.mediaStatusChanged.disconnect(handle_status)
                 except Exception:
                     pass
-                self.sound_players.pop(name, None)
+                self.sound_players.pop(cache_key, None)
                 player.deleteLater()
                 output.deleteLater()
 
         player.mediaStatusChanged.connect(handle_status)
         player.play()
-        self.sound_players[name] = (player, output)
+        self.sound_players[cache_key] = (player, output)
 
     def play_sound_sequence(self, names, finished_callback=None):
         """Play a sequence of warning sounds in order.
@@ -1439,9 +1462,20 @@ class MainWindow(QMainWindow):
             return
 
         name = names[0]
-        file_path = os.path.join("audio", f"{name}.mp3")
+        if os.path.splitext(name)[1]:
+            file_path = os.path.join("audio", name)
+            cache_key = name
+        else:
+            file_path = os.path.join("audio", f"{name}.mp3")
+            cache_key = name
 
-        player_output = self.sound_players.get(name)
+        if not os.path.exists(file_path):
+            logging.warning("Sound file not found: %s", file_path)
+            if finished_callback:
+                finished_callback()
+            return
+
+        player_output = self.sound_players.get(cache_key)
         if player_output:
             player, output = player_output
             if not shiboken6.isValid(player) or not shiboken6.isValid(output):
@@ -1458,13 +1492,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        def handle_status(status, *, name=name, player=player, output=output):
+        def handle_status(status, *, cache_key=cache_key, player=player, output=output):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
                 try:
                     player.mediaStatusChanged.disconnect(handle_status)
                 except Exception:
                     pass
-                self.sound_players.pop(name, None)
+                self.sound_players.pop(cache_key, None)
                 player.deleteLater()
                 output.deleteLater()
                 if len(names) > 1:
@@ -1474,7 +1508,7 @@ class MainWindow(QMainWindow):
 
         player.mediaStatusChanged.connect(handle_status)
         player.play()
-        self.sound_players[name] = (player, output)
+        self.sound_players[cache_key] = (player, output)
 
     def _handle_connection_sound(self, source: str, connected: bool) -> None:
         """Play the connection or disconnection sound for ``source``."""
@@ -1851,6 +1885,42 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.reinitialize_ports_button)
         layout.addSpacing(12)
 
+        self._transmission_button_styles = {
+            "active": (
+                "rgb(176, 0, 32)",
+                "rgb(200, 0, 40)",
+                "rgb(140, 0, 28)",
+            ),
+            "hold": (
+                "rgb(255, 140, 0)",
+                "rgb(255, 160, 16)",
+                "rgb(204, 112, 0)",
+            ),
+            "inactive": (
+                "rgb(46, 125, 50)",
+                "rgb(56, 142, 60)",
+                "rgb(35, 97, 39)",
+            ),
+        }
+
+        self.transmission_control_button = QPushButton()
+        self.transmission_control_button.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.transmission_control_button.setMinimumHeight(44)
+        self.transmission_control_button.setSizePolicy(button_policy)
+        self._apply_transmission_button_style("active")
+        self.transmission_control_button.setText("Terminate transmission")
+        layout.addWidget(self.transmission_control_button)
+        layout.addSpacing(12)
+
+        self.transmission_control_button.pressed.connect(
+            self._on_transmission_button_pressed
+        )
+        self.transmission_control_button.released.connect(
+            self._on_transmission_button_released
+        )
+
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
         def add_section(title, *, show_status=True):
@@ -2151,6 +2221,109 @@ class MainWindow(QMainWindow):
 
         self.reinitialize_ports_button.clicked.connect(self.reinitialize_serial_ports)
 
+    def _apply_transmission_button_style(self, state: str) -> None:
+        """Apply the configured stylesheet variant for the transmission button."""
+
+        background, hover, pressed = self._transmission_button_styles[state]
+        stylesheet = (
+            "QPushButton {"
+            f"background-color: {background};"
+            "color: white;"
+            "font-weight: bold;"
+            "border-radius: 8px;"
+            "padding: 8px 16px;"
+            "}"
+            f"QPushButton:hover {{background-color: {hover};}}"
+            f"QPushButton:pressed {{background-color: {pressed};}}"
+            "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
+        )
+        self.transmission_control_button.setStyleSheet(stylesheet)
+
+    def _on_transmission_button_pressed(self) -> None:
+        """Handle press events for the terminate/start transmission button."""
+
+        self._transmission_pressed_while_inactive = not self.transmission_active
+
+        if not self.transmission_active:
+            return
+
+        self._transmission_hold_in_progress = True
+        self._transmission_hold_remaining = 3
+        self._apply_transmission_button_style("hold")
+        self._update_transmission_hold_display()
+        self._transmission_hold_timer.start()
+
+    def _on_transmission_button_released(self) -> None:
+        """Handle release events for the terminate/start transmission button."""
+
+        if self._transmission_hold_in_progress:
+            self._cancel_transmission_hold()
+            return
+
+        if self._transmission_pressed_while_inactive and not self.transmission_active:
+            self._start_transmission()
+
+    def _on_transmission_hold_tick(self) -> None:
+        """Update the hold-to-terminate countdown while the button is pressed."""
+
+        if not self.transmission_control_button.isDown():
+            self._cancel_transmission_hold()
+            return
+
+        self._transmission_hold_remaining -= 1
+        if self._transmission_hold_remaining > 0:
+            self._update_transmission_hold_display()
+            return
+
+        self._transmission_hold_timer.stop()
+        self._transmission_hold_in_progress = False
+        self._terminate_transmission()
+
+    def _update_transmission_hold_display(self) -> None:
+        """Refresh the countdown text while the terminate button is held."""
+
+        self.transmission_control_button.setText(
+            f"Hold for {self._transmission_hold_remaining} seconds to terminate transmission"
+        )
+
+    def _cancel_transmission_hold(self) -> None:
+        """Cancel an in-progress hold-to-terminate action."""
+
+        self._transmission_hold_timer.stop()
+        self._transmission_hold_in_progress = False
+        if self.transmission_active:
+            self._apply_transmission_button_style("active")
+            self.transmission_control_button.setText("Terminate transmission")
+
+    def _terminate_transmission(self) -> None:
+        """Stop packet transmission and update button state."""
+
+        if not self.transmission_active:
+            return
+
+        self.transmit_timer.stop()
+        self.transmission_active = False
+        self._transmission_pressed_while_inactive = False
+        self._transmission_hold_in_progress = False
+        self._transmission_hold_timer.stop()
+        self._apply_transmission_button_style("inactive")
+        self.transmission_control_button.setText("Start transmitting packets")
+        self.play_sound("elrsterminated.p3")
+
+    def _start_transmission(self) -> None:
+        """Resume packet transmission and reset button state."""
+
+        if self.transmission_active:
+            return
+
+        interval = self.crsf_cfg.get("packet_interval", 3)
+        self.transmit_timer.start(interval)
+        self.transmission_active = True
+        self._transmission_pressed_while_inactive = False
+        self._apply_transmission_button_style("active")
+        self.transmission_control_button.setText("Terminate transmission")
+        self.play_sound("elrsinitiated.mp3")
+
     def update_port_lists(self):
         """Refresh available serial ports and update the dropdowns."""
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
@@ -2270,7 +2443,8 @@ class MainWindow(QMainWindow):
             interval = self.crsf_cfg.get("packet_interval", 3)
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
-        self.transmit_timer.start(interval)
+        if self.transmission_active:
+            self.transmit_timer.start(interval)
         self.update_pico_rate_label()
         save_config(self.config)
 
