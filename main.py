@@ -1443,9 +1443,18 @@ class MainWindow(QMainWindow):
                     player.mediaStatusChanged.disconnect(handle_status)
                 except Exception:
                     pass
+
+                # Allow the audio backend a brief moment to drain any buffered
+                # samples before tearing down the output objects. Destroying the
+                # output immediately can clip the tail end of the playback on
+                # some platforms.
                 self.sound_players.pop(cache_key, None)
-                player.deleteLater()
-                output.deleteLater()
+
+                def cleanup():
+                    player.deleteLater()
+                    output.deleteLater()
+
+                QTimer.singleShot(200, cleanup)
 
         player.mediaStatusChanged.connect(handle_status)
         player.play()
@@ -1498,13 +1507,18 @@ class MainWindow(QMainWindow):
                     player.mediaStatusChanged.disconnect(handle_status)
                 except Exception:
                     pass
+
                 self.sound_players.pop(cache_key, None)
-                player.deleteLater()
-                output.deleteLater()
-                if len(names) > 1:
-                    self.play_sound_sequence(names[1:], finished_callback)
-                elif finished_callback:
-                    finished_callback()
+
+                def cleanup():
+                    player.deleteLater()
+                    output.deleteLater()
+                    if len(names) > 1:
+                        self.play_sound_sequence(names[1:], finished_callback)
+                    elif finished_callback:
+                        finished_callback()
+
+                QTimer.singleShot(200, cleanup)
 
         player.mediaStatusChanged.connect(handle_status)
         player.play()
