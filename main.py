@@ -347,11 +347,6 @@ class MainWindow(QMainWindow):
             )
             self.ui.chk_alarm_bank.toggled.connect(self.on_bank_alarm_toggled)
 
-        # Now that configuration dictionaries are available, finish initializing
-        # the configuration page and any hardware interfaces that depend on
-        # them.
-        self._make_configuration_scrollable()
-
         # Track last worker error to prevent dialog spam
         self._last_error_message = None
         self._last_error_time = 0
@@ -375,6 +370,11 @@ class MainWindow(QMainWindow):
             self.check_attitude_connection
         )
         self.attitude_monitor_timer.start(200)
+
+        # Now that configuration dictionaries are available, finish initializing
+        # the configuration page and any hardware interfaces that depend on
+        # them.
+        self._make_configuration_scrollable()
 
         # Initialize the video feed.  If a specific capture device index is
         # provided in the configuration it takes precedence.  Otherwise,
