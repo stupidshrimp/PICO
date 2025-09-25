@@ -1432,10 +1432,20 @@ class MainWindow(QMainWindow):
 
         # Ensure any previous connections are removed before connecting our
         # cleanup handler.
-        try:
-            player.mediaStatusChanged.disconnect()
-        except Exception:
-            pass
+        media_status_signal = player.mediaStatusChanged
+        if hasattr(media_status_signal, "isConnected"):
+            try:
+                is_connected = media_status_signal.isConnected()
+            except Exception:
+                is_connected = True
+        else:
+            is_connected = True
+
+        if is_connected:
+            try:
+                media_status_signal.disconnect()
+            except Exception:
+                pass
 
         def handle_status(status, *, cache_key=cache_key, player=player, output=output):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
