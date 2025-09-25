@@ -601,6 +601,8 @@ class MainWindow(QMainWindow):
         if not layout or top_menus is None or content_settings is None:
             return
 
+        layout.removeWidget(top_menus)
+
         scroll_area = QScrollArea(content_settings)
         scroll_area.setObjectName("configurationScrollArea")
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -610,10 +612,20 @@ class MainWindow(QMainWindow):
         scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         scroll_area.setContentsMargins(0, 0, 0, 0)
 
-        layout.removeWidget(top_menus)
-        top_menus.setParent(scroll_area)
-        top_menus.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        scroll_area.setWidget(top_menus)
+        scroll_content = QWidget(scroll_area)
+        scroll_content.setObjectName("configurationScrollContent")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(0)
+        scroll_layout.addWidget(top_menus, alignment=Qt.AlignmentFlag.AlignTop)
+        scroll_layout.addStretch(1)
+
+        top_menus.setParent(scroll_content)
+        top_menus.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+
+        scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
 
         self._configuration_scroll_area = scroll_area
