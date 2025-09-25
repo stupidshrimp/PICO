@@ -364,6 +364,7 @@ class MainWindow(QMainWindow):
         self.altitude_alarm_start_time = None
         self.roll_alarm_start_time = None
         self.sound_players = {}
+        self._muted_sounds = {}
         self.last_attitude_packet_time = None
         self.attitude_first_received_time = None
         self.attitude_connected = False
@@ -1403,6 +1404,38 @@ class MainWindow(QMainWindow):
             else:
                 label.setText(f"{prefix}: -- Hz")
 
+
+    def _normalize_sound_name(self, name: str) -> str:
+        """Return the base name for a sound, ignoring its extension."""
+
+        base, _ = os.path.splitext(name)
+        return base if base else name
+
+    def _is_sound_muted(self, name: str) -> bool:
+        """Return ``True`` if the sound is currently muted."""
+
+        normalized = self._normalize_sound_name(name)
+        expiry = self._muted_sounds.get(normalized)
+        if expiry is None:
+            return False
+
+        now = time.monotonic()
+        if now >= expiry:
+            self._muted_sounds.pop(normalized, None)
+            return False
+
+        return True
+
+    def _mute_sounds(self, names, duration: float) -> None:
+        """Mute ``names`` for ``duration`` seconds."""
+
+        expiry = time.monotonic() + duration
+        for name in names:
+            normalized = self._normalize_sound_name(name)
+            current = self._muted_sounds.get(normalized, 0.0)
+            if expiry > current:
+                self._muted_sounds[normalized] = expiry
+
     def play_sound(self, name: str):
         """Play a warning sound identified by ``name``.
 
@@ -1411,6 +1444,9 @@ class MainWindow(QMainWindow):
         ``audio`` directory. Player instances are cached so repeated alerts
         reuse the same player.
         """
+
+        if self._is_sound_muted(name):
+            return
 
         if os.path.splitext(name)[1]:
             file_path = os.path.join("audio", name)
@@ -1482,6 +1518,13 @@ class MainWindow(QMainWindow):
 
         ``finished_callback`` is called when the sequence has completed.
         """
+        if not names:
+            if finished_callback:
+                finished_callback()
+            return
+
+        names = [name for name in list(names) if not self._is_sound_muted(name)]
+
         if not names:
             if finished_callback:
                 finished_callback()
@@ -2392,6 +2435,7 @@ class MainWindow(QMainWindow):
         self._transmission_hold_timer.stop()
         self._apply_transmission_button_style("inactive")
         self.transmission_control_button.setText("Start transmitting packets")
+        self._mute_sounds(["telemetryoffline", "disconnectedalarm", "disconnectalarm"], 2.0)
         self.play_sound("elrsterminated.mp3")
 
     def _start_transmission(self) -> None:
