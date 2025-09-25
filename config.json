@@ -1,14 +1,14 @@
 {
     "joystick": {
-        "port": "COM5",
+        "port": "Not connected",
         "baudrate": 9600,
-        "deadzone": 0,
+        "deadzone": 3,
         "sensitivity": 100,
-        "yaw_sensitivity": 100,
+        "yaw_sensitivity": 94,
         "smoothing": 0
     },
     "crsf": {
-        "port": "COM4",
+        "port": "Not connected",
         "baudrate": 921600,
         "packet_interval": 3
     },
@@ -22,9 +22,9 @@
         "altitude_alarm_airspeed": 20,
         "altitude_alarm_altitude": 17,
         "roll_angle": 45,
-        "stall_alarm_enabled": false,
-        "altitude_alarm_enabled": false,
-        "bank_angle_alarm_enabled": false
+        "stall_alarm_enabled": true,
+        "altitude_alarm_enabled": true,
+        "bank_angle_alarm_enabled": true
     },
     "map": {
         "center": [
