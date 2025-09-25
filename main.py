@@ -2323,12 +2323,26 @@ class MainWindow(QMainWindow):
         )
         self._set_transmission_hold_progress(progress)
 
+    @staticmethod
+    def _lighten_rgb(color: str, amount: float) -> str:
+        """Blend an ``rgb(r, g, b)`` color toward white by ``amount``."""
+
+        match = re.fullmatch(r"rgb\((\d+),\s*(\d+),\s*(\d+)\)", color.strip())
+        if not match:
+            return color
+
+        r, g, b = (int(channel) for channel in match.groups())
+        r = min(255, int(r + (255 - r) * amount))
+        g = min(255, int(g + (255 - g) * amount))
+        b = min(255, int(b + (255 - b) * amount))
+        return f"rgb({r}, {g}, {b})"
+
     def _set_transmission_hold_progress(self, progress: float) -> None:
         """Shade the terminate button to represent hold progress."""
 
         progress = max(0.0, min(progress, 1.0))
-        background, hover, pressed = self._transmission_button_styles["hold"]
-        fill_color = hover
+        background, *_ = self._transmission_button_styles["hold"]
+        fill_color = self._lighten_rgb(background, 0.55)
         gradient = (
             "qlineargradient(x1:0, y1:0, x2:1, y2:0,"
             f" stop:0 {fill_color},"
@@ -2344,8 +2358,8 @@ class MainWindow(QMainWindow):
             "border-radius: 8px;"
             "padding: 8px 16px;"
             "}"
-            f"QPushButton:hover {{background-color: {hover};}}"
-            f"QPushButton:pressed {{background-color: {pressed};}}"
+            f"QPushButton:hover {{background: {gradient};}}"
+            f"QPushButton:pressed {{background: {gradient};}}"
             "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
         )
         self.transmission_control_button.setStyleSheet(stylesheet)
