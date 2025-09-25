@@ -2322,7 +2322,7 @@ class MainWindow(QMainWindow):
         self._transmission_hold_timer.stop()
         self._apply_transmission_button_style("inactive")
         self.transmission_control_button.setText("Start transmitting packets")
-        self.play_sound("elrsterminated.p3")
+        self.play_sound("elrsterminated.mp3")
 
     def _start_transmission(self) -> None:
         """Resume packet transmission and reset button state."""
