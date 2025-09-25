@@ -432,7 +432,10 @@ class MainWindow(QMainWindow):
 
         layout.removeWidget(top_menus)
         top_menus.setParent(scroll_area)
-        top_menus.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        top_menus.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding
+        )
+        top_menus.adjustSize()
         scroll_area.setWidget(top_menus)
         layout.addWidget(scroll_area)
 
