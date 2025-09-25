@@ -73,6 +73,7 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QEasingCurve,
     QParallelAnimationGroup,
+    QElapsedTimer,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap
@@ -480,12 +481,13 @@ class MainWindow(QMainWindow):
         # page's terminate/start button.
         self.transmission_active = True
         self._transmission_hold_timer = QTimer(self)
-        self._transmission_hold_timer.setInterval(1000)
+        self._transmission_hold_timer.setInterval(50)
         self._transmission_hold_timer.timeout.connect(
             self._on_transmission_hold_tick
         )
         self._transmission_hold_in_progress = False
-        self._transmission_hold_remaining = 0
+        self._transmission_hold_required_ms = 3000
+        self._transmission_hold_elapsed_timer = QElapsedTimer()
         self._transmission_pressed_while_inactive = False
 
         # Setup configuration page for COM port selections
@@ -2272,9 +2274,9 @@ class MainWindow(QMainWindow):
             return
 
         self._transmission_hold_in_progress = True
-        self._transmission_hold_remaining = 3
         self._apply_transmission_button_style("hold")
-        self._update_transmission_hold_display()
+        self._transmission_hold_elapsed_timer.start()
+        self._update_transmission_hold_display(0.0)
         self._transmission_hold_timer.start()
 
     def _on_transmission_button_released(self) -> None:
@@ -2294,27 +2296,66 @@ class MainWindow(QMainWindow):
             self._cancel_transmission_hold()
             return
 
-        self._transmission_hold_remaining -= 1
-        if self._transmission_hold_remaining > 0:
-            self._update_transmission_hold_display()
+        elapsed_ms = self._transmission_hold_elapsed_timer.elapsed()
+        progress = min(
+            elapsed_ms / self._transmission_hold_required_ms, 1.0
+        )
+
+        if progress >= 1.0:
+            self._update_transmission_hold_display(1.0)
+            self._transmission_hold_timer.stop()
+            self._transmission_hold_in_progress = False
+            self._terminate_transmission()
             return
 
-        self._transmission_hold_timer.stop()
-        self._transmission_hold_in_progress = False
-        self._terminate_transmission()
+        self._update_transmission_hold_display(progress)
 
-    def _update_transmission_hold_display(self) -> None:
+    def _update_transmission_hold_display(self, progress: float) -> None:
         """Refresh the countdown text while the terminate button is held."""
 
-        self.transmission_control_button.setText(
-            f"Hold for {self._transmission_hold_remaining} seconds to terminate transmission"
+        remaining_ms = max(
+            self._transmission_hold_required_ms * (1.0 - progress), 0
         )
+        remaining_seconds = remaining_ms / 1000
+        self.transmission_control_button.setText(
+            "Hold for "
+            f"{remaining_seconds:.1f} seconds to terminate transmission"
+        )
+        self._set_transmission_hold_progress(progress)
+
+    def _set_transmission_hold_progress(self, progress: float) -> None:
+        """Shade the terminate button to represent hold progress."""
+
+        progress = max(0.0, min(progress, 1.0))
+        background, hover, pressed = self._transmission_button_styles["hold"]
+        fill_color = hover
+        gradient = (
+            "qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 {fill_color},"
+            f" stop:{progress:.3f} {fill_color},"
+            f" stop:{progress:.3f} {background},"
+            f" stop:1 {background})"
+        )
+        stylesheet = (
+            "QPushButton {"
+            f"background: {gradient};"
+            "color: white;"
+            "font-weight: bold;"
+            "border-radius: 8px;"
+            "padding: 8px 16px;"
+            "}"
+            f"QPushButton:hover {{background-color: {hover};}}"
+            f"QPushButton:pressed {{background-color: {pressed};}}"
+            "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
+        )
+        self.transmission_control_button.setStyleSheet(stylesheet)
 
     def _cancel_transmission_hold(self) -> None:
         """Cancel an in-progress hold-to-terminate action."""
 
         self._transmission_hold_timer.stop()
         self._transmission_hold_in_progress = False
+        self._transmission_hold_elapsed_timer.invalidate()
         if self.transmission_active:
             self._apply_transmission_button_style("active")
             self.transmission_control_button.setText("Terminate transmission")
