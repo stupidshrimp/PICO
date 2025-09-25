@@ -65,7 +65,7 @@ class SortiesPage:
         layout = QVBoxLayout(page)
         layout.setSpacing(12)
 
-        title = QLabel("Sortie Review")
+        title = QLabel("Sortie Analysis")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
