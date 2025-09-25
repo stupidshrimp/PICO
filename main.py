@@ -1810,7 +1810,26 @@ class MainWindow(QMainWindow):
         widgets.configuration_page = self.ui.configuration_page
         widgets.stackedWidget.addWidget(self.ui.configuration_page)
 
-        layout = QVBoxLayout(self.ui.configuration_page)
+        container_layout = QVBoxLayout(self.ui.configuration_page)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area = QScrollArea(self.ui.configuration_page)
+        scroll_area.setObjectName("configurationSettingsScrollArea")
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        container_layout.addWidget(scroll_area)
+
+        scroll_contents = QWidget()
+        layout = QVBoxLayout(scroll_contents)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area.setWidget(scroll_contents)
 
         self.reinitialize_ports_button = QPushButton("Re-initialize serial ports")
         self.reinitialize_ports_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2124,6 +2143,8 @@ class MainWindow(QMainWindow):
         self.update_connection_status(self.control_status, self.joystick is not None)
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
         # Video connection status is derived from the video feed itself
+        layout.addStretch()
+
         self.update_connection_status(self.vtx_status, False)
         # Ensure the port lists reflect currently connected devices
         self.update_port_lists()
