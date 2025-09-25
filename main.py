@@ -2344,8 +2344,8 @@ class MainWindow(QMainWindow):
             "border-radius: 8px;"
             "padding: 8px 16px;"
             "}"
-            f"QPushButton:hover {{background-color: {hover};}}"
-            f"QPushButton:pressed {{background-color: {pressed};}}"
+            f"QPushButton:hover {{background: {gradient};}}"
+            f"QPushButton:pressed {{background: {gradient};}}"
             "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
         )
         self.transmission_control_button.setStyleSheet(stylesheet)
