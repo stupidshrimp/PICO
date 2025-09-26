@@ -109,6 +109,7 @@ from config import load_config, save_config
 from modules.data_page import DataPage
 from modules.debug_page import DebugPage
 from modules.sorties_page import SortiesPage
+from modules.documentation_page import DocumentationPage
 from modules.preflight_page import PreFlightChecklistPage
 
 
@@ -297,6 +298,9 @@ class MainWindow(QMainWindow):
 
         # Add Debug tab for monitoring raw telemetry and joystick data
         self.debug_page = DebugPage(self)
+
+        # Add Documentation tab for detailed operational guides
+        self.documentation_page = DocumentationPage(self)
 
         self._debug_packets: set[str] = set()
         self._debug_monitoring = False
@@ -624,6 +628,7 @@ class MainWindow(QMainWindow):
         widgets.btn_data.clicked.connect(self.buttonClick)
         widgets.btn_sorties.clicked.connect(self.buttonClick)
         widgets.btn_debug.clicked.connect(self.buttonClick)
+        widgets.btn_documentation.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
         widgets.settingsTopBtn.clicked.connect(lambda: UIFunctions.toggleRightBox(self, True))
@@ -3065,6 +3070,11 @@ class MainWindow(QMainWindow):
 
         if btnName == "btn_debug":
             widgets.stackedWidget.setCurrentWidget(widgets.debug_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        if btnName == "btn_documentation":
+            widgets.stackedWidget.setCurrentWidget(widgets.documentation_page)
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
