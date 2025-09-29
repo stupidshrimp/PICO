@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Callable, Dict
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpacerItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -59,25 +60,19 @@ class DocumentationPage:
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer_layout.addWidget(scroll_area)
+        tab_widget = QTabWidget()
+        tab_widget.setObjectName("documentation_tabs")
+        tab_widget.setTabPosition(QTabWidget.North)
+        tab_widget.setDocumentMode(True)
+        tab_widget.setElideMode(Qt.ElideNone)
+        outer_layout.addWidget(tab_widget)
 
-        container = QWidget()
-        scroll_area.setWidget(container)
+        self._tab_widget = tab_widget
 
-        content_layout = QVBoxLayout(container)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(20)
-
-        self._build_gcs_section(content_layout)
-        self._build_elrs_section(content_layout)
-        self._build_electronics_section(content_layout)
-        self._build_airframe_section(content_layout)
-
-        content_layout.addStretch(1)
+        self._add_tab("GCS", self._populate_gcs_tab)
+        self._add_tab("ELRS", self._populate_elrs_tab)
+        self._add_tab("Electronics", self._populate_electronics_tab)
+        self._add_tab("Airframes", self._populate_airframe_tab)
 
         self._ui.documentation_page = page
         self._ui.stackedWidget.addWidget(page)
@@ -85,7 +80,7 @@ class DocumentationPage:
     # ------------------------------------------------------------------
     # Section builders
     # ------------------------------------------------------------------
-    def _build_gcs_section(self, layout: QVBoxLayout) -> None:
+    def _populate_gcs_tab(self, layout: QVBoxLayout) -> None:
         frame, frame_layout = self._create_section("Ground Control Station (GCS)")
 
         overview = (
@@ -145,7 +140,7 @@ class DocumentationPage:
 
         layout.addWidget(frame)
 
-    def _build_elrs_section(self, layout: QVBoxLayout) -> None:
+    def _populate_elrs_tab(self, layout: QVBoxLayout) -> None:
         frame, frame_layout = self._create_section(
             "ExpressLRS (ELRS) Long Range System Implementation"
         )
@@ -202,12 +197,12 @@ class DocumentationPage:
 
         layout.addWidget(frame)
 
-    def _build_electronics_section(self, layout: QVBoxLayout) -> None:
+    def _populate_electronics_tab(self, layout: QVBoxLayout) -> None:
         frame, frame_layout = self._create_section("Electronics")
         frame_layout.addSpacing(4)
         layout.addWidget(frame)
 
-    def _build_airframe_section(self, layout: QVBoxLayout) -> None:
+    def _populate_airframe_tab(self, layout: QVBoxLayout) -> None:
         frame, frame_layout = self._create_section("Airframe Library")
 
         selector_row = QHBoxLayout()
@@ -255,6 +250,31 @@ class DocumentationPage:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _add_tab(self, title: str, builder: Callable[[QVBoxLayout], None]) -> None:
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tab_layout.addWidget(scroll_area)
+
+        container = QWidget()
+        scroll_area.setWidget(container)
+
+        content_layout = QVBoxLayout(container)
+        content_layout.setContentsMargins(20, 20, 20, 20)
+        content_layout.setSpacing(20)
+
+        builder(content_layout)
+
+        content_layout.addStretch(1)
+
+        self._tab_widget.addTab(tab, title)
+
     def _create_section(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
         frame.setStyleSheet(
