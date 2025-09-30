@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
 
         # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
+        self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
         transmit_interval = self.crsf_cfg.get("packet_interval", 15)
         self.transmit_timer.start(transmit_interval)
