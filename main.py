@@ -106,6 +106,13 @@ from pico_modules.compass_osd import CompassOSD
 
 from config import load_config, save_config
 
+from modules.data_page import DataPage
+from modules.debug_page import DebugPage
+from modules.sorties_page import SortiesPage
+from modules.documentation_page import DocumentationPage
+from modules.preflight_page import PreFlightChecklistPage
+
+
 def validate_port(name: str, port: str) -> bool:
     """Validate that a serial port exists on the system."""
     available = [p.device for p in list_ports.comports()]
@@ -280,6 +287,26 @@ class MainWindow(QMainWindow):
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
 
+        # Add Pre-flight checklist tab
+        self.preflight_page = PreFlightChecklistPage(self)
+
+        # Add Data tab and associated graphs
+        self.data_page = DataPage(self)
+
+        # Add Sorties tab for reviewing recorded telemetry logs
+        self.sorties_page = SortiesPage(self)
+
+        # Add Debug tab for monitoring raw telemetry and joystick data
+        self.debug_page = DebugPage(self)
+
+        # Add Documentation tab for detailed operational guides
+        self.documentation_page = DocumentationPage(self)
+
+        self._debug_packets: set[str] = set()
+        self._debug_monitoring = False
+        self._debug_include_joystick = False
+        self._debug_serial_all = False
+        self._debug_telemetry_all = False
         # Disable telemetry packet debug logging by default; it can be toggled
         # explicitly if needed for troubleshooting.
         self._telemetry_debug_logging = False
@@ -449,6 +476,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
                 )
+                self.crsf_processor.serial_data.connect(self._handle_serial_debug)
                 self.crsf_processor.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
@@ -597,6 +625,11 @@ class MainWindow(QMainWindow):
         widgets.btn_home.clicked.connect(self.buttonClick)
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
+        widgets.btn_preflight.clicked.connect(self.buttonClick)
+        widgets.btn_data.clicked.connect(self.buttonClick)
+        widgets.btn_sorties.clicked.connect(self.buttonClick)
+        widgets.btn_debug.clicked.connect(self.buttonClick)
+        widgets.btn_documentation.clicked.connect(self.buttonClick)
 
         # EXTRA RIGHT BOX
         widgets.settingsTopBtn.clicked.connect(lambda: UIFunctions.toggleRightBox(self, True))
@@ -1140,6 +1173,14 @@ class MainWindow(QMainWindow):
         # Joystick values update the label texts
         # ------------------------------------------------------------------
         joy_pitch, joy_roll, norm_pitch, norm_roll = self._capture_stick_state()
+        if (
+            self._debug_monitoring
+            and self._debug_include_joystick
+            and joy_pitch is not None
+            and joy_roll is not None
+        ):
+            self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
+
         if norm_pitch is None or norm_roll is None:
             self.pitch_indicator.setValue(0)
             self.roll_indicator.setValue(0)
@@ -1672,6 +1713,26 @@ class MainWindow(QMainWindow):
             self.roll_alarm_playing = False
 
     @Slot(object)
+    def _handle_serial_debug(self, payload) -> None:
+        """Log raw serial bytes to the Debug tab when requested."""
+
+        if not self._debug_monitoring or not self._debug_serial_all:
+            return
+
+        try:
+            data = bytes(payload)
+        except Exception:
+            try:
+                data = bytes(payload.data())
+            except Exception:
+                return
+
+        if not data:
+            return
+
+        self.debug_page.log_serial_data(data)
+
+    @Slot(object)
     def handle_telemetry_wrapper(self, data) -> None:
         """Unpack CRSF telemetry and forward it to ``handle_telemetry``."""
         packet_type, *values = data
@@ -1703,6 +1764,7 @@ class MainWindow(QMainWindow):
             self.telemetry_state["pitch"] = pitch
             self.telemetry_state["roll"] = roll
             self.telemetry_state["yaw"] = yaw
+            self.data_page.add_attitude(pitch, roll, yaw)
         elif packet_type == "gps":
             # Order: latitude, longitude, altitude (ft), speed (mph),
             # ground course, satellites
@@ -1723,6 +1785,7 @@ class MainWindow(QMainWindow):
             self.telemetry_state["airspeed_mph"] = speed
             self.telemetry_state["ground_course"] = course
             self.telemetry_state["satellites"] = sats
+            self.data_page.add_flight_metrics(alt, speed)
             if (
                 lat_value is not None
                 and lon_value is not None
@@ -1781,6 +1844,15 @@ class MainWindow(QMainWindow):
             self.telemetry_state["downlink_quality"] = downlink_lq
             self.telemetry_state["downlink_snr"] = downlink_snr
             self.telemetry_state["link_piggyback_count"] = piggyback_count
+            self.data_page.add_link_stats(
+                rssi_a,
+                rssi_b,
+                link_quality,
+                downlink_lq,
+                snr,
+                downlink_snr,
+                piggyback_count,
+            )
             _, color = self.classify_quality(link_quality)
             self.set_label(
                 self.ui.linkQualityLabel,
@@ -1803,6 +1875,11 @@ class MainWindow(QMainWindow):
             self.set_label(self.ui.snrLabel, "SNR", cat, color)
             cat, color = self.classify_snr(downlink_snr)
             self.set_label(self.ui.downlinkSnrLabel, "Downlink SNR", cat, color)
+
+        if self._debug_monitoring and (
+            self._debug_telemetry_all or packet_type in self._debug_packets
+        ):
+            self.debug_page.log_packet(packet_type, values)
 
         self._update_packet_rates(packet_type, now)
         self._update_rate_labels()
@@ -1848,6 +1925,10 @@ class MainWindow(QMainWindow):
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
+        else:
+            if self._debug_monitoring and "control" in self._debug_packets:
+                self.debug_page.log_packet("control", channels)
+
     def update_control_mode_label(self):
         """Update the control mode indicator text and color."""
         if hasattr(self.ui, "controlModeLabel"):
@@ -2509,6 +2590,7 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
                 )
+                self.crsf_processor.serial_data.connect(self._handle_serial_debug)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
@@ -2965,11 +3047,78 @@ class MainWindow(QMainWindow):
             UIFunctions.resetStyle(self, btnName)
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
 
-        # SHOW COMMAND PAGE
+        if btnName == "btn_preflight":
+            widgets.stackedWidget.setCurrentWidget(widgets.preflight_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        # SHOW NEW PAGE
         if btnName == "btn_new":
             widgets.stackedWidget.setCurrentWidget(widgets.new_page)  # SET PAGE
             UIFunctions.resetStyle(self, btnName)  # RESET ANOTHERS BUTTONS SELECTED
             btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))  # SELECT MENU
+
+        # SHOW DATA PAGE
+        if btnName == "btn_data":
+            widgets.stackedWidget.setCurrentWidget(widgets.data_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        if btnName == "btn_sorties":
+            widgets.stackedWidget.setCurrentWidget(widgets.sorties_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        if btnName == "btn_debug":
+            widgets.stackedWidget.setCurrentWidget(widgets.debug_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+        if btnName == "btn_documentation":
+            widgets.stackedWidget.setCurrentWidget(widgets.documentation_page)
+            UIFunctions.resetStyle(self, btnName)
+            btn.setStyleSheet(UIFunctions.selectMenu(btn.styleSheet()))
+
+    def start_debug_monitoring(
+        self,
+        packets: set[str],
+        include_joystick: bool,
+        serial_all: bool,
+        telemetry_all: bool,
+    ) -> None:
+        """Begin forwarding selected telemetry streams to the Debug tab."""
+
+        self._debug_packets = set(packets)
+        self._debug_include_joystick = include_joystick
+        self._debug_serial_all = serial_all
+        self._debug_telemetry_all = telemetry_all
+        self._debug_monitoring = True
+        self.debug_page.begin_monitoring(
+            self._debug_packets,
+            include_joystick,
+            serial_all,
+            telemetry_all,
+        )
+        if (self._debug_packets or serial_all or telemetry_all) and not self.crsf_processor:
+            self.debug_page.append_message(
+                "Telemetry transmitter not connected; waiting for packets."
+            )
+        if include_joystick and not self.joystick:
+            self.debug_page.append_message(
+                "Joystick not connected; waiting for data."
+            )
+
+    def stop_debug_monitoring(self) -> None:
+        """Stop forwarding telemetry to the Debug tab."""
+
+        if not self._debug_monitoring:
+            return
+        self._debug_monitoring = False
+        self._debug_packets.clear()
+        self._debug_include_joystick = False
+        self._debug_serial_all = False
+        self._debug_telemetry_all = False
+        self.debug_page.end_monitoring()
 
     def resizeEvent(self, event):
         UIFunctions.resize_grips(self)
@@ -2983,6 +3132,7 @@ class MainWindow(QMainWindow):
     def cleanup(self):
         """Clean up peripheral resources if they exist."""
         self.stop_sortie_recording()
+        self.stop_debug_monitoring()
         if self.joystick:
             self.joystick.close()
             self.joystick = None
