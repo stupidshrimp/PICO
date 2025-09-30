@@ -133,6 +133,8 @@ def validate_port(name: str, port: str) -> bool:
 widgets = None
 
 class MainWindow(QMainWindow):
+    DEFAULT_PACKET_INTERVAL_MS = 4
+
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
@@ -319,6 +321,7 @@ class MainWindow(QMainWindow):
         self.joystick_cfg = self.config.setdefault("joystick", {})
         self.joystick_cfg.setdefault("yaw_sensitivity", 100)
         self.crsf_cfg = self.config.setdefault("crsf", {})
+        self.crsf_cfg.setdefault("packet_interval", self.DEFAULT_PACKET_INTERVAL_MS)
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
         self.warning_cfg.setdefault("stall_alarm_enabled", True)
@@ -486,7 +489,9 @@ class MainWindow(QMainWindow):
         # Timer for transmitting data (default from config)
         self.transmit_timer = QTimer(self)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        transmit_interval = self.crsf_cfg.get("packet_interval", 15)
+        transmit_interval = self.crsf_cfg.get(
+            "packet_interval", self.DEFAULT_PACKET_INTERVAL_MS
+        )
         self.transmit_timer.start(transmit_interval)
 
         # Track transmission state and countdown handling for the configuration
@@ -2076,7 +2081,11 @@ class MainWindow(QMainWindow):
         rate_row.addWidget(QLabel("Packet Interval (ms)"))
         self.packet_interval_edit = QLineEdit()
         self.packet_interval_edit.setText(
-            str(self.crsf_cfg.get("packet_interval", 3))
+            str(
+                self.crsf_cfg.get(
+                    "packet_interval", self.DEFAULT_PACKET_INTERVAL_MS
+                )
+            )
         )
         self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
@@ -2474,7 +2483,9 @@ class MainWindow(QMainWindow):
         if self.transmission_active:
             return
 
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        interval = self.crsf_cfg.get(
+            "packet_interval", self.DEFAULT_PACKET_INTERVAL_MS
+        )
         self.transmit_timer.start(interval)
         self.transmission_active = True
         self._transmission_pressed_while_inactive = False
@@ -2599,7 +2610,9 @@ class MainWindow(QMainWindow):
         try:
             interval = int(self.packet_interval_edit.text())
         except ValueError:
-            interval = self.crsf_cfg.get("packet_interval", 3)
+            interval = self.crsf_cfg.get(
+                "packet_interval", self.DEFAULT_PACKET_INTERVAL_MS
+            )
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
         if self.transmission_active:
@@ -2608,7 +2621,9 @@ class MainWindow(QMainWindow):
         save_config(self.config)
 
     def update_pico_rate_label(self):
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        interval = self.crsf_cfg.get(
+            "packet_interval", self.DEFAULT_PACKET_INTERVAL_MS
+        )
         freq = 0
         if interval:
             freq = 1000 / interval
