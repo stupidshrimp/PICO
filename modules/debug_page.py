@@ -43,6 +43,15 @@ class DebugPage:
         self._frequency_timer.setInterval(1000)
         self._frequency_timer.timeout.connect(self._refresh_frequency_label)
 
+        # Control packets are emitted at a high frequency which can overwhelm
+        # the debug console and starve the event loop.  Buffer the most recent
+        # values and only flush them to the UI at a throttled interval so
+        # telemetry transmission remains responsive even while monitoring.
+        self._control_log_interval = timedelta(milliseconds=100)
+        self._control_last_log = datetime.min
+        self._control_buffer_count = 0
+        self._control_buffer_values: tuple[float | int, ...] | None = None
+
         self._create_navigation_button()
         self._build_page()
 
@@ -165,6 +174,9 @@ class DebugPage:
         self._packet_timestamps.clear()
         self._frequency_timer.start()
         self._update_frequency_label(datetime.now())
+        self._control_last_log = datetime.min
+        self._control_buffer_count = 0
+        self._control_buffer_values = None
         if packets or include_joystick or serial_all or telemetry_all:
             labels = [self._PACKET_LABELS.get(name, name) for name in packets]
             if include_joystick:
@@ -181,6 +193,7 @@ class DebugPage:
     def end_monitoring(self) -> None:
         if not self._monitoring:
             return
+        self._flush_control_buffer()
         self._monitoring = False
         self.monitor_button.setText("Start Monitoring")
         self.monitor_button.setEnabled(True)
@@ -199,6 +212,9 @@ class DebugPage:
         now = datetime.now()
         self._packet_timestamps.append(now)
         self._update_frequency_label(now)
+        if packet_type == "control":
+            self._buffer_control_packet(now, values)
+            return
         timestamp = now.strftime("%H:%M:%S")
         if packet_type == "attitude" and len(values) >= 3:
             pitch, roll, yaw = values[:3]
@@ -250,13 +266,42 @@ class DebugPage:
         elif packet_type == "joystick" and len(values) >= 2:
             pitch, roll = values[:2]
             detail = f"pitch={pitch:.1f} roll={roll:.1f}"
-        elif packet_type == "control":
-            detail = " ".join(
-                f"ch{index + 1}={int(value)}" for index, value in enumerate(values)
-            )
         else:
             detail = " ".join(str(value) for value in values)
         self.output_edit.appendPlainText(f"[{timestamp}] {packet_type}: {detail}")
+
+    # ------------------------------------------------------------------
+    # Control packet throttling helpers
+    # ------------------------------------------------------------------
+    def _buffer_control_packet(self, now: datetime, values: Sequence[float | int]) -> None:
+        """Store the latest control channels and flush at a throttled rate."""
+
+        self._control_buffer_values = tuple(values)
+        self._control_buffer_count += 1
+        if now - self._control_last_log >= self._control_log_interval:
+            self._flush_control_buffer(now)
+
+    def _flush_control_buffer(self, now: datetime | None = None) -> None:
+        """Emit a summarised control packet entry if buffered."""
+
+        if self._control_buffer_count == 0 or self._control_buffer_values is None:
+            return
+
+        if now is None:
+            now = datetime.now()
+
+        timestamp = now.strftime("%H:%M:%S")
+        detail = " ".join(
+            f"ch{index + 1}={int(value)}"
+            for index, value in enumerate(self._control_buffer_values)
+        )
+        if self._control_buffer_count > 1:
+            detail += f" (aggregated {self._control_buffer_count} packets)"
+
+        self.output_edit.appendPlainText(f"[{timestamp}] control: {detail}")
+        self._control_last_log = now
+        self._control_buffer_count = 0
+        self._control_buffer_values = None
 
     def log_serial_data(self, data: bytes) -> None:
         if not self._monitoring or not data:
