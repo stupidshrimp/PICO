@@ -131,7 +131,7 @@ class RollPitchOSD(QWidget):
         for pitch_x2 in range(start_pitch, end_pitch + 5, 5):
             pitch_deg = pitch_x2 / 2.0
             # Invert pitch direction so a positive input is drawn downward
-            y = (pitch_deg + self._pitch) * SCALE
+            y = (self._pitch - pitch_deg) * SCALE
 
             # Render a longer zero-degree horizon line and apply a repeating
             # small, medium, small, large pattern to the other rungs.
