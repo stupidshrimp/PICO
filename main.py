@@ -1,4 +1,3 @@
-import argparse
 import os
 import json
 import time
@@ -134,15 +133,11 @@ def validate_port(name: str, port: str) -> bool:
 widgets = None
 
 class MainWindow(QMainWindow):
-    def __init__(self, print_attitude_rate: bool = False):
+    def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._configure_metric_labels()
-
-        self._print_attitude_rate = print_attitude_rate
-        self._last_attitude_rate_print_time = 0.0
-        self._last_attitude_rate_message = ""
 
         self.battery_percent_bar = None
         self.autopilot_time_label = None
@@ -1415,23 +1410,8 @@ class MainWindow(QMainWindow):
             if queue:
                 rate = len(queue) / self._rate_window_seconds
                 label.setText(f"{prefix}: {rate:.1f} Hz")
-                if self._print_attitude_rate and key == "attitude":
-                    message = f"Attitude packet rate: {rate:.2f} Hz"
-                    self._maybe_print_attitude_rate(message)
             else:
                 label.setText(f"{prefix}: -- Hz")
-                if self._print_attitude_rate and key == "attitude":
-                    self._maybe_print_attitude_rate("Attitude packet rate: -- Hz")
-
-    def _maybe_print_attitude_rate(self, message: str) -> None:
-        now = time.monotonic()
-        if (
-            now - self._last_attitude_rate_print_time >= 1.0
-            or message != self._last_attitude_rate_message
-        ):
-            print(message)
-            self._last_attitude_rate_print_time = now
-            self._last_attitude_rate_message = message
 
 
     def _normalize_sound_name(self, name: str) -> str:
@@ -3172,29 +3152,9 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _parse_command_line(argv: list[str]) -> tuple[list[str], bool]:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument(
-        "--print-attitude-rate",
-        dest="print_attitude_rate",
-        action="store_true",
-        help="Print the attitude packet rate to the terminal.",
-    )
-    parser.add_argument(
-        "--no-print-attitude-rate",
-        dest="print_attitude_rate",
-        action="store_false",
-        help="Disable attitude packet rate printing.",
-    )
-    parser.set_defaults(print_attitude_rate=False)
-    args, qt_args = parser.parse_known_args(argv[1:])
-    return [argv[0], *qt_args], args.print_attitude_rate
-
-
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
-    qt_argv, print_attitude_rate = _parse_command_line(sys.argv)
-    app = QApplication(qt_argv)
+    app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
     palette = QPalette()
@@ -3211,7 +3171,7 @@ if __name__ == "__main__":
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     app.setPalette(palette)
 
-    window = MainWindow(print_attitude_rate=print_attitude_rate)
+    window = MainWindow()
     window.show()
     app.aboutToQuit.connect(window.cleanup)
     try:
