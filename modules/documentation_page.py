@@ -88,8 +88,7 @@ class DocumentationPage:
             "video, command, telemetry, and mission management into a single operator "
             "workspace. The left navigation column exposes role-based tabs—Home for "
             "status at a glance, Configuration for hardware bindings, Command for live "
-            "flight operations, and specialist tools such as the pre-flight checklist, "
-            "telemetry analytics, sorties review, debug feeds, and this documentation."
+            "flight operations, the pre-flight checklist, and this documentation."
         )
         self._add_paragraph(frame_layout, overview)
 
@@ -123,18 +122,17 @@ class DocumentationPage:
                 "Navigation rail: collapsible sidebar with iconography to minimise mouse travel during mission ops.",
                 "Command workspace: live video composited with OSD widgets and a flight control dashboard.",
                 "Mission sidebar: scrollable column of health panels, alerts, and automation controls generated at runtime.",
-                "Analytics pages: dedicated stacked widgets for telemetry graphs, sortie playback, and debug stream inspection.",
             ),
         )
 
         workflow = (
             "System state is persisted in JSON configuration profiles so operators can "
-            "boot into known-good settings. When telemetry streams connect, the main "
-            "window toggles the sortie recorder, recalculates battery warnings based on "
-            "aircraft metadata, and begins pushing navigation solutions to the embedded "
-            "map. When telemetry is lost, graceful degradation routines blank outdated "
-            "data, preserve the last known fix for situational awareness, and present "
-            "clear tooltips explaining the required recovery actions."
+            "boot into known-good settings. When telemetry streams connect the main "
+            "window recalculates battery warnings based on aircraft metadata and begins "
+            "pushing navigation solutions to the embedded map. When telemetry is lost, "
+            "graceful degradation routines blank outdated data, preserve the last known "
+            "fix for situational awareness, and present clear tooltips explaining the "
+            "required recovery actions."
         )
         self._add_paragraph(frame_layout, workflow)
 
@@ -208,7 +206,7 @@ class DocumentationPage:
             (
                 "Input shaping → channel scaling → CRSF serialization → CRC append → RF module (uplink)",
                 "RF module → frame buffer → header validation → CRC verification → payload dispatch (downlink)",
-                "Telemetry aggregator → GUI bindings → persistent sortie recorder", 
+                "Telemetry aggregator → GUI bindings that update the live dashboard",
             ),
         )
 
@@ -359,8 +357,8 @@ class DocumentationPage:
             "<li>Standard CRSF uplink with four primary control channels and two "
             "auxiliary toggles reserved for experiment payloads.</li>"
             "<li>Telemetry suite includes pitot-static airspeed, barometric altitude, and "
-            "dual GPS receivers for comparative testing. Both feeds are logged and "
-            "tagged inside the sorties view.</li>"
+            "dual GPS receivers for comparative testing. Both feeds are logged for "
+            "post-flight analysis.</li>"
             "<li>Power system monitored with hall-effect current sensing; thresholds "
             "propagate to the command sidebar battery panel.</li>"
             "</ul>"
@@ -375,7 +373,7 @@ class DocumentationPage:
             "operations and extended telemetry ranges.</p>"
             "<p>The Ti-K 3 Arctic Tern pairs a high aspect-ratio wing with an insulated "
             "electronics bay to maintain battery temperature and radio performance. The "
-            "GCS command sidebar enables bespoke widgets for polar sorties, including "
+            "GCS command sidebar enables bespoke widgets for polar missions, including "
             "battery preheat monitoring and GPS dilution of precision tracking.</p>"
             "<p><b>Configuration highlights</b></p>"
             "<ul>"
