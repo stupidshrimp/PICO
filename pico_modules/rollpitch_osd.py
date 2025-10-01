@@ -93,7 +93,7 @@ class RollPitchOSD(QWidget):
         # Draw the pitch ladder rotated by roll around the widget centre
         painter.save()
         painter.translate(center_x, center_y)
-        painter.rotate(-self._roll)
+        painter.rotate(self._roll)
 
         # Determine which pitch rungs are visible.  This lets the ladder
         # appear infinite because we always draw enough lines to cover the
@@ -130,8 +130,8 @@ class RollPitchOSD(QWidget):
 
         for pitch_x2 in range(start_pitch, end_pitch + 5, 5):
             pitch_deg = pitch_x2 / 2.0
-            # Invert pitch direction so a positive input is drawn upward
-            y = (pitch_deg - self._pitch) * SCALE
+            # Invert pitch direction so a positive input is drawn downward
+            y = (pitch_deg + self._pitch) * SCALE
 
             # Render a longer zero-degree horizon line and apply a repeating
             # small, medium, small, large pattern to the other rungs.
