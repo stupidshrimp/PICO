@@ -26,6 +26,7 @@ dist/
 .DS_Store
 Thumbs.db
 *.mbtiles
+sortie data/
 
 **/map1_tiles/
 **/chicago_xyz/
