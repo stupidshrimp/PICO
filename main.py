@@ -201,6 +201,7 @@ class MainWindow(QMainWindow):
             "gps": deque(),
             "total": deque(),
         }
+        self._last_attitude_packet_timestamp = None
 
         self._settings_title_style = (
             "color: white; font-weight: bold; text-decoration: underline;"
@@ -1757,6 +1758,7 @@ class MainWindow(QMainWindow):
             else:
                 self.attitude_first_received_time = None
 
+            self._log_attitude_frequency(now)
             pitch, roll, yaw = values
             self.telemetry_pitch = pitch
             self.telemetry_roll = roll
@@ -1884,6 +1886,22 @@ class MainWindow(QMainWindow):
         self._update_packet_rates(packet_type, now)
         self._update_rate_labels()
         self._record_telemetry_sample(packet_type)
+
+    def _log_attitude_frequency(self, timestamp: float) -> None:
+        """Print the instantaneous attitude packet frequency to the terminal."""
+
+        if self._last_attitude_packet_timestamp is None:
+            self._last_attitude_packet_timestamp = timestamp
+            return
+
+        interval = timestamp - self._last_attitude_packet_timestamp
+        self._last_attitude_packet_timestamp = timestamp
+
+        if interval <= 0:
+            return
+
+        frequency = 1.0 / interval
+        print(f"Attitude telemetry frequency: {frequency:.2f} Hz", flush=True)
 
     @staticmethod
     def _map_axis_to_crsf(value: float) -> int:
