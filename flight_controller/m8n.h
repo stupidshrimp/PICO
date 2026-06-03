@@ -24,15 +24,20 @@ public:
     char date[11];           // Formatted as "YYYY-MM-DD"
     int fix_quality;         // From GGA sentence
     int satellites_in_use;   // From GGA sentence
+    bool has_valid_fix;      // True when RMC/GGA data passed checksum and fix gates.
 
 private:
     static constexpr size_t NMEA_BUFFER_SIZE = 121;
     static constexpr size_t NMEA_MAX_FIELDS = 20;
+    static constexpr int MIN_SATELLITES_FOR_FIX = 4;
 
     Stream &uart;
 
     // Parses a complete NMEA sentence. The buffer may be modified during parsing.
     void parseNMEA(char *sentence);
+
+    // Verifies and strips the NMEA checksum suffix in-place before field parsing.
+    static bool validateAndStripChecksum(char *sentence);
 
     // Parses RMC sentences for latitude, longitude, speed, timestamp, and date.
     void parseRMC(char *sentence);
@@ -49,6 +54,7 @@ private:
     char nmeaBuffer[NMEA_BUFFER_SIZE];
     size_t nmeaBufferIndex;
     bool nmeaDiscarding;
+    bool rmcDataActive;
 };
 
 #endif // M8N_H
