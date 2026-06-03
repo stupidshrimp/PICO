@@ -61,7 +61,7 @@ namespace serialReceiverLayer
         void setFrameTime(uint32_t baudRate, uint8_t packetCount = 10);
         bool receiveFrames(uint8_t rxByte);
         void getFailSafe(bool *failSafe);
-        bool getRcChannels(uint16_t *rcChannels);
+        void getRcChannels(uint16_t *rcChannels);
         void getLinkStatistics(link_statistics_t *linkStats);
 
       private:

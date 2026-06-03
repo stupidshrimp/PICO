@@ -121,16 +121,6 @@ namespace sketchLayer
 #endif
     }
 
-    serialReceiverLayer::crsfDebugCounters_t CRSFforArduino::getDebugCounters() const
-    {
-        return this->SerialReceiver::getDebugCounters();
-    }
-
-    void CRSFforArduino::resetDebugCounters()
-    {
-        this->SerialReceiver::resetDebugCounters();
-    }
-
     /**
      * @brief Reads the specified RC channel.
      * @param channel The channel to read.

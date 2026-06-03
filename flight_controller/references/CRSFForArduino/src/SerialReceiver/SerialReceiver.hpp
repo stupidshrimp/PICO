@@ -74,16 +74,6 @@ namespace serialReceiverLayer
     typedef void (*linkUpCallback_t)();
     typedef void (*linkDownCallback_t)();
 
-    typedef struct crsfDebugCounters_s
-    {
-        uint32_t processCalls;
-        uint32_t uartBytesRead;
-        uint32_t completeFrames;
-        uint32_t telemetryFramesSent;
-        uint32_t rcFramesDelivered;
-        uint16_t uartAvailableHighWater;
-    } crsfDebugCounters_t;
-
     class SerialReceiver
     {
       public:
@@ -130,8 +120,6 @@ namespace serialReceiverLayer
         bool isLinkUp() const;
         void checkLinkDown();
         void setLinkUp();
-        crsfDebugCounters_t getDebugCounters() const;
-        void resetDebugCounters();
 
 #if CRSF_TELEMETRY_ENABLED > 0
         void telemetryWriteAttitude(int16_t roll, int16_t pitch, int16_t yaw);
@@ -184,7 +172,6 @@ namespace serialReceiverLayer
 
         rawDataCallback_t _rawDataCallback = nullptr;
         linkUpCallback_t _linkUpCallback = nullptr;
-        linkDownCallback_t _linkDownCallback = nullptr;
-        crsfDebugCounters_t _debugCounters = {0, 0, 0, 0, 0, 0};
+        linkDownCallback_t _linkDownCallback = nullptr; 
     };
 } // namespace serialReceiverLayer
