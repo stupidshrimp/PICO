@@ -1,10 +1,15 @@
 #include "m8n.h"
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
-M8N::M8N(Stream &uart) : uart(uart), latitude(0.0), longitude(0.0),
+M8N::M8N(Stream &uart) : latitude(0.0), longitude(0.0),
                          speed(0.0), course(0.0), altitude(0.0),
-                         fix_quality(0), satellites_in_use(0) {
-    nmeaBuffer.reserve(120);
+                         fix_quality(0), satellites_in_use(0),
+                         uart(uart), nmeaBufferIndex(0), nmeaDiscarding(false) {
+    timestamp[0] = '\0';
+    date[0] = '\0';
+    nmeaBuffer[0] = '\0';
 }
 
 void M8N::gatherData() {
@@ -14,133 +19,142 @@ void M8N::gatherData() {
             continue;
         }
         if (c == '\n') {
-            String rawData = nmeaBuffer;
-            nmeaBuffer = "";
-            rawData.trim();
-            if (rawData.length() > 0) {
-                parseNMEA(rawData);
+            if (!nmeaDiscarding) {
+                nmeaBuffer[nmeaBufferIndex] = '\0';
+                if (nmeaBufferIndex > 0) {
+                    parseNMEA(nmeaBuffer);
+                }
             }
-        } else {
-            if (nmeaBuffer.length() < 120) {
-                nmeaBuffer += c;
+            nmeaBufferIndex = 0;
+            nmeaBuffer[0] = '\0';
+            nmeaDiscarding = false;
+        } else if (!nmeaDiscarding) {
+            if (nmeaBufferIndex < (NMEA_BUFFER_SIZE - 1)) {
+                nmeaBuffer[nmeaBufferIndex++] = c;
             } else {
-                nmeaBuffer = "";
+                // Drop over-length/corrupt sentences rather than fragmenting heap with dynamic strings.
+                nmeaBufferIndex = 0;
+                nmeaBuffer[0] = '\0';
+                nmeaDiscarding = true;
             }
         }
     }
 }
 
-void M8N::parseNMEA(const String &sentence) {
-    // Check the sentence type and call the appropriate parser
-    if (sentence.startsWith("$GNRMC") || sentence.startsWith("$GPRMC")) {
+void M8N::parseNMEA(char *sentence) {
+    // Check the sentence type and call the appropriate parser.
+    if (strncmp(sentence, "$GNRMC", 6) == 0 || strncmp(sentence, "$GPRMC", 6) == 0) {
         parseRMC(sentence);
-    } else if (sentence.startsWith("$GNGGA") || sentence.startsWith("$GPGGA")) {
+    } else if (strncmp(sentence, "$GNGGA", 6) == 0 || strncmp(sentence, "$GPGGA", 6) == 0) {
         parseGGA(sentence);
     }
 }
 
-void M8N::parseRMC(const String &sentence) {
-    // Split the sentence by commas.
-    const int maxParts = 20;
-    String parts[maxParts];
-    int partIndex = 0;
-    int start = 0;
-    int commaIndex = sentence.indexOf(',');
-    while (commaIndex != -1 && partIndex < maxParts) {
-        parts[partIndex++] = sentence.substring(start, commaIndex);
-        start = commaIndex + 1;
-        commaIndex = sentence.indexOf(',', start);
-    }
-    if (partIndex < maxParts) {
-        parts[partIndex++] = sentence.substring(start);
+size_t M8N::splitFields(char *sentence, char *fields[], size_t maxFields) {
+    size_t fieldCount = 0;
+    char *fieldStart = sentence;
+
+    while (fieldCount < maxFields) {
+        fields[fieldCount++] = fieldStart;
+        char *comma = strchr(fieldStart, ',');
+        if (comma == nullptr) {
+            break;
+        }
+        *comma = '\0';
+        fieldStart = comma + 1;
     }
 
-    // Check that data is valid (parts[2] should be "A")
-    if (parts[2] == "A") {
-        // Convert latitude and longitude to decimal degrees
-        latitude = convertToDecimal(parts[3], parts[4]);
-        longitude = convertToDecimal(parts[5], parts[6]);
+    return fieldCount;
+}
 
-        // Speed is provided in parts[7]
-        if (parts[7].length() > 0) {
-            speed = parts[7].toDouble();
-        } else {
-            speed = 0.0;
-        }
+void M8N::parseRMC(char *sentence) {
+    char *parts[NMEA_MAX_FIELDS] = {nullptr};
+    size_t partCount = splitFields(sentence, parts, NMEA_MAX_FIELDS);
+    if (partCount <= 9) {
+        return;
+    }
 
-        // Course over ground is provided in parts[8]
-        if (parts[8].length() > 0) {
-            course = parts[8].toDouble();
-        } else {
-            course = 0.0;
-        }
+    // Check that data is valid (parts[2] should be "A").
+    if (parts[2][0] == 'A' && parts[2][1] == '\0') {
+        latitude = convertToDecimal(parts[3], parts[4][0]);
+        longitude = convertToDecimal(parts[5], parts[6][0]);
+        speed = (parts[7][0] != '\0') ? atof(parts[7]) : 0.0;
+        course = (parts[8][0] != '\0') ? atof(parts[8]) : 0.0;
 
-        // Process timestamp and date (parts[1] and parts[9])
-        String raw_time = parts[1];  // Expected format HHMMSS.SS
-        String raw_date = parts[9];  // Expected format DDMMYY
-        if (raw_time.length() >= 6 && raw_date.length() >= 6) {
-            timestamp = raw_time.substring(0, 2) + ":" + raw_time.substring(2, 4) + ":" + raw_time.substring(4, 6);
-            int day = raw_date.substring(0, 2).toInt();
-            int month = raw_date.substring(2, 4).toInt();
-            int year = 2000 + raw_date.substring(4, 6).toInt();
-            char dateBuffer[11];
-            snprintf(dateBuffer, sizeof(dateBuffer), "%04d-%02d-%02d", year, month, day);
-            date = String(dateBuffer);
+        // Process timestamp and date (parts[1] HHMMSS.SS, parts[9] DDMMYY).
+        if (strlen(parts[1]) >= 6 && strlen(parts[9]) >= 6) {
+            timestamp[0] = parts[1][0];
+            timestamp[1] = parts[1][1];
+            timestamp[2] = ':';
+            timestamp[3] = parts[1][2];
+            timestamp[4] = parts[1][3];
+            timestamp[5] = ':';
+            timestamp[6] = parts[1][4];
+            timestamp[7] = parts[1][5];
+            timestamp[8] = '\0';
+
+            date[0] = '2';
+            date[1] = '0';
+            date[2] = parts[9][4];
+            date[3] = parts[9][5];
+            date[4] = '-';
+            date[5] = parts[9][2];
+            date[6] = parts[9][3];
+            date[7] = '-';
+            date[8] = parts[9][0];
+            date[9] = parts[9][1];
+            date[10] = '\0';
         } else {
-            timestamp = "";
-            date = "";
+            timestamp[0] = '\0';
+            date[0] = '\0';
         }
     }
 }
 
-void M8N::parseGGA(const String &sentence) {
-    const int maxParts = 20;
-    String parts[maxParts];
-    int partIndex = 0;
-    int start = 0;
-    int commaIndex = sentence.indexOf(',');
-    while (commaIndex != -1 && partIndex < maxParts) {
-        parts[partIndex++] = sentence.substring(start, commaIndex);
-        start = commaIndex + 1;
-        commaIndex = sentence.indexOf(',', start);
-    }
-    if (partIndex < maxParts) {
-        parts[partIndex++] = sentence.substring(start);
+void M8N::parseGGA(char *sentence) {
+    char *parts[NMEA_MAX_FIELDS] = {nullptr};
+    size_t partCount = splitFields(sentence, parts, NMEA_MAX_FIELDS);
+    if (partCount <= 9) {
+        return;
     }
 
     // Altitude (in meters) is typically in parts[9]; convert to feet.
-    if (parts[9].length() > 0) {
-        double altitude_m = parts[9].toDouble();
+    if (parts[9][0] != '\0') {
+        double altitude_m = atof(parts[9]);
         altitude = altitude_m * 3.28084;
     }
-    if (parts[6].length() > 0) {
-        fix_quality = parts[6].toInt();
+    if (parts[6][0] != '\0') {
+        fix_quality = atoi(parts[6]);
     }
-    if (parts[7].length() > 0) {
-        satellites_in_use = parts[7].toInt();
+    if (parts[7][0] != '\0') {
+        satellites_in_use = atoi(parts[7]);
     }
 }
 
-double M8N::convertToDecimal(const String &raw_value, const String &direction) {
-    if (raw_value.length() == 0 || direction.length() == 0) {
-        return 0.0;  // Alternatively, you might return NAN
+double M8N::convertToDecimal(const char *raw_value, char direction) {
+    if (raw_value == nullptr || raw_value[0] == '\0' || direction == '\0') {
+        return 0.0;
     }
 
-    int degrees = 0;
-    double minutes = 0.0;
-    if (direction == "N" || direction == "S") {
-        // Latitude: degrees are first two digits
-        if (raw_value.length() < 2) return 0.0;
-        degrees = raw_value.substring(0, 2).toInt();
-        minutes = raw_value.substring(2).toDouble();
-    } else if (direction == "E" || direction == "W") {
-        // Longitude: degrees are first three digits
-        if (raw_value.length() < 3) return 0.0;
-        degrees = raw_value.substring(0, 3).toInt();
-        minutes = raw_value.substring(3).toDouble();
+    int degreeDigits = 0;
+    if (direction == 'N' || direction == 'S') {
+        degreeDigits = 2;
+    } else if (direction == 'E' || direction == 'W') {
+        degreeDigits = 3;
+    } else {
+        return 0.0;
     }
+
+    if (strlen(raw_value) < static_cast<size_t>(degreeDigits)) {
+        return 0.0;
+    }
+
+    char degreeBuffer[4] = {0};
+    memcpy(degreeBuffer, raw_value, degreeDigits);
+    int degrees = atoi(degreeBuffer);
+    double minutes = atof(raw_value + degreeDigits);
     double decimal = degrees + minutes / 60.0;
-    if (direction == "S" || direction == "W") {
+    if (direction == 'S' || direction == 'W') {
         decimal = -decimal;
     }
     return decimal;

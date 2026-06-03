@@ -58,6 +58,26 @@ void MS5611::setSeaLevelPressure(float p) {
   sea_level_pressure = p;
 }
 
+uint8_t MS5611::getConversionTimeMs() const {
+  return _ct;
+}
+
+void MS5611::startRawTemperatureConversion() {
+  _i2c->beginTransmission(_address);
+  _i2c->write(0x50 + _uosr);
+  _i2c->endTransmission();
+}
+
+void MS5611::startRawPressureConversion() {
+  _i2c->beginTransmission(_address);
+  _i2c->write(0x40 + _uosr);
+  _i2c->endTransmission();
+}
+
+uint32_t MS5611::readAdc() {
+  return readRegister24(0x00);
+}
+
 void MS5611::calibrate() {
 //  Serial.println("Calibrating barometer bias... Please keep the sensor idle.");
   unsigned long startTime = millis();
@@ -92,27 +112,19 @@ float MS5611::calculateRawPressureMbar(uint32_t raw_pressure) {
 }
 
 uint32_t MS5611::readRawTemperature() {
-  // Send temperature conversion command: 0x50 + _uosr
-  _i2c->beginTransmission(_address);
-  _i2c->write(0x50 + _uosr);
-  _i2c->endTransmission();
+  startRawTemperatureConversion();
   delay(_ct);
-  return readRegister24(0x00);
+  return readAdc();
 }
 
 uint32_t MS5611::readRawPressure() {
-  // Send pressure conversion command: 0x40 + _uosr
-  _i2c->beginTransmission(_address);
-  _i2c->write(0x40 + _uosr);
-  _i2c->endTransmission();
+  startRawPressureConversion();
   delay(_ct);
-  return readRegister24(0x00);
+  return readAdc();
 }
 
-float MS5611::readPressure(bool compensation) {
-  uint32_t D1 = readRawPressure();
-  uint32_t D2 = readRawTemperature();
-  int32_t dT = (int32_t)D2 - ((uint32_t)fc[4] * 256);
+float MS5611::calculatePressure(uint32_t raw_pressure, uint32_t raw_temperature, bool compensation) {
+  int32_t dT = (int32_t)raw_temperature - ((uint32_t)fc[4] * 256);
   int64_t OFF = (int64_t)fc[1] * 65536 + ((int64_t)fc[3] * dT) / 128;
   int64_t SENS = (int64_t)fc[0] * 32768 + ((int64_t)fc[2] * dT) / 256;
 
@@ -131,8 +143,14 @@ float MS5611::readPressure(bool compensation) {
       SENS -= SENS2;
     }
   }
-  int32_t P = (((int64_t)D1 * SENS) / 2097152 - OFF) / 32768;
+  int32_t P = (((int64_t)raw_pressure * SENS) / 2097152 - OFF) / 32768;
   return P / 100.0;
+}
+
+float MS5611::readPressure(bool compensation) {
+  uint32_t D1 = readRawPressure();
+  uint32_t D2 = readRawTemperature();
+  return calculatePressure(D1, D2, compensation);
 }
 
 float MS5611::readTemperature(bool compensation) {

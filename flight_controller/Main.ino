@@ -4,8 +4,8 @@
  * Feather Flight Program
  * 
  * This sketch reads data from an MPU9250, MS5611, and MS4525D0 sensors while updating GPS data from an
- * M8N module. IMU/EKF work and CRSF telemetry cache updates run at ~125 Hz, while slower GPS,
- * barometer, and airspeed sensors are sampled on independent lower-rate timers.
+ * M8N module. IMU/EKF work and attitude telemetry cache updates run at ~125 Hz, while GPS
+ * telemetry, GPS UART draining, barometer, and airspeed work run on independent lower-rate timers.
  * The printed output includes roll, pitch, yaw, altitude (ft), airspeed (mph), longitude, latitude, and
  * EKF computation time.
  * 
@@ -91,10 +91,72 @@ EKF EKF_IMU(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT,
             Main_bCalcJacobianF, Main_bCalcJacobianH);
 
 // ----- Auxiliary Variables -----
-elapsedMillis timerEKF;
+elapsedMicros timerEKF;
 uint64_t u64compuTime;
 char bufferTxSer[100];
 char cmd;
+
+#ifndef FC_TIMING_INSTRUMENTATION
+#define FC_TIMING_INSTRUMENTATION 1
+#endif
+
+#ifndef FC_TIMING_SERIAL_OUTPUT
+#define FC_TIMING_SERIAL_OUTPUT 0
+#endif
+
+constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
+constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
+
+struct TimingCounter {
+  uint32_t lastUs;
+  uint32_t maxUs;
+  uint32_t count;
+};
+
+#if FC_TIMING_INSTRUMENTATION
+TimingCounter timingEkf = {0, 0, 0};
+TimingCounter timingBarometer = {0, 0, 0};
+TimingCounter timingAirspeed = {0, 0, 0};
+TimingCounter timingGpsParse = {0, 0, 0};
+TimingCounter timingCrsfUpdate = {0, 0, 0};
+TimingCounter timingLoop = {0, 0, 0};
+elapsedMillis timingPrintTimer;
+
+void recordTiming(TimingCounter& counter, uint32_t startUs) {
+  uint32_t elapsedUs = micros() - startUs;
+  counter.lastUs = elapsedUs;
+  if (elapsedUs > counter.maxUs) {
+    counter.maxUs = elapsedUs;
+  }
+  ++counter.count;
+}
+
+void printTimingCounter(const char *label, const TimingCounter& counter) {
+  Serial.print(label);
+  Serial.print(" last/max/count=");
+  Serial.print(counter.lastUs);
+  Serial.print('/');
+  Serial.print(counter.maxUs);
+  Serial.print('/');
+  Serial.print(counter.count);
+  Serial.print(" us ");
+}
+
+void maybePrintTimingStats() {
+#if FC_TIMING_SERIAL_OUTPUT
+  if (timingPrintTimer >= 1000) {
+    timingPrintTimer = 0;
+    printTimingCounter("EKF", timingEkf);
+    printTimingCounter("Baro", timingBarometer);
+    printTimingCounter("Airspeed", timingAirspeed);
+    printTimingCounter("GPS", timingGpsParse);
+    printTimingCounter("CRSF", timingCrsfUpdate);
+    printTimingCounter("Loop", timingLoop);
+    Serial.println();
+  }
+#endif
+}
+#endif
 
 // ----- I2C -----
 // Create an alternate I2C instance on PB9 (SDA) and PB8 (SCL)
@@ -122,6 +184,7 @@ Servo servoYaw;
 uint16_t lastRollCommandUs = 0;
 uint16_t lastPitchCommandUs = 0;
 uint16_t lastYawCommandUs = 0;
+uint32_t lastControlUpdateUs = 0;
 
 // Create a CRSFforArduino instance using Serial3.
 CRSFforArduino crsf(&Serial3);
@@ -170,12 +233,13 @@ const float FBW_PITCH_KI = 0.30f;
 const float FBW_PITCH_KD = 1.1f;
 
 struct LowPassFilter {
+  float cutoffHz;
   float alpha;
   float state;
   bool hasState;
 
   LowPassFilter(float cutoffHz, float dt)
-    : alpha(computeAlpha(cutoffHz, dt)), state(0.0f), hasState(false) {}
+    : cutoffHz(cutoffHz), alpha(computeAlpha(cutoffHz, dt)), state(0.0f), hasState(false) {}
 
   static float computeAlpha(float cutoffHz, float dt) {
     if (cutoffHz <= 0.0f || dt <= 0.0f) {
@@ -191,7 +255,8 @@ struct LowPassFilter {
     return alpha;
   }
 
-  float update(float input) {
+  float update(float input, float dt) {
+    alpha = computeAlpha(cutoffHz, dt);
     if (!hasState) {
       state = input;
       hasState = true;
@@ -298,6 +363,10 @@ uint16_t mapRcToUs(uint16_t value) {
 }
 
 
+bool shouldUpdateServo(uint16_t newCommandUs, uint16_t lastCommandUs) {
+  return abs(static_cast<int>(newCommandUs) - static_cast<int>(lastCommandUs)) >= SERVO_UPDATE_HYSTERESIS_US;
+}
+
 float mapRcToNormalized(uint16_t value) {
   const float inMin = static_cast<float>(RC_INPUT_MIN);
   const float inMax = static_cast<float>(RC_INPUT_MAX);
@@ -336,7 +405,13 @@ void updateControlMode() {
 }
 
 void serviceCrsfLink() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t timingStartUs = micros();
+#endif
   crsf.update();
+#if FC_TIMING_INSTRUMENTATION
+  recordTiming(timingCrsfUpdate, timingStartUs);
+#endif
   updateControlMode();
 }
 
@@ -363,10 +438,20 @@ elapsedMicros gpsDrainTimer;
 elapsedMicros barometerTimer;
 elapsedMicros airspeedTimer;
 constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_US = 8000;  // 125 Hz
-constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 8000;       // 125 Hz, using cached GPS/airdata values
+constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 20000;      // 50 Hz, aligned with GPS cache refresh
 constexpr uint32_t GPS_DRAIN_PERIOD_US = 20000;          // 50 Hz UART drain/cache refresh
 constexpr uint32_t BAROMETER_PERIOD_US = 16667;          // ~60 Hz hardware read/cache refresh
 constexpr uint32_t AIRSPEED_PERIOD_US = 16667;           // ~60 Hz hardware read/cache refresh
+
+enum BarometerReadState {
+  BAROMETER_IDLE = 0,
+  BAROMETER_WAIT_PRESSURE,
+  BAROMETER_WAIT_TEMPERATURE
+};
+
+BarometerReadState barometerReadState = BAROMETER_IDLE;
+uint32_t barometerConversionStartUs = 0;
+uint32_t barometerRawPressure = 0;
 
 struct AttitudeTelemetryFrame {
   int16_t roll;
@@ -378,20 +463,83 @@ AttitudeTelemetryFrame latestAttitudeFrame = {0, 0, 0};
 bool attitudeSampleValid = false;
 
 void updateGpsCache() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t timingStartUs = micros();
+#endif
   gps.gatherData();
+#if FC_TIMING_INSTRUMENTATION
+  recordTiming(timingGpsParse, timingStartUs);
+#endif
   latestLatitude = gps.latitude;
   latestLongitude = gps.longitude;
   satsInUse = gps.satellites_in_use;
 }
 
-void updateBarometerCache() {
-  const float baroPressure = barometer.readPressure();
+void applyBarometerPressure(float baroPressure) {
   const float altitudeMeters = barometer.getAltitude(baroPressure, barometer.getSeaLevelPressure());
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
 }
 
+void updateBarometerCacheBlocking() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t timingStartUs = micros();
+#endif
+  applyBarometerPressure(barometer.readPressure());
+#if FC_TIMING_INSTRUMENTATION
+  recordTiming(timingBarometer, timingStartUs);
+#endif
+}
+
+void serviceBarometerCache() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t timingStartUs = micros();
+#endif
+  bool barometerDidWork = false;
+  const uint32_t nowUs = micros();
+  const uint32_t conversionWaitUs = static_cast<uint32_t>(barometer.getConversionTimeMs()) * 1000UL;
+
+  switch (barometerReadState) {
+    case BAROMETER_IDLE:
+      if (barometerTimer >= BAROMETER_PERIOD_US) {
+        barometerTimer = 0;
+        barometerConversionStartUs = nowUs;
+        barometer.startRawPressureConversion();
+        barometerReadState = BAROMETER_WAIT_PRESSURE;
+        barometerDidWork = true;
+      }
+      break;
+
+    case BAROMETER_WAIT_PRESSURE:
+      if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
+        barometerRawPressure = barometer.readAdc();
+        barometerConversionStartUs = micros();
+        barometer.startRawTemperatureConversion();
+        barometerReadState = BAROMETER_WAIT_TEMPERATURE;
+        barometerDidWork = true;
+      }
+      break;
+
+    case BAROMETER_WAIT_TEMPERATURE:
+      if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
+        const uint32_t rawTemperature = barometer.readAdc();
+        applyBarometerPressure(barometer.calculatePressure(barometerRawPressure, rawTemperature));
+        barometerReadState = BAROMETER_IDLE;
+        barometerDidWork = true;
+      }
+      break;
+  }
+#if FC_TIMING_INSTRUMENTATION
+  if (barometerDidWork) {
+    recordTiming(timingBarometer, timingStartUs);
+  }
+#endif
+}
+
 void updateAirspeedCache() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t timingStartUs = micros();
+#endif
   float airspeedMph = airspeedSensor.getAirspeed();
   if (isnan(airspeedMph)) {
     // Serial.println("Airspeed sensor error");
@@ -399,6 +547,9 @@ void updateAirspeedCache() {
   }
   latestAirspeedMph = airspeedMph;
   airSpeedCms = airspeedMph * 44.704f;   // mph to cm/s
+#if FC_TIMING_INSTRUMENTATION
+  recordTiming(timingAirspeed, timingStartUs);
+#endif
 }
 
 void resetPeriodicTimers() {
@@ -411,6 +562,8 @@ void resetPeriodicTimers() {
   barometerTimer = 0;
   airspeedTimer = 0;
   timerEKF = 0;
+  barometerReadState = BAROMETER_IDLE;
+  lastControlUpdateUs = micros();
 }
 
 
@@ -481,7 +634,7 @@ void setup() {
 
   // Prime slow-sensor caches so the first GPS telemetry frames do not carry
   // default airspeed/altitude values while waiting for their first timers.
-  updateBarometerCache();
+  updateBarometerCacheBlocking();
   updateAirspeedCache();
   updateGpsCache();
 
@@ -498,16 +651,16 @@ void setup() {
 
 
 void loop() {
+#if FC_TIMING_INSTRUMENTATION
+  uint32_t loopStartUs = micros();
+#endif
   serviceCrsfLink();
 
   bool attitudeTelemetrySentThisLoop = false;
   bool gpsTelemetrySentThisLoop = false;
 
-  if (barometerTimer >= BAROMETER_PERIOD_US) {
-    barometerTimer = 0;
-    updateBarometerCache();
-    serviceCrsfLink();
-  }
+  serviceBarometerCache();
+  serviceCrsfLink();
 
   if (airspeedTimer >= AIRSPEED_PERIOD_US) {
     airspeedTimer = 0;
@@ -523,29 +676,17 @@ void loop() {
     serviceCrsfLink();
   }
 
-  if (attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US) {
-    attitudeTelemetryTimer = 0;
-    crsf.telemetryWriteAttitude(
-        latestAttitudeFrame.roll,
-        latestAttitudeFrame.pitch,
-        latestAttitudeFrame.yaw);
-    serviceCrsfLink();
-    attitudeTelemetrySentThisLoop = true;
-  }
-
-  if (gpsTelemetryTimer >= GPS_TELEMETRY_PERIOD_US) {
-    gpsTelemetryTimer = 0;
-    // Send GPS Telemetry in CRSF order using the latest cached values:
-    // latitude, longitude, altitude, speed, course, satellites
-    crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
-                           airSpeedCms, gps.course, satsInUse);
-    serviceCrsfLink();
-    gpsTelemetrySentThisLoop = true;
-  }
-
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
-  if (timerEKF >= SS_DT_MILIS) {
-    timerEKF -= SS_DT_MILIS;
+  if (timerEKF >= EKF_PERIOD_US) {
+    timerEKF -= EKF_PERIOD_US;
+    const uint32_t controlUpdateUs = micros();
+    float controlDt = (lastControlUpdateUs == 0)
+                        ? static_cast<float>(SS_DT)
+                        : static_cast<float>(controlUpdateUs - lastControlUpdateUs) * 1.0e-6f;
+    if (controlDt < 0.001f || controlDt > 0.050f) {
+      controlDt = static_cast<float>(SS_DT);
+    }
+    lastControlUpdateUs = controlUpdateUs;
     
     // Read sensor data from the IMU
     IMU.readSensor();
@@ -597,6 +738,9 @@ void loop() {
       EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
       // Serial.println("Whoop ");
     }
+#if FC_TIMING_INSTRUMENTATION
+    recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
+#endif
     u64compuTime = micros() - u64compuTime;
     
     // Convert quaternion to Euler angles
@@ -610,8 +754,8 @@ void loop() {
     float roll  = -atan2(2.0*(q0*q1 + q2*q3), 1.0 - 2.0*(q1*q1 + q2*q2)) * (180.0 / M_PI);
     float pitch = asin(2.0*(q0*q2 - q3*q1)) * (180.0 / M_PI);
     float yaw   = atan2(2.0*(q0*q3 + q1*q2), 1.0 - 2.0*(q2*q2 + q3*q3)) * (180.0 / M_PI);
-    float filteredRoll = rollAngleFilter.update(roll);
-    float filteredPitch = pitchAngleFilter.update(pitch);
+    float filteredRoll = rollAngleFilter.update(roll, controlDt);
+    float filteredPitch = pitchAngleFilter.update(pitch, controlDt);
     // Previously applied calibration offsets have been removed so that
     // raw EKF-derived roll and pitch values are reported directly.
     
@@ -640,8 +784,8 @@ void loop() {
       float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
       float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
 
-      float rollPidOutput = rollPid.update(desiredRoll, filteredRoll, SS_DT);
-      float pitchPidOutput = pitchPid.update(desiredPitch, filteredPitch, SS_DT);
+      float rollPidOutput = rollPid.update(desiredRoll, filteredRoll, controlDt);
+      float pitchPidOutput = pitchPid.update(desiredPitch, filteredPitch, controlDt);
 
       rollCommandUs = static_cast<uint16_t>(constrain(SERVO_CENTER_US + rollPidOutput,
                                                       static_cast<float>(SERVO_MIN_US),
@@ -654,17 +798,17 @@ void loop() {
       pitchCommandUs = mapRcToUs(rcPitchRaw);
     }
 
-    if (rollCommandUs != lastRollCommandUs) {
+    if (shouldUpdateServo(rollCommandUs, lastRollCommandUs)) {
       servoRoll.writeMicroseconds(rollCommandUs);
       lastRollCommandUs = rollCommandUs;
     }
 
-    if (pitchCommandUs != lastPitchCommandUs) {
+    if (shouldUpdateServo(pitchCommandUs, lastPitchCommandUs)) {
       servoPitch.writeMicroseconds(pitchCommandUs);
       lastPitchCommandUs = pitchCommandUs;
     }
 
-    if (yawCommandUs != lastYawCommandUs) {
+    if (shouldUpdateServo(yawCommandUs, lastYawCommandUs)) {
       servoYaw.writeMicroseconds(yawCommandUs);
       lastYawCommandUs = yawCommandUs;
     }
@@ -709,12 +853,36 @@ void loop() {
     #endif
   }
 
+  if (attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US) {
+    attitudeTelemetryTimer = 0;
+    crsf.telemetryWriteAttitude(
+        latestAttitudeFrame.roll,
+        latestAttitudeFrame.pitch,
+        latestAttitudeFrame.yaw);
+    serviceCrsfLink();
+    attitudeTelemetrySentThisLoop = true;
+  }
+
+  if (gpsTelemetryTimer >= GPS_TELEMETRY_PERIOD_US) {
+    gpsTelemetryTimer = 0;
+    // Send GPS Telemetry in CRSF order using the latest cached values:
+    // latitude, longitude, altitude, speed, course, satellites
+    crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
+                           airSpeedCms, gps.course, satsInUse);
+    serviceCrsfLink();
+    gpsTelemetrySentThisLoop = true;
+  }
+
   serviceCrsfLink();
+
+#if FC_TIMING_INSTRUMENTATION
+  recordTiming(timingLoop, loopStartUs);
+  maybePrintTimingStats();
+#endif
 
   (void)attitudeTelemetrySentThisLoop;
   (void)gpsTelemetrySentThisLoop;
 }
-
 
 
 
