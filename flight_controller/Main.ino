@@ -4,8 +4,8 @@
  * Feather Flight Program
  * 
  * This sketch reads data from an MPU9250, MS5611, and MS4525D0 sensors while updating GPS data from an
-* M8N module. The GPS data is updated every 100 ms (~10 Hz), while sensor data and telemetry are processed
-* and transmitted at ~125 Hz.
+ * M8N module. IMU/EKF work and CRSF telemetry cache updates run at ~125 Hz, while slower GPS,
+ * barometer, and airspeed sensors are sampled on independent lower-rate timers.
  * The printed output includes roll, pitch, yaw, altitude (ft), airspeed (mph), longitude, latitude, and
  * EKF computation time.
  * 
@@ -340,8 +340,6 @@ void serviceCrsfLink() {
   updateControlMode();
 }
 
-
-
 // ----- GPS -----
 // Instantiate the GPS object on Serial6
 M8N gps(Serial6);
@@ -351,15 +349,24 @@ double latestLatitude  = 0;
 double latestLongitude = 0;
 uint8_t satsInUse      = 0;       // GPS satellites currently in use
 
-// Telemetry values prepared for CRSF GPS frame
-float airSpeedCms     = 0.0f; // Airspeed from sensor in centimeters per second
+// Telemetry values prepared for CRSF GPS frame. The GPS CRSF frame uses the
+// latest cached GPS coordinates plus separately sampled airspeed/barometer data.
+float airSpeedCms      = 0.0f; // Airspeed from sensor in centimeters per second
 float sensorAltitudeCm = 0.0f; // Altitude from barometer in centimeters
+float latestAirspeedMph = 0.0f;
+float latestAltitudeFeet = 0.0f;
 
-// ----- Telemetry timing -----
+// ----- Sensor and telemetry timing -----
 elapsedMicros attitudeTelemetryTimer;
 elapsedMicros gpsTelemetryTimer;
-constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_US = 2000;  // 500 Hz
-constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 20000;      // 50 Hz
+elapsedMicros gpsReadTimer;
+elapsedMicros barometerTimer;
+elapsedMicros airspeedTimer;
+constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_US = 8000;  // 125 Hz
+constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 8000;       // 125 Hz, using cached GPS/airdata values
+constexpr uint32_t GPS_READ_PERIOD_US = 200000;          // 5 Hz hardware read/cache refresh
+constexpr uint32_t BAROMETER_PERIOD_US = 16667;          // ~60 Hz hardware read/cache refresh
+constexpr uint32_t AIRSPEED_PERIOD_US = 16667;           // ~60 Hz hardware read/cache refresh
 
 struct AttitudeTelemetryFrame {
   int16_t roll;
@@ -369,6 +376,32 @@ struct AttitudeTelemetryFrame {
 
 AttitudeTelemetryFrame latestAttitudeFrame = {0, 0, 0};
 bool attitudeSampleValid = false;
+
+void updateGpsCache() {
+  gps.gatherData();
+  latestLatitude = gps.latitude;
+  latestLongitude = gps.longitude;
+  satsInUse = gps.satellites_in_use;
+}
+
+void updateBarometerCache() {
+  const float baroPressure = barometer.readPressure();
+  const float altitudeMeters = barometer.getAltitude(baroPressure, barometer.getSeaLevelPressure());
+  sensorAltitudeCm = altitudeMeters * 100.0f;
+  latestAltitudeFeet = altitudeMeters * 3.28084f;
+}
+
+void updateAirspeedCache() {
+  float airspeedMph = airspeedSensor.getAirspeed();
+  if (isnan(airspeedMph)) {
+    // Serial.println("Airspeed sensor error");
+    airspeedMph = 0.0f;
+  }
+  latestAirspeedMph = airspeedMph;
+  airSpeedCms = airspeedMph * 44.704f;   // mph to cm/s
+}
+
+
 
 void setup() {
   // ----- Initialize Debug Serial -----
@@ -385,7 +418,10 @@ void setup() {
 
   // ----- Calibrate Barometer -----
   barometer.begin();
-  barometer.setOversampling("HIGH_RES");
+  // Keep conversion latency low so the 60 Hz barometer cache does not starve
+  // the 125 Hz IMU/EKF loop. LOW_POWER uses shorter conversion delays than
+  // HIGH_RES at the cost of some pressure resolution.
+  barometer.setOversampling("LOW_POWER");
   barometer.calibrate();
 
   // ----- Calibrate Airspeed Sensor -----
@@ -431,6 +467,12 @@ void setup() {
   delay(1000);
   Serial.println("GPS module initialized on USART6.");
 
+  // Prime slow-sensor caches so the first GPS telemetry frames do not carry
+  // default airspeed/altitude values while waiting for their first timers.
+  updateBarometerCache();
+  updateAirspeedCache();
+  updateGpsCache();
+
   // ----- Initialize CRSF Telemetry -----
   // Use a baud rate of 921600 as required.
   if (!crsf.begin(921600)) {
@@ -448,6 +490,24 @@ void loop() {
   bool attitudeTelemetrySentThisLoop = false;
   bool gpsTelemetrySentThisLoop = false;
 
+  if (barometerTimer >= BAROMETER_PERIOD_US) {
+    barometerTimer -= BAROMETER_PERIOD_US;
+    updateBarometerCache();
+    serviceCrsfLink();
+  }
+
+  if (airspeedTimer >= AIRSPEED_PERIOD_US) {
+    airspeedTimer -= AIRSPEED_PERIOD_US;
+    updateAirspeedCache();
+    serviceCrsfLink();
+  }
+
+  if (gpsReadTimer >= GPS_READ_PERIOD_US) {
+    gpsReadTimer -= GPS_READ_PERIOD_US;
+    updateGpsCache();
+    serviceCrsfLink();
+  }
+
   if (attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US) {
     attitudeTelemetryTimer -= ATTITUDE_TELEMETRY_PERIOD_US;
     crsf.telemetryWriteAttitude(
@@ -460,13 +520,7 @@ void loop() {
 
   if (gpsTelemetryTimer >= GPS_TELEMETRY_PERIOD_US) {
     gpsTelemetryTimer -= GPS_TELEMETRY_PERIOD_US;
-    gps.gatherData();
-    // Store the latest coordinates and satellite count from the GPS module
-    latestLatitude  = gps.latitude;
-    latestLongitude = gps.longitude;
-    satsInUse       = gps.satellites_in_use;
-
-    // Send GPS Telemetry in CRSF order:
+    // Send GPS Telemetry in CRSF order using the latest cached values:
     // latitude, longitude, altitude, speed, course, satellites
     crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
                            airSpeedCms, gps.course, satsInUse);
@@ -474,9 +528,9 @@ void loop() {
     gpsTelemetrySentThisLoop = true;
   }
 
-  // ----- Sensor Fusion, EKF, and Telemetry Update (125 Hz) -----
+  // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= SS_DT_MILIS) {
-    timerEKF = 0;
+    timerEKF -= SS_DT_MILIS;
     
     // Read sensor data from the IMU
     IMU.readSensor();
@@ -546,21 +600,6 @@ void loop() {
     // Previously applied calibration offsets have been removed so that
     // raw EKF-derived roll and pitch values are reported directly.
     
-    // Read barometer and compute relative altitude
-    float baroPressure   = barometer.readPressure();
-    float altitudeMeters = barometer.getAltitude(baroPressure, barometer.getSeaLevelPressure());
-    float altitudeFeet   = altitudeMeters * 3.28084; // for debug/printing
-
-    // Read airspeed sensor (returns mph)
-    float airspeedMph = airspeedSensor.getAirspeed();
-    if (isnan(airspeedMph)) {
-      // Serial.println("Airspeed sensor error");
-      airspeedMph = 0.0f;
-    }
-
-    // Prepare telemetry-friendly units
-    airSpeedCms      = airspeedMph * 44.704f;   // mph to cm/s
-    sensorAltitudeCm = altitudeMeters * 100.0f; // meters to cm
     // Cache the most recent attitude in decidegrees so telemetry can be
     // emitted independently of the EKF work.
     latestAttitudeFrame.roll = static_cast<int16_t>(roundf(roll * 10.0f));
@@ -628,8 +667,8 @@ void loop() {
     Serial.print("Roll: "); Serial.print(roll, 2);
     Serial.print(" | Pitch: "); Serial.print(pitch, 2);
     Serial.print(" | Yaw: "); Serial.print(yaw, 2);
-    Serial.print(" | Alt: "); Serial.print(altitudeFeet, 2); Serial.print(" ft");
-    Serial.print(" | Airspeed: "); Serial.print(airspeedMph, 2); Serial.print(" mph");
+    Serial.print(" | Alt: "); Serial.print(latestAltitudeFeet, 2); Serial.print(" ft");
+    Serial.print(" | Airspeed: "); Serial.print(latestAirspeedMph, 2); Serial.print(" mph");
     Serial.print(" | Lon: "); Serial.print(latestLongitude, 6);
     Serial.print(" | Lat: "); Serial.print(latestLatitude, 6);
     Serial.print(" | RC1: "); Serial.print(rc1);
