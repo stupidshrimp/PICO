@@ -486,6 +486,9 @@ class MainWindow(QMainWindow):
                     packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
                     transmission_enabled=True,
                 )
+                self.crsf_processor.packet_sent.connect(
+                    self._handle_control_packet_debug
+                )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
                 )
@@ -500,7 +503,7 @@ class MainWindow(QMainWindow):
         self.transmit_timer = QTimer(self)
         self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        transmit_interval = self.crsf_cfg.get("channel_update_interval", 20)
+        transmit_interval = self.crsf_cfg.get("channel_update_interval", 10)
         self.transmit_timer.start(transmit_interval)
 
         # Track transmission state and countdown handling for the configuration
@@ -1963,9 +1966,11 @@ class MainWindow(QMainWindow):
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
             print(f"Error during transmission: {e}")
-        else:
-            if self._debug_monitoring and "control" in self._debug_packets:
-                self.debug_page.log_packet("control", channels)
+
+    def _handle_control_packet_debug(self, channels):
+        """Log actual worker-thread CRSF writes when control debug is enabled."""
+        if self._debug_monitoring and "control" in self._debug_packets:
+            self.debug_page.log_packet("control", channels)
 
     def update_control_mode_label(self):
         """Update the control mode indicator text and color."""
@@ -2516,11 +2521,9 @@ class MainWindow(QMainWindow):
             return
 
         channels = self._build_control_channels()
-        interval = self.crsf_cfg.get("channel_update_interval", 20)
+        interval = self.crsf_cfg.get("channel_update_interval", 10)
         if self.crsf_processor:
             self.crsf_processor.transmission_start_update.emit(channels)
-            if self._debug_monitoring and "control" in self._debug_packets:
-                self.debug_page.log_packet("control", channels)
         self.transmit_timer.start(interval)
         self.transmission_active = True
         self._transmission_pressed_while_inactive = False
@@ -2634,6 +2637,9 @@ class MainWindow(QMainWindow):
                     channels=self._build_control_channels(),
                     packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
                     transmission_enabled=self.transmission_active,
+                )
+                self.crsf_processor.packet_sent.connect(
+                    self._handle_control_packet_debug
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper

@@ -16,9 +16,10 @@ DEFAULT_CONFIG = {
         "baudrate": 921600,
         # Worker-thread RC frame interval in ms (4 ms = 250 Hz)
         "packet_interval": 4,
-        # GUI/control-input polling interval; the worker repeats the latest
-        # channel state at packet_interval so UI load cannot lower RC frame rate.
-        "channel_update_interval": 20,
+        # GUI/control-input polling interval (10 ms = 100 Hz); the worker
+        # repeats the latest channel state at packet_interval so UI load cannot
+        # lower RC frame transmission rate.
+        "channel_update_interval": 10,
     },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator

@@ -27,6 +27,7 @@ class CRSFPacketProcessor(QObject):
     telemetry_ready = Signal(object)
     serial_data = Signal(object)
     channel_update = Signal(list)
+    packet_sent = Signal(list)
     packet_interval_update = Signal(int)
     transmission_enabled_update = Signal(bool)
     transmission_start_update = Signal(list)
@@ -329,6 +330,7 @@ class CRSFPacketProcessor(QObject):
                 bytes_written = self.serial.write(bytes(packet))
                 if bytes_written == -1:
                     raise IOError(self.serial.errorString())
+                self.packet_sent.emit(list(self.channels))
                 return "Good"
 
             return "Error"
