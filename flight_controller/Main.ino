@@ -22,6 +22,7 @@
 #include "ms5611.h" 
 #include "ms4525d0.h" 
 #include "m8n.h"
+#include "control_mode.h"
 #include <CRSFforArduino.hpp>
 #include <math.h>
 
@@ -201,11 +202,6 @@ CRSFforArduino crsf(&Serial3);
 
 // Store the latest received RC channel data.
 serialReceiverLayer::rcChannels_t latestRcChannels;
-
-enum ControlMode {
-  CONTROL_MODE_MANUAL = 0,
-  CONTROL_MODE_FLY_BY_WIRE
-};
 
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 
