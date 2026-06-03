@@ -450,6 +450,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll_area)
 
         self._configuration_scroll_area = scroll_area
+        # Seed safe control values before the CRSF worker is created.  The
+        # worker may begin transmitting as soon as the port opens, so its
+        # initial channel cache must already reflect the UI's safe mapping
+        # instead of constructor defaults.
+        self.yaw_value = 0.0
+        self.yaw_target_value = 0.0
+        self.throttle_percent = 0
+        self.target_throttle_percent = 0
+
         self.joystick = None
         if validate_port("joystick", self.joystick_cfg.get("port")):
             try:
@@ -473,6 +482,9 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=self.crsf_cfg.get("port"),
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    channels=self._build_control_channels(),
+                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
+                    transmission_enabled=True,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -488,7 +500,7 @@ class MainWindow(QMainWindow):
         self.transmit_timer = QTimer(self)
         self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        transmit_interval = self.crsf_cfg.get("packet_interval", 15)
+        transmit_interval = self.crsf_cfg.get("channel_update_interval", 20)
         self.transmit_timer.start(transmit_interval)
 
         # Track transmission state and countdown handling for the configuration
@@ -517,8 +529,6 @@ class MainWindow(QMainWindow):
         self.yaw_indicator = InputLine(Qt.Horizontal, self.ui.yawInput)
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
-        self.yaw_value = 0.0
-        self.yaw_target_value = 0.0
         self._yaw_keys_pressed: set[int] = set()
         self.yaw_sensitivity = int(self.joystick_cfg.get("yaw_sensitivity", 100))
         self._yaw_step_base = 0.05
@@ -526,8 +536,6 @@ class MainWindow(QMainWindow):
         self.yaw_update_timer = QTimer(self)
         self.yaw_update_timer.timeout.connect(self.update_yaw)
         self.yaw_update_timer.start(50)
-        self.throttle_percent = 0
-        self.target_throttle_percent = 0
         self.throttle_indicator = ThrottleWidget(self.ui.throttleInput)
         self.throttle_indicator.resize(self.ui.throttleInput.size())
         self.throttle_indicator.show()
@@ -1911,6 +1919,38 @@ class MainWindow(QMainWindow):
         out_min, out_max = 172, 1811
         return int(round((value + 1.0) * 0.5 * (out_max - out_min) + out_min))
 
+    def _build_control_channels(self):
+        """Build the current CRSF channel set using the UI's safe defaults."""
+
+        channels = [1500] * 16
+        joystick = getattr(self, "joystick", None)
+        if joystick:
+            try:
+                mapped_roll, mapped_pitch = joystick.get_mapped_values()
+                channels[0] = int(mapped_roll)
+                channels[1] = int(mapped_pitch)
+            except Exception as e:
+                print(f"Error during transmission: {e}")
+
+        # Map throttle percentage to CRSF channel range (172-1811).
+        # ``getattr`` keeps startup/reconnect safe even if this helper is called
+        # before every UI widget has finished initialising.
+        throttle_min = 172
+        throttle_max = 1811
+        throttle_span = throttle_max - throttle_min
+        clamped_percent = max(
+            0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
+        )
+        channels[2] = int((clamped_percent / 100) * throttle_span + throttle_min)
+
+        # Map yaw input to channel 4 (index 3).
+        channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
+
+        # Control mode channel: send low for Manual, high for Fly-By-Wire.
+        mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
+        channels[self.control_mode_channel] = mode_value
+        return channels
+
     def transmit_data(self):
         """
         Transmit CRSF packets using mapped joystick values.
@@ -1918,27 +1958,7 @@ class MainWindow(QMainWindow):
         if not self.crsf_processor:
             return
 
-        channels = [1500] * 16
-        if self.joystick:
-            try:
-                mapped_roll, mapped_pitch = self.joystick.get_mapped_values()
-                channels[0] = int(mapped_roll)
-                channels[1] = int(mapped_pitch)
-            except Exception as e:
-                print(f"Error during transmission: {e}")
-        # Map throttle percentage to CRSF channel range (172-1811)
-        throttle_min = 172
-        throttle_max = 1811
-        throttle_span = throttle_max - throttle_min
-        clamped_percent = max(0.0, min(100.0, self.throttle_percent))
-        throttle_value = int((clamped_percent / 100) * throttle_span + throttle_min)
-        channels[2] = throttle_value
-        # Map yaw input to channel 4 (index 3)
-        channels[3] = self._map_axis_to_crsf(self.yaw_value)
-
-        # Control mode channel: send low for Manual, high for Fly-By-Wire
-        mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
-        channels[self.control_mode_channel] = mode_value
+        channels = self._build_control_channels()
         try:
             self.crsf_processor.channel_update.emit(channels)
         except Exception as e:
@@ -2095,7 +2115,7 @@ class MainWindow(QMainWindow):
         rate_row.addWidget(QLabel("Packet Interval (ms)"))
         self.packet_interval_edit = QLineEdit()
         self.packet_interval_edit.setText(
-            str(self.crsf_cfg.get("packet_interval", 3))
+            str(self.crsf_cfg.get("packet_interval", 4))
         )
         self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
@@ -2478,6 +2498,8 @@ class MainWindow(QMainWindow):
             return
 
         self.transmit_timer.stop()
+        if self.crsf_processor:
+            self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
         self._transmission_pressed_while_inactive = False
         self._transmission_hold_in_progress = False
@@ -2493,7 +2515,12 @@ class MainWindow(QMainWindow):
         if self.transmission_active:
             return
 
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        channels = self._build_control_channels()
+        interval = self.crsf_cfg.get("channel_update_interval", 20)
+        if self.crsf_processor:
+            self.crsf_processor.transmission_start_update.emit(channels)
+            if self._debug_monitoring and "control" in self._debug_packets:
+                self.debug_page.log_packet("control", channels)
         self.transmit_timer.start(interval)
         self.transmission_active = True
         self._transmission_pressed_while_inactive = False
@@ -2604,6 +2631,9 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=port,
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    channels=self._build_control_channels(),
+                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
+                    transmission_enabled=self.transmission_active,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -2618,16 +2648,16 @@ class MainWindow(QMainWindow):
         try:
             interval = int(self.packet_interval_edit.text())
         except ValueError:
-            interval = self.crsf_cfg.get("packet_interval", 3)
+            interval = self.crsf_cfg.get("packet_interval", 4)
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
-        if self.transmission_active:
-            self.transmit_timer.start(interval)
+        if self.crsf_processor:
+            self.crsf_processor.packet_interval_update.emit(interval)
         self.update_pico_rate_label()
         save_config(self.config)
 
     def update_pico_rate_label(self):
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        interval = self.crsf_cfg.get("packet_interval", 4)
         freq = 0
         if interval:
             freq = 1000 / interval

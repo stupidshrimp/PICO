@@ -3,7 +3,16 @@ import struct
 import logging
 import time
 import math
-from PySide6.QtCore import QObject, Signal, QIODevice, QThread, Slot, QMetaObject, Qt
+from PySide6.QtCore import (
+    QObject,
+    Signal,
+    QIODevice,
+    QThread,
+    Slot,
+    QMetaObject,
+    Qt,
+    QTimer,
+)
 
 from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 
@@ -18,12 +27,22 @@ class CRSFPacketProcessor(QObject):
     telemetry_ready = Signal(object)
     serial_data = Signal(object)
     channel_update = Signal(list)
+    packet_interval_update = Signal(int)
+    transmission_enabled_update = Signal(bool)
+    transmission_start_update = Signal(list)
     error = Signal(str)
 
     class PacketsTypes(IntEnum):
         RC_CHANNELS_PACKED = 0x16
 
-    def __init__(self, port, baudrate=921600, channels=None):
+    def __init__(
+        self,
+        port,
+        baudrate=921600,
+        channels=None,
+        packet_interval_ms=4,
+        transmission_enabled=True,
+    ):
         """Initialize the CRSFPacketProcessor.
 
         Parameters
@@ -35,6 +54,14 @@ class CRSFPacketProcessor(QObject):
         channels : list, optional
             Initial channel values (up to 16 channels). Defaults to ``1500`` for
             all channels.
+        packet_interval_ms : int, optional
+            Worker-thread transmit cadence in milliseconds. A value of ``4``
+            targets the 250 Hz ELRS packet rate without relying on the GUI
+            event loop.
+        transmission_enabled : bool, optional
+            Initial state for periodic RC frame transmission. Pass ``False``
+            when the UI transmission control is currently stopped so reconnects
+            do not restart RC output implicitly.
         """
         # Ensure the underlying QObject is initialised so that Qt signals
         # remain valid for the lifetime of this processor.  Without this call
@@ -54,6 +81,9 @@ class CRSFPacketProcessor(QObject):
         self.serial_port = port_info.systemLocation() or port
         self.baudrate = baudrate
         self.serial = None  # QSerialPort instance
+        self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
+        self._tx_enabled = bool(transmission_enabled)
+        self._tx_timer = None
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
         # every packet instead of only the first one in each serial read.
@@ -66,6 +96,9 @@ class CRSFPacketProcessor(QObject):
         self.moveToThread(self._thread)
         self._thread.started.connect(self.connect_serial)
         self.channel_update.connect(self.update_and_send_packet)
+        self.packet_interval_update.connect(self.set_packet_interval)
+        self.transmission_enabled_update.connect(self.set_transmission_enabled)
+        self.transmission_start_update.connect(self.update_channels_and_enable)
         self._thread.start()
 
         # Track the last time we queried the OS for available serial ports.
@@ -76,6 +109,8 @@ class CRSFPacketProcessor(QObject):
         # providing timely detection of disconnects.
         self._last_port_check = 0.0
         self._port_check_interval = 1.0  # seconds
+        self._last_reconnect_attempt = 0.0
+        self._reconnect_interval = 1.0  # seconds
 
     @Slot()
     def connect_serial(self):
@@ -87,13 +122,14 @@ class CRSFPacketProcessor(QObject):
             self.serial.setParity(QSerialPort.NoParity)
             self.serial.setStopBits(QSerialPort.OneStop)
             self.serial.setFlowControl(QSerialPort.NoFlowControl)
-            self.serial.setReadBufferSize(4096)
+            self.serial.setReadBufferSize(65536)
             self.serial.readyRead.connect(self.read_serial_data)
             self.serial.errorOccurred.connect(self._handle_serial_error)
             if self.serial.open(QIODevice.ReadWrite):
                 print(
                     f"Connected to {self.serial_port} at {self.baudrate} baud."
                 )
+                self._ensure_tx_timer()
             else:
                 logger.error(
                     "Failed to open serial port: %s", self.serial.errorString()
@@ -197,25 +233,90 @@ class CRSFPacketProcessor(QObject):
         result.append(self.crc8_data(result[2:]))  # Append CRC
         return result
 
+    def _normalise_channels(self, new_channels):
+        """Return exactly 16 CRSF channels, truncating or padding as needed."""
+        if len(new_channels) > 16:
+            logger.warning(
+                "Received %d channel values; truncating to 16", len(new_channels)
+            )
+            new_channels = new_channels[:16]
+        return [int(value) for value in new_channels] + [1500] * (
+            16 - len(new_channels)
+        )
+
+    def _ensure_tx_timer(self):
+        """Create/start the worker-thread transmit timer."""
+        if self._tx_timer is None:
+            self._tx_timer = QTimer(self)
+            self._tx_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            self._tx_timer.timeout.connect(self.send_current_packet)
+
+        if self._tx_enabled and not self._tx_timer.isActive():
+            self._tx_timer.start(self._tx_interval_ms)
+
+    @Slot(int)
+    def set_packet_interval(self, interval_ms):
+        """Update the worker-thread transmit cadence."""
+        try:
+            self._tx_interval_ms = max(1, int(interval_ms))
+        except (TypeError, ValueError):
+            self._tx_interval_ms = 4
+
+        if self._tx_timer and self._tx_timer.isActive():
+            self._tx_timer.start(self._tx_interval_ms)
+
+    @Slot(bool)
+    def set_transmission_enabled(self, enabled):
+        """Enable or disable periodic RC frame transmission."""
+        self._tx_enabled = bool(enabled)
+        if not self._tx_enabled:
+            if self._tx_timer:
+                self._tx_timer.stop()
+            return
+        self._ensure_tx_timer()
+
     @Slot(list)
     def update_and_send_packet(self, new_channels):
-        """Update channel values and send the CRSF packet if the connection is valid."""
+        """Update channel values; periodic transmission is handled in this thread."""
         try:
-            if len(new_channels) > 16:
-                logger.warning(
-                    "Received %d channel values; truncating to 16", len(new_channels)
-                )
-                new_channels = new_channels[:16]
+            self.channels = self._normalise_channels(new_channels)
+            self._ensure_tx_timer()
+            return "Good"
+        except Exception as exc:  # Ensure worker thread stays alive
+            logger.exception("Exception in update_and_send_packet")
+            self.error.emit(f"Failed to update channels: {exc}")
+            return f"Error: {exc}"
 
-            # Update channel values and pad to 16 channels if necessary
-            self.channels = new_channels + [1500] * (16 - len(new_channels))
+    @Slot(list)
+    def update_channels_and_enable(self, new_channels):
+        """Refresh channels before enabling periodic RC frame transmission."""
+        try:
+            self.channels = self._normalise_channels(new_channels)
+            self._tx_enabled = True
+            self._ensure_tx_timer()
+            return "Good"
+        except Exception as exc:  # Ensure worker thread stays alive
+            logger.exception("Exception in update_channels_and_enable")
+            self.error.emit(f"Failed to start transmission: {exc}")
+            return f"Error: {exc}"
 
-            # Check USB connection
+    @Slot()
+    def send_current_packet(self):
+        """Write the latest channel packet at the configured ELRS cadence."""
+        try:
+            if not self._tx_enabled:
+                return "Disabled"
+
+            # Check USB connection. This call is internally throttled so the
+            # 250 Hz transmit loop does not enumerate ports on every tick.
             if not self.check_usb_connection():
                 return "Error"
 
-            # Check serial connection
             if not self.is_connected():
+                now = time.monotonic()
+                if now - self._last_reconnect_attempt < self._reconnect_interval:
+                    return "Error"
+                self._last_reconnect_attempt = now
                 logger.warning(
                     "Serial port not connected. Attempting to reconnect..."
                 )
@@ -223,25 +324,18 @@ class CRSFPacketProcessor(QObject):
                 if not self.is_connected():
                     return "Error"
 
-            # If connected, attempt to transmit packets
             if self.serial:
-                try:
-                    packet = self.create_packet()
-                    self.serial.write(bytes(packet))
-                    # Disable verbose packet transmission debug output to focus on telemetry
-                    # print(f"Packet sent: {packet.hex()} | Channels: {self.channels}")
-                    return "Good"  # Return "Good" only if transmission is successful
-                except Exception as e:
-                    logger.exception("Failed to send packet")
-                    self.error.emit(f"Failed to send packet: {e}")
-                    return f"Error: {e}"
+                packet = self.create_packet()
+                bytes_written = self.serial.write(bytes(packet))
+                if bytes_written == -1:
+                    raise IOError(self.serial.errorString())
+                return "Good"
 
-            # If the serial port is not available, return an error
             return "Error"
 
-        except Exception as exc:  # Ensure worker thread stays alive
-            logger.exception("Exception in update_and_send_packet")
-            self.error.emit(f"Failed to update/send packet: {exc}")
+        except Exception as exc:
+            logger.exception("Failed to send packet")
+            self.error.emit(f"Failed to send packet: {exc}")
             return f"Error: {exc}"
 
 
@@ -596,6 +690,8 @@ class CRSFPacketProcessor(QObject):
     def close_serial(self):
         """Close the serial port in the worker thread."""
         try:
+            if self._tx_timer:
+                self._tx_timer.stop()
             if self.serial:
                 try:
                     self.serial.readyRead.disconnect(self.read_serial_data)
