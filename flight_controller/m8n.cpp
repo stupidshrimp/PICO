@@ -5,8 +5,8 @@
 
 M8N::M8N(Stream &uart) : latitude(0.0), longitude(0.0),
                          speed(0.0), course(0.0), altitude(0.0),
-                         fix_quality(0), satellites_in_use(0),
-                         uart(uart), nmeaBufferIndex(0), nmeaDiscarding(false) {
+                         fix_quality(0), satellites_in_use(0), has_valid_fix(false),
+                         uart(uart), nmeaBufferIndex(0), nmeaDiscarding(false), rmcDataActive(false) {
     timestamp[0] = '\0';
     date[0] = '\0';
     nmeaBuffer[0] = '\0';
@@ -42,12 +42,46 @@ void M8N::gatherData() {
 }
 
 void M8N::parseNMEA(char *sentence) {
+    if (!validateAndStripChecksum(sentence)) {
+        return;
+    }
+
     // Check the sentence type and call the appropriate parser.
     if (strncmp(sentence, "$GNRMC", 6) == 0 || strncmp(sentence, "$GPRMC", 6) == 0) {
         parseRMC(sentence);
     } else if (strncmp(sentence, "$GNGGA", 6) == 0 || strncmp(sentence, "$GPGGA", 6) == 0) {
         parseGGA(sentence);
     }
+}
+
+bool M8N::validateAndStripChecksum(char *sentence) {
+    if (sentence == nullptr || sentence[0] != '$') {
+        return false;
+    }
+
+    char *checksumMarker = strchr(sentence, '*');
+    if (checksumMarker == nullptr || checksumMarker[1] == '\0' || checksumMarker[2] == '\0') {
+        return false;
+    }
+
+    uint8_t calculated = 0;
+    for (char *cursor = sentence + 1; cursor < checksumMarker; ++cursor) {
+        calculated ^= static_cast<uint8_t>(*cursor);
+    }
+
+    char checksumText[3] = {checksumMarker[1], checksumMarker[2], '\0'};
+    char *end = nullptr;
+    unsigned long expected = strtoul(checksumText, &end, 16);
+    if (end == checksumText || *end != '\0' || expected > 0xFFUL) {
+        return false;
+    }
+
+    if (calculated != static_cast<uint8_t>(expected)) {
+        return false;
+    }
+
+    *checksumMarker = '\0';
+    return true;
 }
 
 size_t M8N::splitFields(char *sentence, char *fields[], size_t maxFields) {
@@ -76,10 +110,12 @@ void M8N::parseRMC(char *sentence) {
 
     // Check that data is valid (parts[2] should be "A").
     if (parts[2][0] == 'A' && parts[2][1] == '\0') {
+        rmcDataActive = true;
         latitude = convertToDecimal(parts[3], parts[4][0]);
         longitude = convertToDecimal(parts[5], parts[6][0]);
         speed = (parts[7][0] != '\0') ? atof(parts[7]) : 0.0;
         course = (parts[8][0] != '\0') ? atof(parts[8]) : 0.0;
+        has_valid_fix = rmcDataActive && fix_quality > 0 && satellites_in_use >= MIN_SATELLITES_FOR_FIX;
 
         // Process timestamp and date (parts[1] HHMMSS.SS, parts[9] DDMMYY).
         if (strlen(parts[1]) >= 6 && strlen(parts[9]) >= 6) {
@@ -108,6 +144,9 @@ void M8N::parseRMC(char *sentence) {
             timestamp[0] = '\0';
             date[0] = '\0';
         }
+    } else {
+        rmcDataActive = false;
+        has_valid_fix = false;
     }
 }
 
@@ -129,6 +168,8 @@ void M8N::parseGGA(char *sentence) {
     if (parts[7][0] != '\0') {
         satellites_in_use = atoi(parts[7]);
     }
+
+    has_valid_fix = rmcDataActive && fix_quality > 0 && satellites_in_use >= MIN_SATELLITES_FOR_FIX;
 }
 
 double M8N::convertToDecimal(const char *raw_value, char direction) {

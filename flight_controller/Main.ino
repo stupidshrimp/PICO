@@ -52,6 +52,7 @@ Matrix HARD_IRON_BIAS(3, 1, HARD_IRON_BIAS_data);
 #define R_INIT_MAG  (0.0015/10.)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
+float_prec gEkfRuntimeDt = SS_DT;
 float_prec EKF_PINIT_data[SS_X_LEN*SS_X_LEN] = {
   P_INIT, 0, 0, 0,
   0, P_INIT, 0, 0,
@@ -106,6 +107,9 @@ char cmd;
 
 constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
+constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
+constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
+constexpr uint32_t BAROMETER_TEMPERATURE_PERIOD_US = 500000UL;
 
 struct TimingCounter {
   uint32_t lastUs;
@@ -184,7 +188,13 @@ Servo servoYaw;
 uint16_t lastRollCommandUs = 0;
 uint16_t lastPitchCommandUs = 0;
 uint16_t lastYawCommandUs = 0;
+uint32_t lastRollWriteUs = 0;
+uint32_t lastPitchWriteUs = 0;
+uint32_t lastYawWriteUs = 0;
 uint32_t lastControlUpdateUs = 0;
+uint32_t lastRcPacketUs = 0;
+bool rcReceiverFailsafeActive = true;
+bool rcFailsafeActive = true;
 
 // Create a CRSFforArduino instance using Serial3.
 CRSFforArduino crsf(&Serial3);
@@ -350,7 +360,14 @@ LowPassFilter pitchAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>
 
 // Callback to capture incoming RC channel packets.
 void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
+  if (channels == nullptr || channels->failsafe) {
+    rcReceiverFailsafeActive = true;
+    return;
+  }
+
   latestRcChannels = *channels;
+  rcReceiverFailsafeActive = false;
+  lastRcPacketUs = micros();
 }
 
 uint16_t mapRcToUs(uint16_t value) {
@@ -363,8 +380,15 @@ uint16_t mapRcToUs(uint16_t value) {
 }
 
 
-bool shouldUpdateServo(uint16_t newCommandUs, uint16_t lastCommandUs) {
-  return abs(static_cast<int>(newCommandUs) - static_cast<int>(lastCommandUs)) >= SERVO_UPDATE_HYSTERESIS_US;
+bool shouldUpdateServo(uint16_t newCommandUs, uint16_t lastCommandUs, uint32_t lastWriteUs, uint32_t nowUs) {
+  return abs(static_cast<int>(newCommandUs) - static_cast<int>(lastCommandUs)) >= SERVO_UPDATE_HYSTERESIS_US ||
+         (uint32_t)(nowUs - lastWriteUs) >= SERVO_FORCE_REFRESH_PERIOD_US;
+}
+
+bool rcInputFresh(uint32_t nowUs) {
+  return !rcReceiverFailsafeActive &&
+         lastRcPacketUs != 0 &&
+         (uint32_t)(nowUs - lastRcPacketUs) <= RC_FAILSAFE_TIMEOUT_US;
 }
 
 float mapRcToNormalized(uint16_t value) {
@@ -423,6 +447,7 @@ M8N gps(Serial6);
 double latestLatitude  = 0;
 double latestLongitude = 0;
 uint8_t satsInUse      = 0;       // GPS satellites currently in use
+double latestGpsCourse = 0.0;
 
 // Telemetry values prepared for CRSF GPS frame. The GPS CRSF frame uses the
 // latest cached GPS coordinates plus separately sampled airspeed/barometer data.
@@ -452,6 +477,9 @@ enum BarometerReadState {
 BarometerReadState barometerReadState = BAROMETER_IDLE;
 uint32_t barometerConversionStartUs = 0;
 uint32_t barometerRawPressure = 0;
+uint32_t barometerRawTemperature = 0;
+uint32_t lastBarometerTemperatureUs = 0;
+bool barometerTemperatureValid = false;
 
 struct AttitudeTelemetryFrame {
   int16_t roll;
@@ -470,9 +498,16 @@ void updateGpsCache() {
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingGpsParse, timingStartUs);
 #endif
-  latestLatitude = gps.latitude;
-  latestLongitude = gps.longitude;
   satsInUse = gps.satellites_in_use;
+  if (gps.has_valid_fix) {
+    latestLatitude = gps.latitude;
+    latestLongitude = gps.longitude;
+    latestGpsCourse = gps.course;
+  } else {
+    latestLatitude = 0.0;
+    latestLongitude = 0.0;
+    latestGpsCourse = 0.0;
+  }
 }
 
 void applyBarometerPressure(float baroPressure) {
@@ -502,10 +537,17 @@ void serviceBarometerCache() {
   switch (barometerReadState) {
     case BAROMETER_IDLE:
       if (barometerTimer >= BAROMETER_PERIOD_US) {
+        const bool temperatureDue = !barometerTemperatureValid ||
+                                    (uint32_t)(nowUs - lastBarometerTemperatureUs) >= BAROMETER_TEMPERATURE_PERIOD_US;
         barometerTimer = 0;
         barometerConversionStartUs = nowUs;
-        barometer.startRawPressureConversion();
-        barometerReadState = BAROMETER_WAIT_PRESSURE;
+        if (temperatureDue) {
+          barometer.startRawTemperatureConversion();
+          barometerReadState = BAROMETER_WAIT_TEMPERATURE;
+        } else {
+          barometer.startRawPressureConversion();
+          barometerReadState = BAROMETER_WAIT_PRESSURE;
+        }
         barometerDidWork = true;
       }
       break;
@@ -513,17 +555,19 @@ void serviceBarometerCache() {
     case BAROMETER_WAIT_PRESSURE:
       if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
         barometerRawPressure = barometer.readAdc();
-        barometerConversionStartUs = micros();
-        barometer.startRawTemperatureConversion();
-        barometerReadState = BAROMETER_WAIT_TEMPERATURE;
+        if (barometerTemperatureValid) {
+          applyBarometerPressure(barometer.calculatePressure(barometerRawPressure, barometerRawTemperature));
+        }
+        barometerReadState = BAROMETER_IDLE;
         barometerDidWork = true;
       }
       break;
 
     case BAROMETER_WAIT_TEMPERATURE:
       if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
-        const uint32_t rawTemperature = barometer.readAdc();
-        applyBarometerPressure(barometer.calculatePressure(barometerRawPressure, rawTemperature));
+        barometerRawTemperature = barometer.readAdc();
+        lastBarometerTemperatureUs = micros();
+        barometerTemperatureValid = true;
         barometerReadState = BAROMETER_IDLE;
         barometerDidWork = true;
       }
@@ -535,6 +579,7 @@ void serviceBarometerCache() {
   }
 #endif
 }
+
 
 void updateAirspeedCache() {
 #if FC_TIMING_INSTRUMENTATION
@@ -563,6 +608,8 @@ void resetPeriodicTimers() {
   airspeedTimer = 0;
   timerEKF = 0;
   barometerReadState = BAROMETER_IDLE;
+  barometerTemperatureValid = false;
+  lastBarometerTemperatureUs = 0;
   lastControlUpdateUs = micros();
 }
 
@@ -622,6 +669,9 @@ void setup() {
   lastRollCommandUs = SERVO_CENTER_US;
   lastPitchCommandUs = SERVO_CENTER_US;
   lastYawCommandUs = SERVO_CENTER_US;
+  lastRollWriteUs = micros();
+  lastPitchWriteUs = lastRollWriteUs;
+  lastYawWriteUs = lastRollWriteUs;
 
   for (size_t i = 0; i < (sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0])); ++i) {
     latestRcChannels.value[i] = RC_INPUT_CENTER;
@@ -731,6 +781,7 @@ void loop() {
     }
     
     // Update the EKF and measure computation time
+    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
     u64compuTime = micros();
     if (!EKF_IMU.bUpdate(Y, U)) {
       quaternionData.vSetToZero();
@@ -769,15 +820,33 @@ void loop() {
     serviceCrsfLink();
 
     const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+    const uint32_t servoUpdateUs = micros();
+    const bool rcFresh = rcInputFresh(servoUpdateUs);
+    if (!rcFresh) {
+      if (!rcFailsafeActive) {
+        rollPid.reset();
+        pitchPid.reset();
+        rollAngleFilter.reset();
+        pitchAngleFilter.reset();
+      }
+      rcFailsafeActive = true;
+      setControlMode(CONTROL_MODE_MANUAL);
+    } else {
+      rcFailsafeActive = false;
+    }
+
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
     uint16_t rcYawRaw = (channelCount > 3) ? latestRcChannels.value[3] : RC_INPUT_CENTER;
 
     uint16_t rollCommandUs = SERVO_CENTER_US;
     uint16_t pitchCommandUs = SERVO_CENTER_US;
-    uint16_t yawCommandUs = mapRcToUs(rcYawRaw);
+    uint16_t yawCommandUs = rcFresh ? mapRcToUs(rcYawRaw) : SERVO_CENTER_US;
 
-    if (controlMode == CONTROL_MODE_FLY_BY_WIRE) {
+    if (!rcFresh) {
+      rollCommandUs = SERVO_CENTER_US;
+      pitchCommandUs = SERVO_CENTER_US;
+    } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE) {
       float rollCommandNorm = mapRcToNormalized(rcRollRaw);
       float pitchCommandNorm = mapRcToNormalized(rcPitchRaw);
 
@@ -798,19 +867,22 @@ void loop() {
       pitchCommandUs = mapRcToUs(rcPitchRaw);
     }
 
-    if (shouldUpdateServo(rollCommandUs, lastRollCommandUs)) {
+    if (shouldUpdateServo(rollCommandUs, lastRollCommandUs, lastRollWriteUs, servoUpdateUs)) {
       servoRoll.writeMicroseconds(rollCommandUs);
       lastRollCommandUs = rollCommandUs;
+      lastRollWriteUs = servoUpdateUs;
     }
 
-    if (shouldUpdateServo(pitchCommandUs, lastPitchCommandUs)) {
+    if (shouldUpdateServo(pitchCommandUs, lastPitchCommandUs, lastPitchWriteUs, servoUpdateUs)) {
       servoPitch.writeMicroseconds(pitchCommandUs);
       lastPitchCommandUs = pitchCommandUs;
+      lastPitchWriteUs = servoUpdateUs;
     }
 
-    if (shouldUpdateServo(yawCommandUs, lastYawCommandUs)) {
+    if (shouldUpdateServo(yawCommandUs, lastYawCommandUs, lastYawWriteUs, servoUpdateUs)) {
       servoYaw.writeMicroseconds(yawCommandUs);
       lastYawCommandUs = yawCommandUs;
+      lastYawWriteUs = servoUpdateUs;
     }
 
     // Give CRSF a chance to run immediately after any servo updates in case
@@ -868,7 +940,7 @@ void loop() {
     // Send GPS Telemetry in CRSF order using the latest cached values:
     // latitude, longitude, altitude, speed, course, satellites
     crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
-                           airSpeedCms, gps.course, satsInUse);
+                           airSpeedCms, latestGpsCourse, satsInUse);
     serviceCrsfLink();
     gpsTelemetrySentThisLoop = true;
   }
@@ -916,10 +988,10 @@ bool Main_bUpdateNonlinearX(Matrix& X_Next, const Matrix& X, const Matrix& U)
     q = U[1][0];
     r = U[2][0];
     
-    X_Next[0][0] = (0.5 * (+0.00 -p*q1 -q*q2 -r*q3))*SS_DT + q0;
-    X_Next[1][0] = (0.5 * (+p*q0 +0.00 +r*q2 -q*q3))*SS_DT + q1;
-    X_Next[2][0] = (0.5 * (+q*q0 -r*q1 +0.00 +p*q3))*SS_DT + q2;
-    X_Next[3][0] = (0.5 * (+r*q0 +q*q1 -p*q2 +0.00))*SS_DT + q3;
+    X_Next[0][0] = (0.5 * (+0.00 -p*q1 -q*q2 -r*q3))*gEkfRuntimeDt + q0;
+    X_Next[1][0] = (0.5 * (+p*q0 +0.00 +r*q2 -q*q3))*gEkfRuntimeDt + q1;
+    X_Next[2][0] = (0.5 * (+q*q0 -r*q1 +0.00 +p*q3))*gEkfRuntimeDt + q2;
+    X_Next[3][0] = (0.5 * (+r*q0 +q*q1 -p*q2 +0.00))*gEkfRuntimeDt + q3;
     
     
     /* ======= Additional ad-hoc quaternion normalization to make sure the quaternion is a unit vector (i.e. ||q|| = 1) ======= */
@@ -993,23 +1065,23 @@ bool Main_bCalcJacobianF(Matrix& F, const Matrix& X, const Matrix& U)
     r = U[2][0];
 
     F[0][0] =  1.000;
-    F[1][0] =  0.5*p * SS_DT;
-    F[2][0] =  0.5*q * SS_DT;
-    F[3][0] =  0.5*r * SS_DT;
+    F[1][0] =  0.5*p * gEkfRuntimeDt;
+    F[2][0] =  0.5*q * gEkfRuntimeDt;
+    F[3][0] =  0.5*r * gEkfRuntimeDt;
 
-    F[0][1] = -0.5*p * SS_DT;
+    F[0][1] = -0.5*p * gEkfRuntimeDt;
     F[1][1] =  1.000;
-    F[2][1] = -0.5*r * SS_DT;
-    F[3][1] =  0.5*q * SS_DT;
+    F[2][1] = -0.5*r * gEkfRuntimeDt;
+    F[3][1] =  0.5*q * gEkfRuntimeDt;
 
-    F[0][2] = -0.5*q * SS_DT;
-    F[1][2] =  0.5*r * SS_DT;
+    F[0][2] = -0.5*q * gEkfRuntimeDt;
+    F[1][2] =  0.5*r * gEkfRuntimeDt;
     F[2][2] =  1.000;
-    F[3][2] = -0.5*p * SS_DT;
+    F[3][2] = -0.5*p * gEkfRuntimeDt;
 
-    F[0][3] = -0.5*r * SS_DT;
-    F[1][3] = -0.5*q * SS_DT;
-    F[2][3] =  0.5*p * SS_DT;
+    F[0][3] = -0.5*r * gEkfRuntimeDt;
+    F[1][3] = -0.5*q * gEkfRuntimeDt;
+    F[2][3] =  0.5*p * gEkfRuntimeDt;
     F[3][3] =  1.000;
     
     return true;
