@@ -14,8 +14,11 @@ DEFAULT_CONFIG = {
     "crsf": {
         "port": "COM3",
         "baudrate": 921600,
-        # Interval in ms (~300 Hz)
-        "packet_interval": 3,
+        # Worker-thread RC frame interval in ms (4 ms = 250 Hz)
+        "packet_interval": 4,
+        # GUI/control-input polling interval; the worker repeats the latest
+        # channel state at packet_interval so UI load cannot lower RC frame rate.
+        "channel_update_interval": 20,
     },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator
