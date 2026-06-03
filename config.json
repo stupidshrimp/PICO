@@ -10,7 +10,8 @@
     "crsf": {
         "port": "Not connected",
         "baudrate": 921600,
-        "packet_interval": 3
+        "packet_interval": 4,
+        "channel_update_interval": 20
     },
     "osd": {
         "attitude_smoothing": 100

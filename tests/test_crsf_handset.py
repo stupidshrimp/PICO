@@ -81,3 +81,69 @@ def test_decode_handset_piggyback_payload():
     assert processor.telemetry_ready.emitted == [
         ("handset_timing", subtype, rate, offset, None, None)
     ]
+
+class DummyWritableSerial:
+    def __init__(self):
+        self.writes = []
+
+    def write(self, payload: bytes) -> int:
+        self.writes.append(payload)
+        return len(payload)
+
+    def errorString(self) -> str:
+        return "dummy serial error"
+
+
+def test_channel_update_only_refreshes_latest_channels():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.error = DummySignal()
+    processor._ensure_tx_timer = lambda: None
+
+    result = processor.update_and_send_packet([172, 1811, 1000])
+
+    assert result == "Good"
+    assert processor.channels[:3] == [172, 1811, 1000]
+    assert processor.channels[3:] == [1500] * 13
+
+
+def test_worker_transmit_writes_current_packet():
+    serial = DummyWritableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [1500] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert result == "Good"
+    assert len(serial.writes) == 1
+    assert serial.writes[0] == bytes(processor.create_packet())
+
+
+class DummyTimer:
+    def __init__(self):
+        self.stopped = False
+        self.started_with = []
+
+    def stop(self):
+        self.stopped = True
+
+    def start(self, interval):
+        self.started_with.append(interval)
+
+    def isActive(self):
+        return bool(self.started_with) and not self.stopped
+
+
+def test_set_transmission_enabled_false_stops_worker_timer():
+    timer = DummyTimer()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor._tx_timer = timer
+
+    processor.set_transmission_enabled(False)
+
+    assert processor._tx_enabled is False
+    assert timer.stopped is True
