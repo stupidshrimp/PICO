@@ -133,6 +133,7 @@ def test_worker_transmit_writes_current_packet():
     processor.channels = [CRSF_CHANNEL_CENTER] * 16
     processor.serial = serial
     processor.error = DummySignal()
+    processor.packet_sent = DummySignal()
     processor._tx_enabled = True
     processor.check_usb_connection = lambda: True
     processor.is_connected = lambda: True
@@ -142,6 +143,32 @@ def test_worker_transmit_writes_current_packet():
     assert result == "Good"
     assert len(serial.writes) == 1
     assert serial.writes[0] == bytes(processor.create_packet())
+    assert processor.packet_sent.emitted == [[1500] * 16]
+
+
+class FailingWritableSerial:
+    def write(self, payload: bytes) -> int:
+        return -1
+
+    def errorString(self) -> str:
+        return "dummy serial error"
+
+
+def test_worker_transmit_does_not_emit_packet_sent_on_failed_write():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [1500] * 16
+    processor.serial = FailingWritableSerial()
+    processor.error = DummySignal()
+    processor.packet_sent = DummySignal()
+    processor._tx_enabled = True
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert result.startswith("Error:")
+    assert processor.packet_sent.emitted == []
+    assert processor.error.emitted
 
 
 class DummyPacer:
