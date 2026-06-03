@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
         "packet_interval": 4,
         # GUI/control-input polling interval; the worker repeats the latest
         # channel state at packet_interval so UI load cannot lower RC frame rate.
-        "channel_update_interval": 20,
+        "channel_update_interval": 8,
     },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator

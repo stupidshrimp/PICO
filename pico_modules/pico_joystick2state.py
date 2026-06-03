@@ -1,7 +1,7 @@
 import re
 import serial
 import threading
-from queue import Queue
+from queue import Empty, Full, Queue
 from PySide6.QtCore import QObject, Signal, QThread
 
 
@@ -25,9 +25,19 @@ class _SerialReader(QThread):
                     except (serial.SerialException, OSError) as exc:
                         self.error.emit(f"Serial connection error: {exc}")
                         break
-                    self.data_queue.put(raw)
+                    try:
+                        self.data_queue.put_nowait(raw)
+                    except Full:
+                        try:
+                            self.data_queue.get_nowait()
+                        except Empty:
+                            pass
+                        try:
+                            self.data_queue.put_nowait(raw)
+                        except Full:
+                            pass
                 else:
-                    self.msleep(50)
+                    self.msleep(5)
         except Exception as exc:  # pragma: no cover - serial read errors
             self.error.emit(f"Error reading serial data: {exc}")
 
@@ -53,7 +63,10 @@ class JoystickRawHandler(QObject):
         except serial.SerialException as e:  # pragma: no cover - serial init
             raise RuntimeError(f"Failed to connect to joystick on {port}: {e}")
 
-        self.data_queue = Queue()
+        # Keep only a small backlog of joystick samples.  Control updates should
+        # use the newest stick position rather than replaying stale serial lines
+        # after a short burst or GUI hiccup.
+        self.data_queue = Queue(maxsize=8)
         self.roll = 512
         self.pitch = 512
         self.deadzone = deadzone  # percent
@@ -125,18 +138,27 @@ class JoystickRawHandler(QObject):
 
     def get_raw_values(self):
         """Return the most recent processed pitch and roll values."""
-        while not self.data_queue.empty():
-            raw_line = self.data_queue.get()
+        latest_sample = None
+        while True:
             try:
-                raw_roll, raw_pitch = self._parse_line(raw_line)
-                proc_roll = self._apply_deadzone_sensitivity(raw_roll)
-                proc_pitch = self._apply_deadzone_sensitivity(raw_pitch)
-                alpha = 1.0 - (self.smoothing / 100.0)
-                self.roll += alpha * (proc_roll - self.roll)
-                self.pitch += alpha * (proc_pitch - self.pitch)
+                raw_line = self.data_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                latest_sample = self._parse_line(raw_line)
             except ValueError:
-                # Ignore unrelated lines such as button events
+                # Ignore unrelated lines such as button events.  Keep looking for
+                # the newest valid axis sample instead of letting stale queued
+                # values add control latency.
                 continue
+
+        if latest_sample is not None:
+            raw_roll, raw_pitch = latest_sample
+            proc_roll = self._apply_deadzone_sensitivity(raw_roll)
+            proc_pitch = self._apply_deadzone_sensitivity(raw_pitch)
+            alpha = 1.0 - (self.smoothing / 100.0)
+            self.roll += alpha * (proc_roll - self.roll)
+            self.pitch += alpha * (proc_pitch - self.pitch)
 
         return self.pitch, self.roll  # pitch first for consistency with callers
 

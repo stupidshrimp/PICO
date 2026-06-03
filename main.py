@@ -199,6 +199,8 @@ class MainWindow(QMainWindow):
         self.sortie_filename = None
         self._sortie_ready_state = False
         self._sortie_stale_timeout = 2.0
+        self._sortie_flush_interval = 0.5
+        self._last_sortie_flush_time = 0.0
         self.last_telemetry_time = None
         self._rate_window_seconds = 1.0
         self._packet_times = {
@@ -490,6 +492,7 @@ class MainWindow(QMainWindow):
                     channels=self._build_control_channels(),
                     packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
                     transmission_enabled=True,
+                    raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -1049,6 +1052,7 @@ class MainWindow(QMainWindow):
         self.sortie_writer = csv.writer(self.sortie_file)
         self.sortie_writer.writerow(self._sortie_headers)
         self.sortie_file.flush()
+        self._last_sortie_flush_time = time.monotonic()
 
         self.sortie_recording = True
         self.sortie_filename = filename
@@ -1093,7 +1097,10 @@ class MainWindow(QMainWindow):
         try:
             self.sortie_writer.writerow(row)
             if self.sortie_file:
-                self.sortie_file.flush()
+                now = time.monotonic()
+                if now - self._last_sortie_flush_time >= self._sortie_flush_interval:
+                    self.sortie_file.flush()
+                    self._last_sortie_flush_time = now
         except Exception as exc:  # noqa: BLE001 - broad to stop logging on failure
             logging.error("Failed to write telemetry sortie row: %s", exc)
             self.stop_sortie_recording()
@@ -1725,6 +1732,16 @@ class MainWindow(QMainWindow):
         else:
             self.roll_alarm_start_time = None
             self.roll_alarm_playing = False
+
+
+    def _set_crsf_raw_serial_debug(self, enabled: bool) -> None:
+        """Ask the CRSF worker to emit raw serial chunks only when needed."""
+        processor = getattr(self, "crsf_processor", None)
+        if processor is not None:
+            try:
+                processor.raw_serial_debug_update.emit(bool(enabled))
+            except Exception:
+                logging.debug("Failed to update CRSF raw serial debug state", exc_info=True)
 
     @Slot(object)
     def _handle_serial_debug(self, payload) -> None:
@@ -2645,11 +2662,13 @@ class MainWindow(QMainWindow):
                     channels=self._build_control_channels(),
                     packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
                     transmission_enabled=self.transmission_active,
+                    raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
                 )
                 self.crsf_processor.serial_data.connect(self._handle_serial_debug)
+                self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
@@ -3152,6 +3171,7 @@ class MainWindow(QMainWindow):
         self._debug_serial_all = serial_all
         self._debug_telemetry_all = telemetry_all
         self._debug_monitoring = True
+        self._set_crsf_raw_serial_debug(self._debug_serial_all)
         self.debug_page.begin_monitoring(
             self._debug_packets,
             include_joystick,
@@ -3177,6 +3197,7 @@ class MainWindow(QMainWindow):
         self._debug_include_joystick = False
         self._debug_serial_all = False
         self._debug_telemetry_all = False
+        self._set_crsf_raw_serial_debug(False)
         self.debug_page.end_monitoring()
 
     def resizeEvent(self, event):

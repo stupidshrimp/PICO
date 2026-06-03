@@ -57,6 +57,7 @@ def test_handset_frame_not_dropped(rate, offset):
     processor.telemetry_ready = DummySignal()
     processor.error = DummySignal()
     processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = True
 
     processor.read_serial_data()
 
@@ -71,6 +72,33 @@ def test_handset_frame_not_dropped(rate, offset):
     assert event[4] == 0xEA
     assert event[5] == 0xEE
 
+
+
+def test_raw_serial_data_not_emitted_when_debug_disabled():
+    frame = _build_handset_frame(1000, 200)
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(frame)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+
+    processor.read_serial_data()
+
+    assert processor.serial_data.emitted == []
+    assert processor.telemetry_ready.emitted, "Telemetry should still decode with raw debug disabled"
+
+
+def test_raw_serial_debug_flag_can_be_toggled():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+
+    processor.set_raw_serial_debug_enabled(True)
+    assert processor._raw_serial_debug_enabled is True
+
+    processor.set_raw_serial_debug_enabled(False)
+    assert processor._raw_serial_debug_enabled is False
 
 def test_decode_handset_piggyback_payload():
     subtype = 0x10

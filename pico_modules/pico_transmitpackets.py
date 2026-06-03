@@ -122,6 +122,7 @@ class CRSFPacketProcessor(QObject):
     packet_interval_update = Signal(int)
     transmission_enabled_update = Signal(bool)
     transmission_start_update = Signal(list)
+    raw_serial_debug_update = Signal(bool)
     error = Signal(str)
 
     class PacketsTypes(IntEnum):
@@ -134,6 +135,7 @@ class CRSFPacketProcessor(QObject):
         channels=None,
         packet_interval_ms=4,
         transmission_enabled=True,
+        raw_serial_debug_enabled=False,
     ):
         """Initialize the CRSFPacketProcessor.
 
@@ -155,6 +157,10 @@ class CRSFPacketProcessor(QObject):
             Initial state for periodic RC frame transmission. Pass ``False``
             when the UI transmission control is currently stopped so reconnects
             do not restart RC output implicitly.
+        raw_serial_debug_enabled : bool, optional
+            Initial state for forwarding raw serial byte chunks to the GUI debug
+            page.  Keep disabled during normal operation to avoid unnecessary
+            cross-thread signal traffic.
         """
         # Ensure the underlying QObject is initialised so that Qt signals
         # remain valid for the lifetime of this processor.  Without this call
@@ -176,6 +182,7 @@ class CRSFPacketProcessor(QObject):
         self.serial = None  # QSerialPort instance
         self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
         self._tx_enabled = bool(transmission_enabled)
+        self._raw_serial_debug_enabled = bool(raw_serial_debug_enabled)
         self._tx_pacer = None
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
@@ -200,6 +207,7 @@ class CRSFPacketProcessor(QObject):
         self.packet_interval_update.connect(self.set_packet_interval)
         self.transmission_enabled_update.connect(self.set_transmission_enabled)
         self.transmission_start_update.connect(self.update_channels_and_enable)
+        self.raw_serial_debug_update.connect(self.set_raw_serial_debug_enabled)
         self._thread.start()
 
 
@@ -413,6 +421,11 @@ class CRSFPacketProcessor(QObject):
             self.error.emit(f"Failed to start transmission: {exc}")
             return f"Error: {exc}"
 
+    @Slot(bool)
+    def set_raw_serial_debug_enabled(self, enabled):
+        """Enable or disable forwarding raw serial chunks to the GUI debug tab."""
+        self._raw_serial_debug_enabled = bool(enabled)
+
     @Slot()
     def send_current_packet(self):
         """Write the latest channel packet at the configured ELRS cadence."""
@@ -468,10 +481,11 @@ class CRSFPacketProcessor(QObject):
             # without producing verbose serial output.
             new_data = bytes(self.serial.readAll())
             if new_data:
-                try:
-                    self.serial_data.emit(new_data)
-                except Exception:
-                    logger.debug("Serial data signal emit failed", exc_info=True)
+                if getattr(self, "_raw_serial_debug_enabled", False):
+                    try:
+                        self.serial_data.emit(new_data)
+                    except Exception:
+                        logger.debug("Serial data signal emit failed", exc_info=True)
                 self._rx_buffer.extend(new_data)
                 # Prevent unbounded growth if we fall behind
                 MAX_BUF = 8192
