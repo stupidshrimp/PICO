@@ -18,6 +18,11 @@ from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 
 logger = logging.getLogger(__name__)
 
+CRSF_CHANNEL_MIN = 172
+CRSF_CHANNEL_MAX = 1811
+CRSF_CHANNEL_CENTER = 992
+CRSF_CHANNEL_COUNT = 16
+
 class CRSFPacketProcessor(QObject):
     """Process CRSF packets and emit telemetry via Qt signals."""
 
@@ -52,8 +57,9 @@ class CRSFPacketProcessor(QObject):
         baudrate : int, optional
             Baudrate for serial communication (default ``921600``).
         channels : list, optional
-            Initial channel values (up to 16 channels). Defaults to ``1500`` for
-            all channels.
+            Initial CRSF channel values (up to 16 channels). Defaults to
+            ``CRSF_CHANNEL_CENTER`` for all channels; CRSF channel units are
+            not servo microseconds.
         packet_interval_ms : int, optional
             Worker-thread transmit cadence in milliseconds. A value of ``4``
             targets the 250 Hz ELRS packet rate without relying on the GUI
@@ -69,13 +75,13 @@ class CRSFPacketProcessor(QObject):
         # been deleted`` when packets are decoded.
         super().__init__()
         if channels is None:
-            channels = [1500] * 16  # Default channel values
+            channels = [CRSF_CHANNEL_CENTER] * CRSF_CHANNEL_COUNT
 
-        if len(channels) > 16:
-            raise ValueError("Maximum of 16 channels supported.")
+        if len(channels) > CRSF_CHANNEL_COUNT:
+            raise ValueError(f"Maximum of {CRSF_CHANNEL_COUNT} channels supported.")
 
-        # Pad the provided channels to 16 if fewer are given
-        self.channels = channels + [1500] * (16 - len(channels))
+        # Pad/clamp provided channels in CRSF units before any writes occur.
+        self.channels = self._normalise_channels(channels)
 
         port_info = QSerialPortInfo(port)
         self.serial_port = port_info.systemLocation() or port
@@ -235,13 +241,26 @@ class CRSFPacketProcessor(QObject):
 
     def _normalise_channels(self, new_channels):
         """Return exactly 16 CRSF channels, truncating or padding as needed."""
-        if len(new_channels) > 16:
+        if len(new_channels) > CRSF_CHANNEL_COUNT:
             logger.warning(
-                "Received %d channel values; truncating to 16", len(new_channels)
+                "Received %d channel values; truncating to %d",
+                len(new_channels),
+                CRSF_CHANNEL_COUNT,
             )
-            new_channels = new_channels[:16]
-        return [int(value) for value in new_channels] + [1500] * (
-            16 - len(new_channels)
+            new_channels = new_channels[:CRSF_CHANNEL_COUNT]
+
+        normalised = []
+        for value in new_channels:
+            try:
+                channel = int(value)
+            except (TypeError, ValueError):
+                channel = CRSF_CHANNEL_CENTER
+            normalised.append(
+                max(CRSF_CHANNEL_MIN, min(CRSF_CHANNEL_MAX, channel))
+            )
+
+        return normalised + [CRSF_CHANNEL_CENTER] * (
+            CRSF_CHANNEL_COUNT - len(normalised)
         )
 
     def _ensure_tx_timer(self):

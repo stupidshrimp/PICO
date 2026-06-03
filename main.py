@@ -96,7 +96,12 @@ from widgets.throttle_widget import ThrottleWidget
 
 from pico_modules.pico_videofeed import VideoFeed
 from pico_modules.pico_joystick2state import JoystickRawHandler
-from pico_modules.pico_transmitpackets import CRSFPacketProcessor
+from pico_modules.pico_transmitpackets import (
+    CRSF_CHANNEL_CENTER,
+    CRSF_CHANNEL_MAX,
+    CRSF_CHANNEL_MIN,
+    CRSFPacketProcessor,
+)
 
 # Import the custom OSD module
 from pico_modules.rollpitch_osd import RollPitchOSD
@@ -1916,13 +1921,19 @@ class MainWindow(QMainWindow):
         """Map a normalized control value (``-1`` to ``1``) to CRSF range."""
 
         value = max(-1.0, min(1.0, float(value)))
-        out_min, out_max = 172, 1811
-        return int(round((value + 1.0) * 0.5 * (out_max - out_min) + out_min))
+        return int(
+            round(
+                (value + 1.0)
+                * 0.5
+                * (CRSF_CHANNEL_MAX - CRSF_CHANNEL_MIN)
+                + CRSF_CHANNEL_MIN
+            )
+        )
 
     def _build_control_channels(self):
         """Build the current CRSF channel set using the UI's safe defaults."""
 
-        channels = [1500] * 16
+        channels = [CRSF_CHANNEL_CENTER] * 16
         joystick = getattr(self, "joystick", None)
         if joystick:
             try:
@@ -1935,8 +1946,8 @@ class MainWindow(QMainWindow):
         # Map throttle percentage to CRSF channel range (172-1811).
         # ``getattr`` keeps startup/reconnect safe even if this helper is called
         # before every UI widget has finished initialising.
-        throttle_min = 172
-        throttle_max = 1811
+        throttle_min = CRSF_CHANNEL_MIN
+        throttle_max = CRSF_CHANNEL_MAX
         throttle_span = throttle_max - throttle_min
         clamped_percent = max(
             0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))

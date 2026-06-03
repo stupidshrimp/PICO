@@ -5,7 +5,12 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from pico_modules.pico_transmitpackets import CRSFPacketProcessor
+from pico_modules.pico_transmitpackets import (
+    CRSF_CHANNEL_CENTER,
+    CRSF_CHANNEL_MAX,
+    CRSF_CHANNEL_MIN,
+    CRSFPacketProcessor,
+)
 
 
 class DummySignal:
@@ -103,13 +108,28 @@ def test_channel_update_only_refreshes_latest_channels():
 
     assert result == "Good"
     assert processor.channels[:3] == [172, 1811, 1000]
-    assert processor.channels[3:] == [1500] * 13
+    assert processor.channels[3:] == [CRSF_CHANNEL_CENTER] * 13
+
+
+def test_channel_normalisation_clamps_and_centers_invalid_values():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+
+    channels = processor._normalise_channels([0, 2000, None, "bad", 1000])
+
+    assert channels[:5] == [
+        CRSF_CHANNEL_MIN,
+        CRSF_CHANNEL_MAX,
+        CRSF_CHANNEL_CENTER,
+        CRSF_CHANNEL_CENTER,
+        1000,
+    ]
+    assert channels[5:] == [CRSF_CHANNEL_CENTER] * 11
 
 
 def test_worker_transmit_writes_current_packet():
     serial = DummyWritableSerial()
     processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor.channels = [1500] * 16
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
     processor.serial = serial
     processor.error = DummySignal()
     processor._tx_enabled = True
@@ -161,6 +181,6 @@ def test_update_channels_and_enable_refreshes_before_starting_timer():
 
     assert result == "Good"
     assert processor.channels[:3] == [172, 1811, 1000]
-    assert processor.channels[3:] == [1500] * 13
+    assert processor.channels[3:] == [CRSF_CHANNEL_CENTER] * 13
     assert processor._tx_enabled is True
     assert timer.started_with == [4]
