@@ -188,35 +188,41 @@ namespace serialReceiverLayer
         }
     }
 
-    void CRSF::getRcChannels(uint16_t *rcChannels)
+    bool CRSF::getRcChannels(uint16_t *rcChannels)
     {
         /* Decode RC frames if one has been received. */
-        if (rcFrameReceived)
+        if (!rcFrameReceived)
         {
-            rcFrameReceived = false;
-            if (rcChannelsFrame.frame.type == CRSF_FRAMETYPE_RC_CHANNELS_PACKED)
-            {
-                rcChannelsPacked_t rcChannelsPacked;
-                memcpy(&rcChannelsPacked, rcChannelsFrame.frame.payload, sizeof(rcChannelsPacked_t));
-
-                rcChannels[RC_CHANNEL_ROLL] = rcChannelsPacked.channel0;
-                rcChannels[RC_CHANNEL_PITCH] = rcChannelsPacked.channel1;
-                rcChannels[RC_CHANNEL_THROTTLE] = rcChannelsPacked.channel2;
-                rcChannels[RC_CHANNEL_YAW] = rcChannelsPacked.channel3;
-                rcChannels[RC_CHANNEL_AUX1] = rcChannelsPacked.channel4;
-                rcChannels[RC_CHANNEL_AUX2] = rcChannelsPacked.channel5;
-                rcChannels[RC_CHANNEL_AUX3] = rcChannelsPacked.channel6;
-                rcChannels[RC_CHANNEL_AUX4] = rcChannelsPacked.channel7;
-                rcChannels[RC_CHANNEL_AUX5] = rcChannelsPacked.channel8;
-                rcChannels[RC_CHANNEL_AUX6] = rcChannelsPacked.channel9;
-                rcChannels[RC_CHANNEL_AUX7] = rcChannelsPacked.channel10;
-                rcChannels[RC_CHANNEL_AUX8] = rcChannelsPacked.channel11;
-                rcChannels[RC_CHANNEL_AUX9] = rcChannelsPacked.channel12;
-                rcChannels[RC_CHANNEL_AUX10] = rcChannelsPacked.channel13;
-                rcChannels[RC_CHANNEL_AUX11] = rcChannelsPacked.channel14;
-                rcChannels[RC_CHANNEL_AUX12] = rcChannelsPacked.channel15;
-            }
+            return false;
         }
+
+        rcFrameReceived = false;
+        if (rcChannelsFrame.frame.type != CRSF_FRAMETYPE_RC_CHANNELS_PACKED)
+        {
+            return false;
+        }
+
+        rcChannelsPacked_t rcChannelsPacked;
+        memcpy(&rcChannelsPacked, rcChannelsFrame.frame.payload, sizeof(rcChannelsPacked_t));
+
+        rcChannels[RC_CHANNEL_ROLL] = rcChannelsPacked.channel0;
+        rcChannels[RC_CHANNEL_PITCH] = rcChannelsPacked.channel1;
+        rcChannels[RC_CHANNEL_THROTTLE] = rcChannelsPacked.channel2;
+        rcChannels[RC_CHANNEL_YAW] = rcChannelsPacked.channel3;
+        rcChannels[RC_CHANNEL_AUX1] = rcChannelsPacked.channel4;
+        rcChannels[RC_CHANNEL_AUX2] = rcChannelsPacked.channel5;
+        rcChannels[RC_CHANNEL_AUX3] = rcChannelsPacked.channel6;
+        rcChannels[RC_CHANNEL_AUX4] = rcChannelsPacked.channel7;
+        rcChannels[RC_CHANNEL_AUX5] = rcChannelsPacked.channel8;
+        rcChannels[RC_CHANNEL_AUX6] = rcChannelsPacked.channel9;
+        rcChannels[RC_CHANNEL_AUX7] = rcChannelsPacked.channel10;
+        rcChannels[RC_CHANNEL_AUX8] = rcChannelsPacked.channel11;
+        rcChannels[RC_CHANNEL_AUX9] = rcChannelsPacked.channel12;
+        rcChannels[RC_CHANNEL_AUX10] = rcChannelsPacked.channel13;
+        rcChannels[RC_CHANNEL_AUX11] = rcChannelsPacked.channel14;
+        rcChannels[RC_CHANNEL_AUX12] = rcChannelsPacked.channel15;
+
+        return true;
     }
 
     void CRSF::getLinkStatistics(link_statistics_t *linkStats)
