@@ -10,6 +10,7 @@ from pico_modules.pico_transmitpackets import (
     CRSF_CHANNEL_MAX,
     CRSF_CHANNEL_MIN,
     CRSFPacketProcessor,
+    _HighResolutionTransmitPacer,
 )
 
 
@@ -143,38 +144,45 @@ def test_worker_transmit_writes_current_packet():
     assert serial.writes[0] == bytes(processor.create_packet())
 
 
-class DummyTimer:
-    def __init__(self):
+class DummyPacer:
+    def __init__(self, active=False):
+        self.active = active
         self.stopped = False
-        self.started_with = []
+        self.start_count = 0
+        self.reschedule_count = 0
 
     def stop(self):
         self.stopped = True
+        self.active = False
 
-    def start(self, interval):
-        self.started_with.append(interval)
+    def start(self):
+        self.start_count += 1
+        self.active = True
+
+    def reschedule(self):
+        self.reschedule_count += 1
 
     def isActive(self):
-        return bool(self.started_with) and not self.stopped
+        return self.active
 
 
 def test_set_transmission_enabled_false_stops_worker_timer():
-    timer = DummyTimer()
+    pacer = DummyPacer(active=True)
     processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor._tx_timer = timer
+    processor._tx_pacer = pacer
 
     processor.set_transmission_enabled(False)
 
     assert processor._tx_enabled is False
-    assert timer.stopped is True
+    assert pacer.stopped is True
 
 
 def test_update_channels_and_enable_refreshes_before_starting_timer():
-    timer = DummyTimer()
+    pacer = DummyPacer()
     processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
     processor.error = DummySignal()
     processor._tx_enabled = False
-    processor._tx_timer = timer
+    processor._tx_pacer = pacer
     processor._tx_interval_ms = 4
 
     result = processor.update_channels_and_enable([172, 1811, 1000])
@@ -183,4 +191,113 @@ def test_update_channels_and_enable_refreshes_before_starting_timer():
     assert processor.channels[:3] == [172, 1811, 1000]
     assert processor.channels[3:] == [CRSF_CHANNEL_CENTER] * 13
     assert processor._tx_enabled is True
-    assert timer.started_with == [4]
+    assert pacer.start_count == 1
+
+
+def test_packet_interval_change_reschedules_active_pacer():
+    pacer = DummyPacer(active=True)
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor._tx_pacer = pacer
+
+    processor.set_packet_interval(8)
+
+    assert processor._tx_interval_ms == 8
+    assert pacer.reschedule_count == 1
+
+
+def test_high_resolution_pacer_waits_until_next_deadline(monkeypatch):
+    class StopEvent:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def set(self):
+            self.stopped = True
+
+    class RescheduleEvent:
+        def __init__(self, stop_event):
+            self.stop_event = stop_event
+            self.waits = []
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            self.stop_event.set()
+            return False
+
+        def clear(self):
+            pass
+
+        def set(self):
+            pass
+
+    processor = type("DummyProcessor", (), {})()
+    processor._tx_interval_ms = 4
+    processor._tx_enabled = True
+    pacer = _HighResolutionTransmitPacer(processor)
+    stop_event = StopEvent()
+    reschedule_event = RescheduleEvent(stop_event)
+    pacer._stop_event = stop_event
+    pacer._reschedule_event = reschedule_event
+
+    times = iter([100.0, 99.996])
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.time.perf_counter",
+        lambda: next(times),
+    )
+    def fail_if_send_queued(*args):
+        if len(args) > 1 and args[1] == "send_current_packet":
+            pytest.fail("pacer should wait instead of busy-polling")
+        return True
+
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.QMetaObject.invokeMethod",
+        fail_if_send_queued,
+    )
+
+    pacer._run()
+
+    assert reschedule_event.waits == [pytest.approx(0.004)]
+
+
+def test_high_resolution_pacer_queues_send_at_deadline(monkeypatch):
+    class StopEvent:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def set(self):
+            self.stopped = True
+
+    processor = type("DummyProcessor", (), {})()
+    processor._tx_interval_ms = 4
+    processor._tx_enabled = True
+    pacer = _HighResolutionTransmitPacer(processor)
+    stop_event = StopEvent()
+    pacer._stop_event = stop_event
+
+    queued = []
+
+    def fake_invoke(*args):
+        queued.append(args)
+        stop_event.set()
+        return True
+
+    times = iter([100.0, 100.0, 100.0])
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.time.perf_counter",
+        lambda: next(times),
+    )
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.QMetaObject.invokeMethod",
+        fake_invoke,
+    )
+
+    pacer._run()
+
+    assert len(queued) == 1
+    assert queued[0][0] is processor
+    assert queued[0][1] == "send_current_packet"
