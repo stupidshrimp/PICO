@@ -473,6 +473,8 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=self.crsf_cfg.get("port"),
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
+                    transmission_enabled=True,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -488,7 +490,7 @@ class MainWindow(QMainWindow):
         self.transmit_timer = QTimer(self)
         self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        transmit_interval = self.crsf_cfg.get("packet_interval", 15)
+        transmit_interval = self.crsf_cfg.get("channel_update_interval", 20)
         self.transmit_timer.start(transmit_interval)
 
         # Track transmission state and countdown handling for the configuration
@@ -2095,7 +2097,7 @@ class MainWindow(QMainWindow):
         rate_row.addWidget(QLabel("Packet Interval (ms)"))
         self.packet_interval_edit = QLineEdit()
         self.packet_interval_edit.setText(
-            str(self.crsf_cfg.get("packet_interval", 3))
+            str(self.crsf_cfg.get("packet_interval", 4))
         )
         self.packet_interval_edit.setFixedWidth(80)
         rate_row.addWidget(self.packet_interval_edit)
@@ -2478,6 +2480,8 @@ class MainWindow(QMainWindow):
             return
 
         self.transmit_timer.stop()
+        if self.crsf_processor:
+            self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
         self._transmission_pressed_while_inactive = False
         self._transmission_hold_in_progress = False
@@ -2493,8 +2497,10 @@ class MainWindow(QMainWindow):
         if self.transmission_active:
             return
 
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        interval = self.crsf_cfg.get("channel_update_interval", 20)
         self.transmit_timer.start(interval)
+        if self.crsf_processor:
+            self.crsf_processor.transmission_enabled_update.emit(True)
         self.transmission_active = True
         self._transmission_pressed_while_inactive = False
         self._apply_transmission_button_style("active")
@@ -2604,6 +2610,8 @@ class MainWindow(QMainWindow):
                 self.crsf_processor = CRSFPacketProcessor(
                     port=port,
                     baudrate=self.crsf_cfg.get("baudrate"),
+                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
+                    transmission_enabled=self.transmission_active,
                 )
                 self.crsf_processor.telemetry_ready.connect(
                     self.handle_telemetry_wrapper
@@ -2618,16 +2626,16 @@ class MainWindow(QMainWindow):
         try:
             interval = int(self.packet_interval_edit.text())
         except ValueError:
-            interval = self.crsf_cfg.get("packet_interval", 3)
+            interval = self.crsf_cfg.get("packet_interval", 4)
             self.packet_interval_edit.setText(str(interval))
         self.crsf_cfg["packet_interval"] = interval
-        if self.transmission_active:
-            self.transmit_timer.start(interval)
+        if self.crsf_processor:
+            self.crsf_processor.packet_interval_update.emit(interval)
         self.update_pico_rate_label()
         save_config(self.config)
 
     def update_pico_rate_label(self):
-        interval = self.crsf_cfg.get("packet_interval", 3)
+        interval = self.crsf_cfg.get("packet_interval", 4)
         freq = 0
         if interval:
             freq = 1000 / interval
