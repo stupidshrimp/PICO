@@ -527,11 +527,20 @@ namespace serialReceiverLayer
 #if CRSF_RC_ENABLED > 0 || CRSF_TELEMETRY_ENABLED > 0 || CRSF_LINK_STATISTICS_ENABLED > 0
     void SerialReceiver::processFrames()
     {
+        _debugCounters.processCalls++;
+        const int availableAtEntry = _uart->available();
+        if (availableAtEntry > _debugCounters.uartAvailableHighWater)
+        {
+            _debugCounters.uartAvailableHighWater = availableAtEntry > 65535 ? 65535 : (uint16_t)availableAtEntry;
+        }
+
         while (_uart->available() > 0)
         {
             uint8_t byteReceived = (uint8_t)_uart->read();
+            _debugCounters.uartBytesRead++;
             if (crsf->receiveFrames(byteReceived))
             {
+                _debugCounters.completeFrames++;
 #if CRSF_TELEMETRY_ENABLED > 0
                 bool telemetryFrameQueued = false;
 #endif
@@ -548,6 +557,7 @@ namespace serialReceiverLayer
                 if (telemetry->update())
                 {
                     telemetry->sendTelemetryData(_uart);
+                    _debugCounters.telemetryFramesSent++;
                     telemetryFrameQueued = true;
                 }
 #endif
@@ -557,6 +567,7 @@ namespace serialReceiverLayer
                 crsf->getRcChannels(_rcChannels->value);
                 if (_rcChannelsCallback != nullptr)
                 {
+                    _debugCounters.rcFramesDelivered++;
                     _rcChannelsCallback(_rcChannels);
                 }
 #endif
@@ -587,6 +598,16 @@ void SerialReceiver::setLinkDownCallback(linkDownCallback_t callback) { _linkDow
 void SerialReceiver::setLinkUpCallback(linkUpCallback_t callback) { _linkUpCallback = callback; }
 
 bool SerialReceiver::isLinkUp() const { return _linkIsUp; }
+
+    crsfDebugCounters_t SerialReceiver::getDebugCounters() const
+    {
+        return _debugCounters;
+    }
+
+    void SerialReceiver::resetDebugCounters()
+    {
+        _debugCounters = {0, 0, 0, 0, 0, 0};
+    }
 
 void SerialReceiver::setLinkUp()
 {

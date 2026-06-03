@@ -129,6 +129,27 @@ CRSFforArduino crsf(&Serial3);
 // Store the latest received RC channel data.
 serialReceiverLayer::rcChannels_t latestRcChannels;
 
+// ----- CRSF diagnostics -----
+// Leave this enabled while investigating telemetry throughput.  The report is
+// printed once per second on the USB debug Serial port so it is readable and
+// should not flood the flight loop.
+constexpr bool CRSF_DIAGNOSTICS_ENABLED = true;
+constexpr uint32_t CRSF_DIAGNOSTICS_PERIOD_MS = 1000;
+elapsedMillis crsfDiagnosticsTimer;
+
+uint32_t diagLoopPasses = 0;
+uint32_t diagServiceCalls = 0;
+uint32_t diagRcFrames = 0;
+uint32_t diagRcGapSamples = 0;
+uint32_t diagRcGapSumUs = 0;
+uint32_t diagRcMaxGapUs = 0;
+uint32_t diagLastRcFrameUs = 0;
+uint32_t diagEkfUpdates = 0;
+uint32_t diagAttitudeQueueWrites = 0;
+uint32_t diagGpsQueueWrites = 0;
+uint32_t diagLoopMaxGapUs = 0;
+uint32_t diagLastLoopUs = 0;
+
 enum ControlMode {
   CONTROL_MODE_MANUAL = 0,
   CONTROL_MODE_FLY_BY_WIRE
@@ -286,6 +307,20 @@ LowPassFilter pitchAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>
 // Callback to capture incoming RC channel packets.
 void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
   latestRcChannels = *channels;
+
+  if (CRSF_DIAGNOSTICS_ENABLED) {
+    const uint32_t nowUs = micros();
+    diagRcFrames++;
+    if (diagLastRcFrameUs != 0) {
+      const uint32_t gapUs = nowUs - diagLastRcFrameUs;
+      diagRcGapSamples++;
+      diagRcGapSumUs += gapUs;
+      if (gapUs > diagRcMaxGapUs) {
+        diagRcMaxGapUs = gapUs;
+      }
+    }
+    diagLastRcFrameUs = nowUs;
+  }
 }
 
 uint16_t mapRcToUs(uint16_t value) {
@@ -336,8 +371,72 @@ void updateControlMode() {
 }
 
 void serviceCrsfLink() {
+  if (CRSF_DIAGNOSTICS_ENABLED) {
+    diagServiceCalls++;
+  }
   crsf.update();
   updateControlMode();
+}
+
+float ratePerSecond(uint32_t count, uint32_t elapsedMs) {
+  if (elapsedMs == 0) {
+    return 0.0f;
+  }
+  return (static_cast<float>(count) * 1000.0f) / static_cast<float>(elapsedMs);
+}
+
+void resetCrsfDiagnosticsCounters() {
+  diagLoopPasses = 0;
+  diagServiceCalls = 0;
+  diagRcFrames = 0;
+  diagRcGapSamples = 0;
+  diagRcGapSumUs = 0;
+  diagRcMaxGapUs = 0;
+  diagLastRcFrameUs = 0;
+  diagEkfUpdates = 0;
+  diagAttitudeQueueWrites = 0;
+  diagGpsQueueWrites = 0;
+  diagLoopMaxGapUs = 0;
+  diagLastLoopUs = micros();
+  crsf.resetDebugCounters();
+}
+
+void printCrsfDiagnostics() {
+  if (!CRSF_DIAGNOSTICS_ENABLED || crsfDiagnosticsTimer < CRSF_DIAGNOSTICS_PERIOD_MS) {
+    return;
+  }
+
+  const uint32_t elapsedMs = crsfDiagnosticsTimer;
+  crsfDiagnosticsTimer = 0;
+
+  const serialReceiverLayer::crsfDebugCounters_t counters = crsf.getDebugCounters();
+  const float avgRcGapMs = diagRcGapSamples > 0
+                             ? (static_cast<float>(diagRcGapSumUs) / static_cast<float>(diagRcGapSamples)) / 1000.0f
+                             : 0.0f;
+
+  Serial.println();
+  Serial.println("=== CRSF FC DEBUG (1 second window) ===");
+  Serial.print("Window: "); Serial.print(elapsedMs); Serial.println(" ms");
+  Serial.println("RX -> FC control input:");
+  Serial.print("  RC channel frames: "); Serial.print(ratePerSecond(diagRcFrames, elapsedMs), 1); Serial.print(" Hz ("); Serial.print(diagRcFrames); Serial.println(" frames)");
+  Serial.print("  RC frame gap: avg "); Serial.print(avgRcGapMs, 2); Serial.print(" ms, max "); Serial.print(diagRcMaxGapUs / 1000.0f, 2); Serial.println(" ms");
+  Serial.print("  CRSF parser complete frames: "); Serial.print(ratePerSecond(counters.completeFrames, elapsedMs), 1); Serial.print(" Hz ("); Serial.print(counters.completeFrames); Serial.println(" frames)");
+  Serial.print("  UART bytes read: "); Serial.print(ratePerSecond(counters.uartBytesRead, elapsedMs), 0); Serial.print(" B/s, max queued bytes before service: "); Serial.println(counters.uartAvailableHighWater);
+  Serial.println("FC scheduler / sensor side:");
+  Serial.print("  loop passes: "); Serial.print(ratePerSecond(diagLoopPasses, elapsedMs), 1); Serial.print(" Hz, max loop gap "); Serial.print(diagLoopMaxGapUs / 1000.0f, 2); Serial.println(" ms");
+  Serial.print("  crsf.update calls: "); Serial.print(ratePerSecond(diagServiceCalls, elapsedMs), 1); Serial.println(" Hz");
+  Serial.print("  EKF/sensor updates: "); Serial.print(ratePerSecond(diagEkfUpdates, elapsedMs), 1); Serial.println(" Hz");
+  Serial.print("  attitude telemetry cache writes: "); Serial.print(ratePerSecond(diagAttitudeQueueWrites, elapsedMs), 1); Serial.println(" Hz");
+  Serial.print("  GPS telemetry cache writes: "); Serial.print(ratePerSecond(diagGpsQueueWrites, elapsedMs), 1); Serial.println(" Hz");
+  Serial.println("FC -> RX telemetry output:");
+  Serial.print("  CRSF telemetry frames written to RX UART: "); Serial.print(ratePerSecond(counters.telemetryFramesSent, elapsedMs), 1); Serial.print(" Hz ("); Serial.print(counters.telemetryFramesSent); Serial.println(" frames)");
+  Serial.println("How to read this:");
+  Serial.println("  - If RC/parser frames are near 250 Hz but laptop attitude+GPS is ~20 Hz, the bottleneck is ELRS downlink/user telemetry forwarding.");
+  Serial.println("  - If RC/parser frames are near 20 Hz, the FC/RX CRSF input side is limiting telemetry send opportunities.");
+  Serial.println("  - Cache writes are data refresh rates, not guaranteed RF-delivered telemetry rates.");
+  Serial.println("======================================");
+
+  resetCrsfDiagnosticsCounters();
 }
 
 
@@ -438,11 +537,26 @@ void setup() {
     while (1) { ; }
   }
   crsf.setRcChannelsCallback(rcChannelsCallback);
+  resetCrsfDiagnosticsCounters();
+  crsfDiagnosticsTimer = 0;
   Serial.println("CRSF Telemetry Ready");
+  Serial.println("CRSF diagnostics enabled: one readable report per second on USB Serial.");
 }
 
 
 void loop() {
+  if (CRSF_DIAGNOSTICS_ENABLED) {
+    const uint32_t nowUs = micros();
+    diagLoopPasses++;
+    if (diagLastLoopUs != 0) {
+      const uint32_t loopGapUs = nowUs - diagLastLoopUs;
+      if (loopGapUs > diagLoopMaxGapUs) {
+        diagLoopMaxGapUs = loopGapUs;
+      }
+    }
+    diagLastLoopUs = nowUs;
+  }
+
   serviceCrsfLink();
 
   bool attitudeTelemetrySentThisLoop = false;
@@ -454,6 +568,9 @@ void loop() {
         latestAttitudeFrame.roll,
         latestAttitudeFrame.pitch,
         latestAttitudeFrame.yaw);
+    if (CRSF_DIAGNOSTICS_ENABLED) {
+      diagAttitudeQueueWrites++;
+    }
     serviceCrsfLink();
     attitudeTelemetrySentThisLoop = true;
   }
@@ -470,6 +587,9 @@ void loop() {
     // latitude, longitude, altitude, speed, course, satellites
     crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
                            airSpeedCms, gps.course, satsInUse);
+    if (CRSF_DIAGNOSTICS_ENABLED) {
+      diagGpsQueueWrites++;
+    }
     serviceCrsfLink();
     gpsTelemetrySentThisLoop = true;
   }
@@ -477,6 +597,9 @@ void loop() {
   // ----- Sensor Fusion, EKF, and Telemetry Update (125 Hz) -----
   if (timerEKF >= SS_DT_MILIS) {
     timerEKF = 0;
+    if (CRSF_DIAGNOSTICS_ENABLED) {
+      diagEkfUpdates++;
+    }
     
     // Read sensor data from the IMU
     IMU.readSensor();
@@ -656,6 +779,7 @@ void loop() {
   }
 
   serviceCrsfLink();
+  printCrsfDiagnostics();
 
   (void)attitudeTelemetrySentThisLoop;
   (void)gpsTelemetrySentThisLoop;
