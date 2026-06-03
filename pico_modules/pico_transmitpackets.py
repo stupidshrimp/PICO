@@ -3,6 +3,7 @@ import struct
 import logging
 import time
 import math
+import threading
 from PySide6.QtCore import (
     QObject,
     Signal,
@@ -11,7 +12,6 @@ from PySide6.QtCore import (
     Slot,
     QMetaObject,
     Qt,
-    QTimer,
 )
 
 from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
@@ -22,6 +22,93 @@ CRSF_CHANNEL_MIN = 172
 CRSF_CHANNEL_MAX = 1811
 CRSF_CHANNEL_CENTER = 992
 CRSF_CHANNEL_COUNT = 16
+
+
+class _HighResolutionTransmitPacer:
+    """Wake at CRSF frame deadlines without busy-polling the Qt event loop."""
+
+    def __init__(self, processor):
+        self._processor = processor
+        self._stop_event = threading.Event()
+        self._reschedule_event = threading.Event()
+        self._thread = None
+        self._lock = threading.Lock()
+        self._send_in_flight = False
+
+    def isActive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self):
+        if self.isActive():
+            self.reschedule()
+            return
+
+        self._stop_event.clear()
+        self._reschedule_event.clear()
+        with self._lock:
+            self._send_in_flight = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="CRSFTransmitPacer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._reschedule_event.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._thread = None
+        self.mark_send_complete()
+
+    def reschedule(self):
+        self._reschedule_event.set()
+
+    def mark_send_complete(self):
+        with self._lock:
+            self._send_in_flight = False
+
+    def _claim_send_slot(self):
+        with self._lock:
+            if self._send_in_flight:
+                return False
+            self._send_in_flight = True
+            return True
+
+    def _run(self):
+        next_deadline = time.perf_counter()
+
+        while not self._stop_event.is_set():
+            interval_s = max(0.001, self._processor._tx_interval_ms / 1000.0)
+            now = time.perf_counter()
+            wait_s = next_deadline - now
+
+            if wait_s > 0:
+                if self._reschedule_event.wait(wait_s):
+                    self._reschedule_event.clear()
+                    next_deadline = time.perf_counter()
+                continue
+
+            if not self._processor._tx_enabled:
+                return
+
+            if self._claim_send_slot():
+                queued = QMetaObject.invokeMethod(
+                    self._processor,
+                    "send_current_packet",
+                    Qt.QueuedConnection,
+                )
+                if queued is False:
+                    self.mark_send_complete()
+
+            next_deadline += interval_s
+            now = time.perf_counter()
+            if next_deadline <= now:
+                missed_intervals = int((now - next_deadline) / interval_s) + 1
+                next_deadline += missed_intervals * interval_s
+
 
 class CRSFPacketProcessor(QObject):
     """Process CRSF packets and emit telemetry via Qt signals."""
@@ -89,7 +176,7 @@ class CRSFPacketProcessor(QObject):
         self.serial = None  # QSerialPort instance
         self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
         self._tx_enabled = bool(transmission_enabled)
-        self._tx_timer = None
+        self._tx_pacer = None
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
         # every packet instead of only the first one in each serial read.
@@ -264,14 +351,23 @@ class CRSFPacketProcessor(QObject):
         )
 
     def _ensure_tx_timer(self):
-        """Create/start the worker-thread transmit timer."""
-        if self._tx_timer is None:
-            self._tx_timer = QTimer(self)
-            self._tx_timer.setTimerType(Qt.TimerType.PreciseTimer)
-            self._tx_timer.timeout.connect(self.send_current_packet)
+        """Create/start the bounded high-resolution transmit pacer.
 
-        if self._tx_enabled and not self._tx_timer.isActive():
-            self._tx_timer.start(self._tx_interval_ms)
+        Desktop millisecond timers can collapse a requested 4 ms interval to
+        the host scheduler quantum (about 15-16 ms on common Windows
+        configurations), which matches the observed ~62 Hz control-frame rate.
+        Use a small pacing thread that sleeps until each perf-counter deadline
+        and queues the actual serial write back onto this object's Qt worker
+        thread.  This preserves QSerialPort thread affinity without leaving a
+        zero-interval QTimer busy-polling between packets.  The pacer allows
+        only one queued send at a time, so slow writes or reconnect attempts
+        drop/coalesce ticks instead of building a backlog of stale RC frames.
+        """
+        if self._tx_pacer is None:
+            self._tx_pacer = _HighResolutionTransmitPacer(self)
+
+        if self._tx_enabled and not self._tx_pacer.isActive():
+            self._tx_pacer.start()
 
     @Slot(int)
     def set_packet_interval(self, interval_ms):
@@ -281,16 +377,16 @@ class CRSFPacketProcessor(QObject):
         except (TypeError, ValueError):
             self._tx_interval_ms = 4
 
-        if self._tx_timer and self._tx_timer.isActive():
-            self._tx_timer.start(self._tx_interval_ms)
+        if self._tx_pacer and self._tx_pacer.isActive():
+            self._tx_pacer.reschedule()
 
     @Slot(bool)
     def set_transmission_enabled(self, enabled):
         """Enable or disable periodic RC frame transmission."""
         self._tx_enabled = bool(enabled)
         if not self._tx_enabled:
-            if self._tx_timer:
-                self._tx_timer.stop()
+            if self._tx_pacer:
+                self._tx_pacer.stop()
             return
         self._ensure_tx_timer()
 
@@ -356,6 +452,10 @@ class CRSFPacketProcessor(QObject):
             logger.exception("Failed to send packet")
             self.error.emit(f"Failed to send packet: {exc}")
             return f"Error: {exc}"
+        finally:
+            tx_pacer = getattr(self, "_tx_pacer", None)
+            if tx_pacer:
+                tx_pacer.mark_send_complete()
 
 
     @Slot()
@@ -709,8 +809,8 @@ class CRSFPacketProcessor(QObject):
     def close_serial(self):
         """Close the serial port in the worker thread."""
         try:
-            if self._tx_timer:
-                self._tx_timer.stop()
+            if self._tx_pacer:
+                self._tx_pacer.stop()
             if self.serial:
                 try:
                     self.serial.readyRead.disconnect(self.read_serial_data)
