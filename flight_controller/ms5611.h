@@ -55,11 +55,44 @@ public:
   void setOversampling(const String& osr);
 
   /**
+   * Conversion delay for the current oversampling mode.
+   * @return Conversion delay in milliseconds.
+   */
+  uint8_t getConversionTimeMs() const;
+
+  /**
+   * Start a non-blocking raw temperature conversion. Call readAdc() after
+   * getConversionTimeMs() has elapsed to retrieve the D2 value.
+   */
+  void startRawTemperatureConversion();
+
+  /**
+   * Start a non-blocking raw pressure conversion. Call readAdc() after
+   * getConversionTimeMs() has elapsed to retrieve the D1 value.
+   */
+  void startRawPressureConversion();
+
+  /**
+   * Read the 24-bit ADC result after a conversion has completed.
+   * @return 24-bit ADC result.
+   */
+  uint32_t readAdc();
+
+  /**
    * Convert a raw pressure reading to mbar (without additional compensation).
    * @param raw_pressure Raw ADC pressure (D1) value.
    * @return Pressure in mbar.
    */
   float calculateRawPressureMbar(uint32_t raw_pressure);
+
+  /**
+   * Calculate pressure in mbar from raw pressure and raw temperature samples.
+   * @param raw_pressure Raw ADC pressure (D1) value.
+   * @param raw_temperature Raw ADC temperature (D2) value.
+   * @param compensation Enable second order compensation (default true).
+   * @return Pressure in mbar.
+   */
+  float calculatePressure(uint32_t raw_pressure, uint32_t raw_temperature, bool compensation = true);
 
   /**
    * Read raw temperature (D2) from the sensor.

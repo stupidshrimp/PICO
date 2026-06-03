@@ -20,27 +20,35 @@ public:
     double speed;            // As provided in the RMC sentence (typically knots)
     double course;           // Ground course in degrees
     double altitude;         // In feet (from GGA sentence)
-    String timestamp;        // Formatted as "HH:MM:SS"
-    String date;             // Formatted as "YYYY-MM-DD"
+    char timestamp[9];       // Formatted as "HH:MM:SS"
+    char date[11];           // Formatted as "YYYY-MM-DD"
     int fix_quality;         // From GGA sentence
     int satellites_in_use;   // From GGA sentence
 
 private:
+    static constexpr size_t NMEA_BUFFER_SIZE = 121;
+    static constexpr size_t NMEA_MAX_FIELDS = 20;
+
     Stream &uart;
 
-    // Parses a complete NMEA sentence
-    void parseNMEA(const String &sentence);
+    // Parses a complete NMEA sentence. The buffer may be modified during parsing.
+    void parseNMEA(char *sentence);
 
-    // Parses RMC sentences for latitude, longitude, speed, timestamp, and date
-    void parseRMC(const String &sentence);
+    // Parses RMC sentences for latitude, longitude, speed, timestamp, and date.
+    void parseRMC(char *sentence);
 
-    // Parses GGA sentences for altitude, fix quality, and satellites in use
-    void parseGGA(const String &sentence);
+    // Parses GGA sentences for altitude, fix quality, and satellites in use.
+    void parseGGA(char *sentence);
 
-    // Helper: converts raw NMEA coordinate (e.g., "4807.038") and direction ("N" or "S") to decimal degrees
-    static double convertToDecimal(const String &raw_value, const String &direction);
+    // Splits a comma-separated NMEA sentence into field pointers in-place.
+    static size_t splitFields(char *sentence, char *fields[], size_t maxFields);
 
-    String nmeaBuffer;
+    // Helper: converts raw NMEA coordinate (e.g., "4807.038") and direction ('N' or 'S') to decimal degrees.
+    static double convertToDecimal(const char *raw_value, char direction);
+
+    char nmeaBuffer[NMEA_BUFFER_SIZE];
+    size_t nmeaBufferIndex;
+    bool nmeaDiscarding;
 };
 
 #endif // M8N_H
