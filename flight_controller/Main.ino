@@ -197,6 +197,45 @@ uint32_t lastRcPacketUs = 0;
 bool rcReceiverFailsafeActive = true;
 bool rcFailsafeActive = true;
 
+#ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
+#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 1
+#endif
+
+struct ControlDebugCounters {
+  uint32_t rcPackets;
+  uint32_t rcFailsafePackets;
+  uint32_t ekfUpdates;
+  uint32_t servoLoopFresh;
+  uint32_t servoLoopStale;
+  uint32_t rollServoWrites;
+  uint32_t pitchServoWrites;
+  uint32_t yawServoWrites;
+  uint32_t attitudeTelemetryWrites;
+  uint32_t gpsTelemetryWrites;
+  uint32_t loopIterations;
+  uint32_t crsfServiceCalls;
+  uint32_t maxRcAgeUs;
+};
+
+ControlDebugCounters controlDebugCounters = {0};
+elapsedMillis controlDebugPrintTimer;
+
+void resetControlDebugCounters() {
+  controlDebugCounters.rcPackets = 0;
+  controlDebugCounters.rcFailsafePackets = 0;
+  controlDebugCounters.ekfUpdates = 0;
+  controlDebugCounters.servoLoopFresh = 0;
+  controlDebugCounters.servoLoopStale = 0;
+  controlDebugCounters.rollServoWrites = 0;
+  controlDebugCounters.pitchServoWrites = 0;
+  controlDebugCounters.yawServoWrites = 0;
+  controlDebugCounters.attitudeTelemetryWrites = 0;
+  controlDebugCounters.gpsTelemetryWrites = 0;
+  controlDebugCounters.loopIterations = 0;
+  controlDebugCounters.crsfServiceCalls = 0;
+  controlDebugCounters.maxRcAgeUs = 0;
+}
+
 // Create a CRSFforArduino instance using Serial3.
 CRSFforArduino crsf(&Serial3);
 
@@ -358,12 +397,14 @@ LowPassFilter pitchAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>
 void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
   if (channels == nullptr || channels->failsafe) {
     rcReceiverFailsafeActive = true;
+    ++controlDebugCounters.rcFailsafePackets;
     return;
   }
 
   latestRcChannels = *channels;
   rcReceiverFailsafeActive = false;
   lastRcPacketUs = micros();
+  ++controlDebugCounters.rcPackets;
 }
 
 uint16_t mapRcToUs(uint16_t value) {
@@ -429,6 +470,7 @@ void serviceCrsfLink() {
   uint32_t timingStartUs = micros();
 #endif
   crsf.update();
+  ++controlDebugCounters.crsfServiceCalls;
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingCrsfUpdate, timingStartUs);
 #endif
@@ -607,6 +649,45 @@ void resetPeriodicTimers() {
   barometerTemperatureValid = false;
   lastBarometerTemperatureUs = 0;
   lastControlUpdateUs = micros();
+  controlDebugPrintTimer = 0;
+  resetControlDebugCounters();
+}
+
+void maybePrintControlDebugStats() {
+#if FC_CONTROL_DEBUG_SERIAL_OUTPUT
+  if (controlDebugPrintTimer < 1000) {
+    return;
+  }
+
+  const uint32_t elapsedMs = controlDebugPrintTimer;
+  controlDebugPrintTimer = 0;
+  const float scale = elapsedMs > 0 ? (1000.0f / static_cast<float>(elapsedMs)) : 0.0f;
+  const uint32_t nowUs = micros();
+  const uint32_t currentRcAgeUs = lastRcPacketUs == 0 ? 0 : static_cast<uint32_t>(nowUs - lastRcPacketUs);
+  const uint32_t maxRcAgeUs = max(controlDebugCounters.maxRcAgeUs, currentRcAgeUs);
+
+  Serial.print("FCDBG ");
+  Serial.print("rc_hz="); Serial.print(controlDebugCounters.rcPackets * scale, 1);
+  Serial.print(" rc_failsafe_hz="); Serial.print(controlDebugCounters.rcFailsafePackets * scale, 1);
+  Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
+  Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
+  Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
+  Serial.print(" servo_loop_fresh_hz="); Serial.print(controlDebugCounters.servoLoopFresh * scale, 1);
+  Serial.print(" servo_loop_stale_hz="); Serial.print(controlDebugCounters.servoLoopStale * scale, 1);
+  Serial.print(" servo_writes_hz=");
+  Serial.print(controlDebugCounters.rollServoWrites * scale, 1); Serial.print('/');
+  Serial.print(controlDebugCounters.pitchServoWrites * scale, 1); Serial.print('/');
+  Serial.print(controlDebugCounters.yawServoWrites * scale, 1);
+  Serial.print(" crsf_service_hz="); Serial.print(controlDebugCounters.crsfServiceCalls * scale, 1);
+  Serial.print(" loop_hz="); Serial.print(controlDebugCounters.loopIterations * scale, 1);
+  Serial.print(" rc_age_ms="); Serial.print(currentRcAgeUs / 1000.0f, 1);
+  Serial.print(" rc_max_age_ms="); Serial.print(maxRcAgeUs / 1000.0f, 1);
+  Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
+  Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
+  Serial.print(" mode="); Serial.println(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+
+  resetControlDebugCounters();
+#endif
 }
 
 
@@ -697,6 +778,7 @@ void setup() {
 
 
 void loop() {
+  ++controlDebugCounters.loopIterations;
 #if FC_TIMING_INSTRUMENTATION
   uint32_t loopStartUs = micros();
 #endif
@@ -725,6 +807,7 @@ void loop() {
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= EKF_PERIOD_US) {
     timerEKF -= EKF_PERIOD_US;
+    ++controlDebugCounters.ekfUpdates;
     const uint32_t controlUpdateUs = micros();
     float controlDt = (lastControlUpdateUs == 0)
                         ? static_cast<float>(SS_DT)
@@ -818,6 +901,17 @@ void loop() {
     const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
     const uint32_t servoUpdateUs = micros();
     const bool rcFresh = rcInputFresh(servoUpdateUs);
+    if (lastRcPacketUs != 0) {
+      const uint32_t rcAgeUs = static_cast<uint32_t>(servoUpdateUs - lastRcPacketUs);
+      if (rcAgeUs > controlDebugCounters.maxRcAgeUs) {
+        controlDebugCounters.maxRcAgeUs = rcAgeUs;
+      }
+    }
+    if (rcFresh) {
+      ++controlDebugCounters.servoLoopFresh;
+    } else {
+      ++controlDebugCounters.servoLoopStale;
+    }
     if (!rcFresh) {
       if (!rcFailsafeActive) {
         rollPid.reset();
@@ -867,18 +961,21 @@ void loop() {
       servoRoll.writeMicroseconds(rollCommandUs);
       lastRollCommandUs = rollCommandUs;
       lastRollWriteUs = servoUpdateUs;
+      ++controlDebugCounters.rollServoWrites;
     }
 
     if (shouldUpdateServo(pitchCommandUs, lastPitchCommandUs, lastPitchWriteUs, servoUpdateUs)) {
       servoPitch.writeMicroseconds(pitchCommandUs);
       lastPitchCommandUs = pitchCommandUs;
       lastPitchWriteUs = servoUpdateUs;
+      ++controlDebugCounters.pitchServoWrites;
     }
 
     if (shouldUpdateServo(yawCommandUs, lastYawCommandUs, lastYawWriteUs, servoUpdateUs)) {
       servoYaw.writeMicroseconds(yawCommandUs);
       lastYawCommandUs = yawCommandUs;
       lastYawWriteUs = servoUpdateUs;
+      ++controlDebugCounters.yawServoWrites;
     }
 
     // Give CRSF a chance to run immediately after any servo updates in case
@@ -929,6 +1026,7 @@ void loop() {
         latestAttitudeFrame.yaw);
     serviceCrsfLink();
     attitudeTelemetrySentThisLoop = true;
+    ++controlDebugCounters.attitudeTelemetryWrites;
   }
 
   if (gpsTelemetryTimer >= GPS_TELEMETRY_PERIOD_US) {
@@ -939,9 +1037,11 @@ void loop() {
                            airSpeedCms, latestGpsCourse, satsInUse);
     serviceCrsfLink();
     gpsTelemetrySentThisLoop = true;
+    ++controlDebugCounters.gpsTelemetryWrites;
   }
 
   serviceCrsfLink();
+  maybePrintControlDebugStats();
 
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingLoop, loopStartUs);

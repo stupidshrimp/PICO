@@ -94,6 +94,7 @@ class _HighResolutionTransmitPacer:
             if not self._processor._tx_enabled:
                 return
 
+            self._processor._tx_pacer_ticks = getattr(self._processor, "_tx_pacer_ticks", 0) + 1
             if self._claim_send_slot():
                 queued = QMetaObject.invokeMethod(
                     self._processor,
@@ -102,6 +103,8 @@ class _HighResolutionTransmitPacer:
                 )
                 if queued is False:
                     self.mark_send_complete()
+            else:
+                self._processor._tx_pacer_coalesced = getattr(self._processor, "_tx_pacer_coalesced", 0) + 1
 
             next_deadline += interval_s
             now = time.perf_counter()
@@ -123,6 +126,7 @@ class CRSFPacketProcessor(QObject):
     transmission_enabled_update = Signal(bool)
     transmission_start_update = Signal(list)
     raw_serial_debug_update = Signal(bool)
+    transmit_debug_update = Signal(object)
     error = Signal(str)
 
     class PacketsTypes(IntEnum):
@@ -196,6 +200,16 @@ class CRSFPacketProcessor(QObject):
         self._port_check_interval = 1.0  # seconds
         self._last_reconnect_attempt = 0.0
         self._reconnect_interval = 1.0  # seconds
+        self._tx_debug_window_start = time.perf_counter()
+        self._tx_debug_last_write_perf = None
+        self._tx_pacer_ticks = 0
+        self._tx_pacer_coalesced = 0
+        self._tx_send_attempts = 0
+        self._tx_sent_packets = 0
+        self._tx_write_errors = 0
+        self._tx_bytes_written = 0
+        self._tx_last_interval_ms = None
+        self._tx_last_bytes_to_write = 0
 
         # Move telemetry processing off the GUI thread.  The processor lives in
         # its own QThread where serial I/O and packet decoding occur so video
@@ -385,11 +399,13 @@ class CRSFPacketProcessor(QObject):
 
         if self._tx_pacer and self._tx_pacer.isActive():
             self._tx_pacer.reschedule()
+        self._reset_tx_debug_window()
 
     @Slot(bool)
     def set_transmission_enabled(self, enabled):
         """Enable or disable periodic RC frame transmission."""
         self._tx_enabled = bool(enabled)
+        self._reset_tx_debug_window()
         if not self._tx_enabled:
             if self._tx_pacer:
                 self._tx_pacer.stop()
@@ -426,10 +442,69 @@ class CRSFPacketProcessor(QObject):
         """Enable or disable forwarding raw serial chunks to the GUI debug tab."""
         self._raw_serial_debug_enabled = bool(enabled)
 
+    def _ensure_tx_debug_attrs(self):
+        if not hasattr(self, "_tx_debug_window_start"):
+            self._tx_debug_window_start = time.perf_counter()
+        if not hasattr(self, "_tx_debug_last_write_perf"):
+            self._tx_debug_last_write_perf = None
+        for attr in (
+            "_tx_pacer_ticks",
+            "_tx_pacer_coalesced",
+            "_tx_send_attempts",
+            "_tx_sent_packets",
+            "_tx_write_errors",
+            "_tx_bytes_written",
+            "_tx_last_bytes_to_write",
+        ):
+            if not hasattr(self, attr):
+                setattr(self, attr, 0)
+        if not hasattr(self, "_tx_last_interval_ms"):
+            self._tx_last_interval_ms = None
+
+    def _reset_tx_debug_window(self):
+        self._ensure_tx_debug_attrs()
+        self._tx_debug_window_start = time.perf_counter()
+        self._tx_pacer_ticks = 0
+        self._tx_pacer_coalesced = 0
+        self._tx_send_attempts = 0
+        self._tx_sent_packets = 0
+        self._tx_write_errors = 0
+        self._tx_bytes_written = 0
+        self._tx_last_interval_ms = None
+        self._tx_last_bytes_to_write = 0
+
+    def _maybe_emit_tx_debug(self):
+        self._ensure_tx_debug_attrs()
+        now = time.perf_counter()
+        elapsed = now - self._tx_debug_window_start
+        if elapsed < 1.0:
+            return
+
+        stats = {
+            "target_hz": 1000.0 / max(1, self._tx_interval_ms),
+            "window_s": elapsed,
+            "pacer_hz": self._tx_pacer_ticks / elapsed if elapsed > 0 else 0.0,
+            "send_attempt_hz": self._tx_send_attempts / elapsed if elapsed > 0 else 0.0,
+            "serial_write_hz": self._tx_sent_packets / elapsed if elapsed > 0 else 0.0,
+            "bytes_per_s": self._tx_bytes_written / elapsed if elapsed > 0 else 0.0,
+            "coalesced_ticks": self._tx_pacer_coalesced,
+            "write_errors": self._tx_write_errors,
+            "last_interval_ms": self._tx_last_interval_ms,
+            "bytes_to_write": self._tx_last_bytes_to_write,
+            "enabled": self._tx_enabled,
+            "connected": bool(self.is_connected()),
+        }
+        signal = getattr(self, "transmit_debug_update", None)
+        if signal is not None:
+            signal.emit(stats)
+        self._reset_tx_debug_window()
+
     @Slot()
     def send_current_packet(self):
         """Write the latest channel packet at the configured ELRS cadence."""
         try:
+            self._ensure_tx_debug_attrs()
+            self._tx_send_attempts += 1
             if not self._tx_enabled:
                 return "Disabled"
 
@@ -454,7 +529,19 @@ class CRSFPacketProcessor(QObject):
                 packet = self.create_packet()
                 bytes_written = self.serial.write(bytes(packet))
                 if bytes_written == -1:
+                    self._tx_write_errors += 1
                     raise IOError(self.serial.errorString())
+                now_perf = time.perf_counter()
+                if self._tx_debug_last_write_perf is not None:
+                    self._tx_last_interval_ms = (now_perf - self._tx_debug_last_write_perf) * 1000.0
+                self._tx_debug_last_write_perf = now_perf
+                self._tx_sent_packets += 1
+                self._tx_bytes_written += max(0, int(bytes_written))
+                try:
+                    self._tx_last_bytes_to_write = int(self.serial.bytesToWrite())
+                except Exception:
+                    self._tx_last_bytes_to_write = 0
+                self._maybe_emit_tx_debug()
                 return "Good"
 
             return "Error"
@@ -464,6 +551,10 @@ class CRSFPacketProcessor(QObject):
             self.error.emit(f"Failed to send packet: {exc}")
             return f"Error: {exc}"
         finally:
+            try:
+                self._maybe_emit_tx_debug()
+            except Exception:
+                logger.debug("TX debug emit failed", exc_info=True)
             tx_pacer = getattr(self, "_tx_pacer", None)
             if tx_pacer:
                 tx_pacer.mark_send_complete()

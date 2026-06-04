@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
             "total": deque(),
         }
         self._last_attitude_packet_timestamp = None
+        self._last_control_update_debug_timestamp = None
 
         self._settings_title_style = (
             "color: white; font-weight: bold; text-decoration: underline;"
@@ -312,6 +313,7 @@ class MainWindow(QMainWindow):
 
         self._debug_packets: set[str] = set()
         self._debug_monitoring = False
+        self._last_control_update_debug_timestamp = None
         self._debug_include_joystick = False
         self._debug_serial_all = False
         self._debug_telemetry_all = False
@@ -498,6 +500,9 @@ class MainWindow(QMainWindow):
                     self.handle_telemetry_wrapper
                 )
                 self.crsf_processor.serial_data.connect(self._handle_serial_debug)
+                self.crsf_processor.transmit_debug_update.connect(
+                    self._handle_transmit_debug
+                )
                 self.crsf_processor.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
@@ -1743,6 +1748,33 @@ class MainWindow(QMainWindow):
             except Exception:
                 logging.debug("Failed to update CRSF raw serial debug state", exc_info=True)
 
+    def _log_control_update_frequency(self) -> None:
+        """Print the GUI-to-worker channel update rate while debug monitoring."""
+
+        if not self._debug_monitoring or "control" not in self._debug_packets:
+            return
+
+        now = time.monotonic()
+        if self._last_control_update_debug_timestamp is None:
+            self._last_control_update_debug_timestamp = now
+            return
+
+        interval = now - self._last_control_update_debug_timestamp
+        self._last_control_update_debug_timestamp = now
+        if interval > 0:
+            print(f"GS control channel update frequency: {1.0 / interval:.2f} Hz", flush=True)
+
+    @Slot(object)
+    def _handle_transmit_debug(self, stats) -> None:
+        """Forward CRSF worker transmit-rate diagnostics to the Debug tab."""
+
+        if not self._debug_monitoring:
+            return
+        if "control_tx" not in self._debug_packets and "control" not in self._debug_packets:
+            return
+
+        self.debug_page.log_packet("control_tx", stats)
+
     @Slot(object)
     def _handle_serial_debug(self, payload) -> None:
         """Log raw serial bytes to the Debug tab when requested."""
@@ -1989,6 +2021,7 @@ class MainWindow(QMainWindow):
         channels = self._build_control_channels()
         try:
             self.crsf_processor.channel_update.emit(channels)
+            self._log_control_update_frequency()
         except Exception as e:
             print(f"Error during transmission: {e}")
         else:
@@ -2668,6 +2701,9 @@ class MainWindow(QMainWindow):
                     self.handle_telemetry_wrapper
                 )
                 self.crsf_processor.serial_data.connect(self._handle_serial_debug)
+                self.crsf_processor.transmit_debug_update.connect(
+                    self._handle_transmit_debug
+                )
                 self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
@@ -3171,6 +3207,7 @@ class MainWindow(QMainWindow):
         self._debug_serial_all = serial_all
         self._debug_telemetry_all = telemetry_all
         self._debug_monitoring = True
+        self._last_control_update_debug_timestamp = None
         self._set_crsf_raw_serial_debug(self._debug_serial_all)
         self.debug_page.begin_monitoring(
             self._debug_packets,
@@ -3193,6 +3230,7 @@ class MainWindow(QMainWindow):
         if not self._debug_monitoring:
             return
         self._debug_monitoring = False
+        self._last_control_update_debug_timestamp = None
         self._debug_packets.clear()
         self._debug_include_joystick = False
         self._debug_serial_all = False

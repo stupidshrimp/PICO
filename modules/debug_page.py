@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor, QFont
@@ -29,7 +29,8 @@ class DebugPage:
         "gps": "GPS packets",
         "battery": "Battery packets",
         "link_stats": "Link statistics packets",
-        "control": "Control packet transmission",
+        "control": "Control channel updates (GS timer)",
+        "control_tx": "Control serial writes (GS worker)",
     }
 
     def __init__(self, main_window) -> None:
@@ -206,7 +207,7 @@ class DebugPage:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.output_edit.appendPlainText(f"[{timestamp}] {message}")
 
-    def log_packet(self, packet_type: str, values: Sequence[float | int]) -> None:
+    def log_packet(self, packet_type: str, values: Mapping[str, object] | Sequence[float | int]) -> None:
         if not self._monitoring:
             return
         now = datetime.now()
@@ -216,7 +217,22 @@ class DebugPage:
             self._buffer_control_packet(now, values)
             return
         timestamp = now.strftime("%H:%M:%S")
-        if packet_type == "attitude" and len(values) >= 3:
+        if packet_type == "control_tx" and isinstance(values, Mapping):
+            last_interval = values.get("last_interval_ms")
+            last_interval_text = "--" if last_interval is None else f"{float(last_interval):.2f}"
+            detail = (
+                f"target={float(values.get('target_hz', 0.0)):.1f}Hz "
+                f"pacer={float(values.get('pacer_hz', 0.0)):.1f}Hz "
+                f"attempt={float(values.get('send_attempt_hz', 0.0)):.1f}Hz "
+                f"serial_write={float(values.get('serial_write_hz', 0.0)):.1f}Hz "
+                f"bytes={float(values.get('bytes_per_s', 0.0)):.0f}/s "
+                f"queued_bytes={int(values.get('bytes_to_write', 0))} "
+                f"coalesced={int(values.get('coalesced_ticks', 0))} "
+                f"errors={int(values.get('write_errors', 0))} "
+                f"last_dt={last_interval_text}ms "
+                f"connected={bool(values.get('connected', False))}"
+            )
+        elif packet_type == "attitude" and len(values) >= 3:
             pitch, roll, yaw = values[:3]
             detail = f"pitch={pitch:.2f}\u00b0 roll={roll:.2f}\u00b0 yaw={yaw:.2f}\u00b0"
         elif packet_type == "gps" and len(values) >= 6:
