@@ -103,7 +103,7 @@ and assign them to a switch on your controller. */
 - TELEMETRY_FLIGHTMODE_ENABLED: Enables or disables flight mode telemetry output.
 - TELEMETRY_GPS_ENABLED: Enables or disables GPS telemetry output.
 - TELEMETRY_SIMULATE_ARBITRARY_VALUES: When enabled, arbitrary values are sent for telemetry. */
-#define CRSF_TELEMETRY_ENABLED 0
+#define CRSF_TELEMETRY_ENABLED 1
 
 #define CRSF_TELEMETRY_ATTITUDE_ENABLED     1
 #define CRSF_TELEMETRY_BAROALTITUDE_ENABLED 0

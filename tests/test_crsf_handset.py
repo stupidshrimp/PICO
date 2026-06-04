@@ -1,6 +1,4 @@
-import math
 import pathlib
-import struct
 import sys
 
 import pytest
@@ -444,44 +442,3 @@ def test_reconnect_state_initialised_before_worker_thread_start():
 
     assert source.index("self._last_port_check = 0.0", processor_start) < worker_start
     assert source.index("self._last_reconnect_attempt = 0.0", processor_start) < worker_start
-
-
-def _build_standard_frame(
-    packet_type: int,
-    payload: bytes,
-    sync: int = CRSFPacketProcessor.CRSF_SYNC,
-) -> bytes:
-    frame = bytearray([sync, len(payload) + 2, packet_type])
-    frame.extend(payload)
-    frame.append(CRSFPacketProcessor.crc8_data(frame[2:]))
-    return bytes(frame)
-
-
-def test_direct_attitude_frame_decodes_from_flight_controller_address():
-    pitch_deg = 12.3
-    roll_deg = -4.5
-    yaw_deg = 90.0
-    payload = struct.pack(
-        ">hhh",
-        int(round(-math.radians(pitch_deg) * 10000)),
-        int(round(math.radians(roll_deg) * 10000)),
-        int(round(math.radians(yaw_deg) * 10000)),
-    )
-    frame = _build_standard_frame(0x1E, payload)
-
-    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor.serial = DummySerial(frame)
-    processor.serial_data = DummySignal()
-    processor.telemetry_ready = DummySignal()
-    processor.error = DummySignal()
-    processor._rx_buffer = bytearray()
-    processor._raw_serial_debug_enabled = False
-
-    processor.read_serial_data()
-
-    assert len(processor.telemetry_ready.emitted) == 1
-    packet_type, pitch, roll, yaw = processor.telemetry_ready.emitted[0]
-    assert packet_type == "attitude"
-    assert pitch == pytest.approx(pitch_deg, abs=0.01)
-    assert roll == pytest.approx(roll_deg, abs=0.01)
-    assert yaw == pytest.approx(yaw_deg, abs=0.01)

@@ -537,103 +537,6 @@ struct AttitudeTelemetryFrame {
 AttitudeTelemetryFrame latestAttitudeFrame = {0, 0, 0};
 bool attitudeSampleValid = false;
 
-// Emit telemetry frames directly instead of using CRSFforArduino's telemetry
-// scheduler. The scheduler only transmits one cached telemetry frame after a
-// decoded inbound CRSF frame, so the FC debug counter could report 125 Hz
-// cache writes while the ground station saw far fewer actual attitude frames.
-constexpr uint8_t CRSF_FRAME_ADDRESS = 0xC8;
-constexpr uint8_t CRSF_FRAMETYPE_GPS = 0x02;
-constexpr uint8_t CRSF_FRAMETYPE_ATTITUDE = 0x1E;
-constexpr float CRSF_DEG_TO_RAD10000 = 10000.0f * (M_PI / 180.0f);
-
-uint8_t crsfCrc8DvbS2(uint8_t crc, uint8_t value) {
-  crc ^= value;
-  for (uint8_t bit = 0; bit < 8; ++bit) {
-    crc = (crc & 0x80) ? static_cast<uint8_t>((crc << 1) ^ 0xD5)
-                       : static_cast<uint8_t>(crc << 1);
-  }
-  return crc;
-}
-
-uint8_t crsfCrc8(const uint8_t *data, size_t length) {
-  uint8_t crc = 0;
-  for (size_t index = 0; index < length; ++index) {
-    crc = crsfCrc8DvbS2(crc, data[index]);
-  }
-  return crc;
-}
-
-void writeCrsfFrame(uint8_t frameType, const uint8_t *payload, uint8_t payloadLength) {
-  uint8_t frame[2 + 1 + 58 + 1];
-  if (payloadLength > 58) {
-    return;
-  }
-
-  frame[0] = CRSF_FRAME_ADDRESS;
-  frame[1] = payloadLength + 2;
-  frame[2] = frameType;
-  memcpy(&frame[3], payload, payloadLength);
-  frame[3 + payloadLength] = crsfCrc8(&frame[2], payloadLength + 1);
-  Serial3.write(frame, payloadLength + 4);
-}
-
-void appendInt16BE(uint8_t *payload, uint8_t offset, int16_t value) {
-  payload[offset] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  payload[offset + 1] = static_cast<uint8_t>(value & 0xFF);
-}
-
-void appendUint16BE(uint8_t *payload, uint8_t offset, uint16_t value) {
-  payload[offset] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  payload[offset + 1] = static_cast<uint8_t>(value & 0xFF);
-}
-
-void appendInt32BE(uint8_t *payload, uint8_t offset, int32_t value) {
-  payload[offset] = static_cast<uint8_t>((value >> 24) & 0xFF);
-  payload[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
-  payload[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  payload[offset + 3] = static_cast<uint8_t>(value & 0xFF);
-}
-
-int16_t decidegreesToCrsfRadians(int16_t decidegrees) {
-  while (decidegrees > 1800) {
-    decidegrees -= 3600;
-  }
-  while (decidegrees < -1800) {
-    decidegrees += 3600;
-  }
-  const float degrees = static_cast<float>(decidegrees) * 0.1f;
-  return static_cast<int16_t>(roundf(degrees * CRSF_DEG_TO_RAD10000));
-}
-
-void sendDirectAttitudeTelemetry(const AttitudeTelemetryFrame& attitude) {
-  uint8_t payload[6];
-  appendInt16BE(payload, 0,
-                static_cast<int16_t>(-decidegreesToCrsfRadians(attitude.pitch)));
-  appendInt16BE(payload, 2, decidegreesToCrsfRadians(attitude.roll));
-  appendInt16BE(payload, 4, decidegreesToCrsfRadians(attitude.yaw));
-  writeCrsfFrame(CRSF_FRAMETYPE_ATTITUDE, payload, sizeof(payload));
-}
-
-void sendDirectGpsTelemetry() {
-  uint8_t payload[15];
-  const int32_t latitude = static_cast<int32_t>(latestLatitude * 10000000.0);
-  const int32_t longitude = static_cast<int32_t>(latestLongitude * 10000000.0);
-  const uint16_t speed = static_cast<uint16_t>(
-      constrain((airSpeedCms * 36.0f + 50.0f) / 100.0f, 0.0f, 65535.0f));
-  const uint16_t course = static_cast<uint16_t>(
-      constrain(latestGpsCourse * 100.0f, 0.0f, 65535.0f));
-  const uint16_t altitude = static_cast<uint16_t>(
-      constrain(sensorAltitudeCm, 0.0f, 5000.0f * 100.0f) / 100.0f + 1000.0f);
-
-  appendInt32BE(payload, 0, latitude);
-  appendInt32BE(payload, 4, longitude);
-  appendUint16BE(payload, 8, speed);
-  appendUint16BE(payload, 10, course);
-  appendUint16BE(payload, 12, altitude);
-  payload[14] = satsInUse;
-  writeCrsfFrame(CRSF_FRAMETYPE_GPS, payload, sizeof(payload));
-}
-
 void updateGpsCache() {
 #if FC_TIMING_INSTRUMENTATION
   uint32_t timingStartUs = micros();
@@ -1126,7 +1029,10 @@ void loop() {
 
   if (attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US) {
     attitudeTelemetryTimer = 0;
-    sendDirectAttitudeTelemetry(latestAttitudeFrame);
+    crsf.telemetryWriteAttitude(
+        latestAttitudeFrame.roll,
+        latestAttitudeFrame.pitch,
+        latestAttitudeFrame.yaw);
     serviceCrsfLink();
     attitudeTelemetrySentThisLoop = true;
     ++controlDebugCounters.attitudeTelemetryWrites;
@@ -1136,7 +1042,8 @@ void loop() {
     gpsTelemetryTimer = 0;
     // Send GPS Telemetry in CRSF order using the latest cached values:
     // latitude, longitude, altitude, speed, course, satellites
-    sendDirectGpsTelemetry();
+    crsf.telemetryWriteGPS(latestLatitude, latestLongitude, sensorAltitudeCm,
+                           airSpeedCms, latestGpsCourse, satsInUse);
     serviceCrsfLink();
     gpsTelemetrySentThisLoop = true;
     ++controlDebugCounters.gpsTelemetryWrites;
