@@ -37,6 +37,22 @@ namespace serialReceiverLayer
         int16_t tx_power = 0;
     } link_statistics_t;
 
+    typedef struct crsfParserDiagnostics_s
+    {
+        uint32_t bytesReceived = 0;
+        uint32_t completeFrames = 0;
+        uint32_t validFrames = 0;
+        uint32_t crcErrors = 0;
+        uint32_t rcFrames = 0;
+        uint32_t rcWrongAddressFrames = 0;
+        uint32_t linkStatisticsFrames = 0;
+        uint32_t otherValidFrames = 0;
+        uint32_t frameTimeoutResets = 0;
+        uint8_t lastFrameType = 0;
+        uint8_t lastDeviceAddress = 0;
+        uint8_t lastFrameLength = 0;
+    } crsfParserDiagnostics_t;
+
     const uint16_t tx_power_table[9] = {
         0,    // 0 mW
         10,   // 10 mW
@@ -63,6 +79,7 @@ namespace serialReceiverLayer
         void getFailSafe(bool *failSafe);
         bool getRcChannels(uint16_t *rcChannels);
         void getLinkStatistics(link_statistics_t *linkStats);
+        crsfParserDiagnostics_t getDiagnostics() const;
 
       private:
         bool rcFrameReceived;
@@ -71,6 +88,7 @@ namespace serialReceiverLayer
         crsfProtocol::frame_t rxFrame;
         crsfProtocol::frame_t rcChannelsFrame;
         link_statistics_t linkStatistics;
+        crsfParserDiagnostics_t diagnostics;
         genericCrc::GenericCRC *crc8 = nullptr;
         uint8_t calculateFrameCRC();
     };

@@ -212,6 +212,22 @@ struct ControlDebugCounters {
   uint32_t yawServoWrites;
   uint32_t attitudeTelemetryWrites;
   uint32_t gpsTelemetryWrites;
+  uint32_t crsfTelemetryUartFrames;
+  uint32_t crsfTelemetryAttitudeUartFrames;
+  uint32_t crsfTelemetryGpsUartFrames;
+  uint32_t crsfTelemetryOtherUartFrames;
+  uint32_t crsfRxBytes;
+  uint32_t crsfCompleteFrames;
+  uint32_t crsfValidFrames;
+  uint32_t crsfCrcErrors;
+  uint32_t crsfRcFrames;
+  uint32_t crsfRcWrongAddressFrames;
+  uint32_t crsfOtherValidFrames;
+  uint32_t crsfFrameTimeoutResets;
+  uint8_t crsfLastFrameType;
+  uint8_t crsfLastFrameAddress;
+  uint8_t crsfLastFrameLength;
+  uint8_t crsfLastTelemetryFrameType;
   uint32_t loopIterations;
   uint32_t crsfServiceCalls;
   uint32_t maxRcAgeUs;
@@ -231,6 +247,22 @@ void resetControlDebugCounters() {
   controlDebugCounters.yawServoWrites = 0;
   controlDebugCounters.attitudeTelemetryWrites = 0;
   controlDebugCounters.gpsTelemetryWrites = 0;
+  controlDebugCounters.crsfTelemetryUartFrames = 0;
+  controlDebugCounters.crsfTelemetryAttitudeUartFrames = 0;
+  controlDebugCounters.crsfTelemetryGpsUartFrames = 0;
+  controlDebugCounters.crsfTelemetryOtherUartFrames = 0;
+  controlDebugCounters.crsfRxBytes = 0;
+  controlDebugCounters.crsfCompleteFrames = 0;
+  controlDebugCounters.crsfValidFrames = 0;
+  controlDebugCounters.crsfCrcErrors = 0;
+  controlDebugCounters.crsfRcFrames = 0;
+  controlDebugCounters.crsfRcWrongAddressFrames = 0;
+  controlDebugCounters.crsfOtherValidFrames = 0;
+  controlDebugCounters.crsfFrameTimeoutResets = 0;
+  controlDebugCounters.crsfLastFrameType = 0;
+  controlDebugCounters.crsfLastFrameAddress = 0;
+  controlDebugCounters.crsfLastFrameLength = 0;
+  controlDebugCounters.crsfLastTelemetryFrameType = 0;
   controlDebugCounters.loopIterations = 0;
   controlDebugCounters.crsfServiceCalls = 0;
   controlDebugCounters.maxRcAgeUs = 0;
@@ -238,6 +270,7 @@ void resetControlDebugCounters() {
 
 // Create a CRSFforArduino instance using Serial3.
 CRSFforArduino crsf(&Serial3);
+serialReceiverLayer::serialReceiverDiagnostics_t lastCrsfDiagnostics = {};
 
 // Store the latest received RC channel data.
 serialReceiverLayer::rcChannels_t latestRcChannels;
@@ -479,6 +512,36 @@ void serviceCrsfLink() {
   uint32_t timingStartUs = micros();
 #endif
   crsf.update();
+  const serialReceiverLayer::serialReceiverDiagnostics_t crsfDiagnostics = crsf.getDiagnostics();
+  controlDebugCounters.crsfTelemetryUartFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.telemetryFramesSent - lastCrsfDiagnostics.telemetryFramesSent);
+  controlDebugCounters.crsfTelemetryAttitudeUartFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.telemetryAttitudeFramesSent - lastCrsfDiagnostics.telemetryAttitudeFramesSent);
+  controlDebugCounters.crsfTelemetryGpsUartFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.telemetryGpsFramesSent - lastCrsfDiagnostics.telemetryGpsFramesSent);
+  controlDebugCounters.crsfTelemetryOtherUartFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.telemetryOtherFramesSent - lastCrsfDiagnostics.telemetryOtherFramesSent);
+  controlDebugCounters.crsfRxBytes +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.bytesReceived - lastCrsfDiagnostics.parser.bytesReceived);
+  controlDebugCounters.crsfCompleteFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.completeFrames - lastCrsfDiagnostics.parser.completeFrames);
+  controlDebugCounters.crsfValidFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.validFrames - lastCrsfDiagnostics.parser.validFrames);
+  controlDebugCounters.crsfCrcErrors +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.crcErrors - lastCrsfDiagnostics.parser.crcErrors);
+  controlDebugCounters.crsfRcFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.rcFrames - lastCrsfDiagnostics.parser.rcFrames);
+  controlDebugCounters.crsfRcWrongAddressFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.rcWrongAddressFrames - lastCrsfDiagnostics.parser.rcWrongAddressFrames);
+  controlDebugCounters.crsfOtherValidFrames +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.otherValidFrames - lastCrsfDiagnostics.parser.otherValidFrames);
+  controlDebugCounters.crsfFrameTimeoutResets +=
+      static_cast<uint32_t>(crsfDiagnostics.parser.frameTimeoutResets - lastCrsfDiagnostics.parser.frameTimeoutResets);
+  controlDebugCounters.crsfLastFrameType = crsfDiagnostics.parser.lastFrameType;
+  controlDebugCounters.crsfLastFrameAddress = crsfDiagnostics.parser.lastDeviceAddress;
+  controlDebugCounters.crsfLastFrameLength = crsfDiagnostics.parser.lastFrameLength;
+  controlDebugCounters.crsfLastTelemetryFrameType = crsfDiagnostics.lastTelemetryFrameType;
+  lastCrsfDiagnostics = crsfDiagnostics;
   ++controlDebugCounters.crsfServiceCalls;
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingCrsfUpdate, timingStartUs);
@@ -681,6 +744,22 @@ void maybePrintControlDebugStats() {
   Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
   Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
   Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
+  Serial.print(" tlm_uart_hz="); Serial.print(controlDebugCounters.crsfTelemetryUartFrames * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryAttitudeUartFrames * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryGpsUartFrames * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryOtherUartFrames * scale, 1);
+  Serial.print(" crsf_rx_bytes_s="); Serial.print(controlDebugCounters.crsfRxBytes * scale, 1);
+  Serial.print(" crsf_frame_hz="); Serial.print(controlDebugCounters.crsfCompleteFrames * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfValidFrames * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfCrcErrors * scale, 1);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfFrameTimeoutResets * scale, 1);
+  Serial.print(" crsf_rc_frame_hz="); Serial.print(controlDebugCounters.crsfRcFrames * scale, 1);
+  Serial.print(" crsf_rc_wrong_addr_hz="); Serial.print(controlDebugCounters.crsfRcWrongAddressFrames * scale, 1);
+  Serial.print(" crsf_other_frame_hz="); Serial.print(controlDebugCounters.crsfOtherValidFrames * scale, 1);
+  Serial.print(" crsf_last=0x"); Serial.print(controlDebugCounters.crsfLastFrameType, HEX);
+  Serial.print("@0x"); Serial.print(controlDebugCounters.crsfLastFrameAddress, HEX);
+  Serial.print('/'); Serial.print(controlDebugCounters.crsfLastFrameLength);
+  Serial.print(" tlm_last=0x"); Serial.print(controlDebugCounters.crsfLastTelemetryFrameType, HEX);
   Serial.print(" servo_loop_fresh_hz="); Serial.print(controlDebugCounters.servoLoopFresh * scale, 1);
   Serial.print(" servo_loop_stale_hz="); Serial.print(controlDebugCounters.servoLoopStale * scale, 1);
   Serial.print(" servo_writes_hz=");
@@ -695,6 +774,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.println(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
 
+  lastCrsfDiagnostics = crsf.getDiagnostics();
   resetControlDebugCounters();
 #endif
 }

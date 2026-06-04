@@ -161,6 +161,13 @@ namespace serialReceiverLayer
             crsf = serialReceiver.crsf;
             _linkIsUp = serialReceiver._linkIsUp;
             _lastChannelsPacket = serialReceiver._lastChannelsPacket;
+#if CRSF_TELEMETRY_ENABLED > 0
+            _telemetryFramesSent = serialReceiver._telemetryFramesSent;
+            _telemetryAttitudeFramesSent = serialReceiver._telemetryAttitudeFramesSent;
+            _telemetryGpsFramesSent = serialReceiver._telemetryGpsFramesSent;
+            _telemetryOtherFramesSent = serialReceiver._telemetryOtherFramesSent;
+            _lastTelemetryFrameType = serialReceiver._lastTelemetryFrameType;
+#endif
             _rawDataCallback = serialReceiver._rawDataCallback;
             _linkUpCallback = serialReceiver._linkUpCallback;
             _linkDownCallback = serialReceiver._linkDownCallback;
@@ -548,6 +555,20 @@ namespace serialReceiverLayer
                 if (telemetry->update())
                 {
                     telemetry->sendTelemetryData(_uart);
+                    ++_telemetryFramesSent;
+                    _lastTelemetryFrameType = telemetry->getFrameType();
+                    if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_ATTITUDE)
+                    {
+                        ++_telemetryAttitudeFramesSent;
+                    }
+                    else if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_GPS)
+                    {
+                        ++_telemetryGpsFramesSent;
+                    }
+                    else
+                    {
+                        ++_telemetryOtherFramesSent;
+                    }
                     telemetryFrameQueued = true;
                 }
 #endif
@@ -587,6 +608,32 @@ namespace serialReceiverLayer
         checkLinkDown();
     }
 #endif
+
+
+#if CRSF_TELEMETRY_ENABLED > 0
+    uint32_t SerialReceiver::getTelemetryFramesSent() const
+    {
+        return _telemetryFramesSent;
+    }
+#endif
+
+
+    serialReceiverDiagnostics_t SerialReceiver::getDiagnostics() const
+    {
+        serialReceiverDiagnostics_t diagnostics = {};
+        if (crsf != nullptr)
+        {
+            diagnostics.parser = crsf->getDiagnostics();
+        }
+#if CRSF_TELEMETRY_ENABLED > 0
+        diagnostics.telemetryFramesSent = _telemetryFramesSent;
+        diagnostics.telemetryAttitudeFramesSent = _telemetryAttitudeFramesSent;
+        diagnostics.telemetryGpsFramesSent = _telemetryGpsFramesSent;
+        diagnostics.telemetryOtherFramesSent = _telemetryOtherFramesSent;
+        diagnostics.lastTelemetryFrameType = _lastTelemetryFrameType;
+#endif
+        return diagnostics;
+    }
 
 void SerialReceiver::setLinkDownCallback(linkDownCallback_t callback) { _linkDownCallback = callback; }
 void SerialReceiver::setLinkUpCallback(linkUpCallback_t callback) { _linkUpCallback = callback; }

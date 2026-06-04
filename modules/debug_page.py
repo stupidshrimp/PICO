@@ -109,6 +109,14 @@ class DebugPage:
 
         button_row = QHBoxLayout()
         button_row.addStretch()
+        self.parameter_query_button = QPushButton("Query ELRS Parameters")
+        self.parameter_query_button.setMinimumSize(220, 48)
+        self.parameter_query_button.clicked.connect(self._on_parameter_query_clicked)
+        button_row.addWidget(self.parameter_query_button)
+        self.link_diagnostics_button = QPushButton("Start Link Diagnostics")
+        self.link_diagnostics_button.setMinimumSize(220, 48)
+        self.link_diagnostics_button.clicked.connect(self._on_link_diagnostics_clicked)
+        button_row.addWidget(self.link_diagnostics_button)
         self.monitor_button = QPushButton("Start Monitoring")
         self.monitor_button.setMinimumSize(200, 48)
         self.monitor_button.clicked.connect(self._on_monitor_clicked)
@@ -159,6 +167,12 @@ class DebugPage:
             telemetry_all,
         )
 
+    def _on_parameter_query_clicked(self) -> None:
+        self._main_window.query_elrs_parameters_from_debug_page()
+
+    def _on_link_diagnostics_clicked(self) -> None:
+        self._main_window.toggle_link_diagnostics_from_debug_page()
+
     # ------------------------------------------------------------------
     # Methods invoked from the main window
     # ------------------------------------------------------------------
@@ -202,6 +216,49 @@ class DebugPage:
         self._packet_timestamps.clear()
         self.frequency_label.setText("Packet frequency: --")
         self.append_message("Monitoring stopped.")
+
+    def set_parameter_query_enabled(self, enabled: bool, reason: str = "") -> None:
+        if hasattr(self, "parameter_query_button"):
+            self.parameter_query_button.setEnabled(enabled)
+            self.parameter_query_button.setToolTip(reason)
+
+
+    def set_link_diagnostics_enabled(self, enabled: bool, active: bool, reason: str = "") -> None:
+        if hasattr(self, "link_diagnostics_button"):
+            self.link_diagnostics_button.setEnabled(enabled)
+            self.link_diagnostics_button.setText(
+                "Stop Link Diagnostics" if active else "Start Link Diagnostics"
+            )
+            self.link_diagnostics_button.setToolTip(reason)
+
+    def log_link_diagnostics(self, stats: Mapping[str, object]) -> None:
+        if stats.get("event") == "state":
+            state = "started" if stats.get("enabled") else "stopped"
+            self.append_message(f"Link diagnostics {state}.")
+            return
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        detail = (
+            f"rx_bytes={float(stats.get('rx_bytes_per_s', 0.0)):.0f}/s "
+            f"rx_frame={float(stats.get('rx_frame_hz', 0.0)):.1f}Hz "
+            f"att={float(stats.get('rx_attitude_hz', 0.0)):.1f}Hz "
+            f"gps={float(stats.get('rx_gps_hz', 0.0)):.1f}Hz "
+            f"link={float(stats.get('rx_link_stats_hz', 0.0)):.1f}Hz "
+            f"crc_err={float(stats.get('rx_crc_error_hz', 0.0)):.1f}Hz "
+            f"drop={float(stats.get('rx_dropped_bytes_per_s', 0.0)):.0f}/s "
+            f"invalid_len={float(stats.get('rx_invalid_length_hz', 0.0)):.1f}Hz "
+            f"unknown={float(stats.get('rx_unknown_payload_hz', 0.0)):.1f}Hz "
+            f"buf_max={int(stats.get('rx_max_buffer', 0))} "
+            f"buf_ovf={int(stats.get('rx_buffer_overflows', 0))} "
+            f"tx_attempt={float(stats.get('tx_attempt_hz', 0.0)):.1f}Hz "
+            f"tx_write={float(stats.get('tx_serial_write_hz', 0.0)):.1f}Hz "
+            f"tx_bytes={float(stats.get('tx_bytes_per_s', 0.0)):.0f}/s "
+            f"tx_coalesced={float(stats.get('tx_coalesced_hz', 0.0)):.1f}Hz "
+            f"queued={int(stats.get('bytes_to_write', 0))} "
+            f"tx_enabled={bool(stats.get('tx_enabled', False))} "
+            f"connected={bool(stats.get('connected', False))}"
+        )
+        self.output_edit.appendPlainText(f"[{timestamp}] link_diag: {detail}")
 
     def append_message(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
