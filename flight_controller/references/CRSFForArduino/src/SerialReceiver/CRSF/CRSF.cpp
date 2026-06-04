@@ -35,6 +35,7 @@ namespace serialReceiverLayer
         rcFrameReceived = false;
         frameCount = 0;
         timePerFrame = 0;
+        diagnostics = {};
 
         crc8 = new GenericCRC();
     }
@@ -44,6 +45,7 @@ namespace serialReceiverLayer
         rcFrameReceived = crsf.rcFrameReceived;
         frameCount = crsf.frameCount;
         timePerFrame = crsf.timePerFrame;
+        diagnostics = crsf.diagnostics;
 
         memcpy(rxFrame.raw, crsf.rxFrame.raw, CRSF_FRAME_SIZE_MAX);
         memcpy(rcChannelsFrame.raw, crsf.rcChannelsFrame.raw, CRSF_FRAME_SIZE_MAX);
@@ -58,6 +60,7 @@ namespace serialReceiverLayer
             rcFrameReceived = crsf.rcFrameReceived;
             frameCount = crsf.frameCount;
             timePerFrame = crsf.timePerFrame;
+            diagnostics = crsf.diagnostics;
 
             memcpy(rxFrame.raw, crsf.rxFrame.raw, CRSF_FRAME_SIZE_MAX);
             memcpy(rcChannelsFrame.raw, crsf.rcChannelsFrame.raw, CRSF_FRAME_SIZE_MAX);
@@ -79,6 +82,7 @@ namespace serialReceiverLayer
         rcFrameReceived = false;
         frameCount = 0;
         timePerFrame = 0;
+        diagnostics = {};
 
         memset(rxFrame.raw, 0, CRSF_FRAME_SIZE_MAX);
         memset(rcChannelsFrame.raw, 0, CRSF_FRAME_SIZE_MAX);
@@ -92,6 +96,7 @@ namespace serialReceiverLayer
         timePerFrame = 0;
         frameCount = 0;
         rcFrameReceived = false;
+        diagnostics = {};
     }
 
     void CRSF::setFrameTime(uint32_t baudRate, uint8_t packetCount)
@@ -105,10 +110,15 @@ namespace serialReceiverLayer
         static uint8_t framePosition = 0;
         static uint32_t frameStartTime = 0;
         const uint32_t currentTime = micros();
+        ++diagnostics.bytesReceived;
 
         /* Reset the frame position if the frame time has expired. */
         if (currentTime - frameStartTime > timePerFrame)
         {
+            if (framePosition != 0)
+            {
+                ++diagnostics.frameTimeoutResets;
+            }
             framePosition = 0;
 
             if (currentTime < frameStartTime)
@@ -134,10 +144,15 @@ namespace serialReceiverLayer
             if (framePosition >= fullFrameLength)
             {
                 /* Frame is complete, calculate the CRC and check if it is valid. */
+                ++diagnostics.completeFrames;
                 const uint8_t crc = calculateFrameCRC();
 
                 if (crc == rxFrame.raw[fullFrameLength - 1])
                 {
+                    ++diagnostics.validFrames;
+                    diagnostics.lastFrameType = rxFrame.frame.type;
+                    diagnostics.lastDeviceAddress = rxFrame.frame.deviceAddress;
+                    diagnostics.lastFrameLength = rxFrame.frame.frameLength;
                     switch (rxFrame.frame.type)
                     {
                         case crsfProtocol::CRSF_FRAMETYPE_RC_CHANNELS_PACKED:
@@ -145,11 +160,17 @@ namespace serialReceiverLayer
                             {
                                 memcpy(&rcChannelsFrame, &rxFrame, CRSF_FRAME_SIZE_MAX);
                                 rcFrameReceived = true;
+                                ++diagnostics.rcFrames;
+                            }
+                            else
+                            {
+                                ++diagnostics.rcWrongAddressFrames;
                             }
                             break;
 
 #if CRSF_LINK_STATISTICS_ENABLED > 0
                         case CRSF_FRAMETYPE_LINK_STATISTICS:
+                            ++diagnostics.linkStatisticsFrames;
                             if ((rxFrame.frame.deviceAddress == CRSF_ADDRESS_FLIGHT_CONTROLLER) && (rxFrame.frame.frameLength == CRSF_FRAME_ORIGIN_DEST_SIZE + CRSF_FRAME_LINK_STATISTICS_PAYLOAD_SIZE))
                             {
                                 crsf_payload_link_statistics_t linkStatisticsPayload;
@@ -162,7 +183,14 @@ namespace serialReceiverLayer
                             }
                             break;
 #endif
+                        default:
+                            ++diagnostics.otherValidFrames;
+                            break;
                     }
+                }
+                else
+                {
+                    ++diagnostics.crcErrors;
                 }
 
                 /* Clear the frame buffer and reset the frame position. */
@@ -229,6 +257,11 @@ namespace serialReceiverLayer
 #else
         (void)linkStats;
 #endif
+    }
+
+    crsfParserDiagnostics_t CRSF::getDiagnostics() const
+    {
+        return diagnostics;
     }
 
     uint8_t CRSF::calculateFrameCRC()

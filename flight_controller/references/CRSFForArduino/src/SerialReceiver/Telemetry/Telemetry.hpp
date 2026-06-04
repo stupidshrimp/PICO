@@ -50,6 +50,7 @@ namespace serialReceiverLayer
         void setGPSData(float latitude, float longitude, float altitude, float speed, float course, uint8_t satellites);
 
         void sendTelemetryData(HardwareSerial *db);
+        uint8_t getFrameType();
 
       private:
         uint8_t _telemetryFrameScheduleCount;

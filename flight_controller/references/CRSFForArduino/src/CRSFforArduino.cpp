@@ -282,6 +282,21 @@ namespace sketchLayer
 #endif
     }
 
+
+    uint32_t CRSFforArduino::getTelemetryFramesSent() const
+    {
+#if CRSF_TELEMETRY_ENABLED > 0
+        return this->SerialReceiver::getTelemetryFramesSent();
+#else
+        return 0;
+#endif
+    }
+
+    serialReceiverLayer::serialReceiverDiagnostics_t CRSFforArduino::getDiagnostics() const
+    {
+        return this->SerialReceiver::getDiagnostics();
+    }
+
     /**
      * @brief Sends a CRSF Telemetry Frame with the current attitude data.
      * 

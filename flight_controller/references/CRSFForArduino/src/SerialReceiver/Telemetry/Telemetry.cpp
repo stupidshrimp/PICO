@@ -233,6 +233,11 @@ namespace serialReceiverLayer
         db->write(buffer, length);
     }
 
+    uint8_t Telemetry::getFrameType()
+    {
+        return SerialBuffer::getLength() > 2 ? SerialBuffer::getByte(2) : 0;
+    }
+
     int16_t Telemetry::_decidegreeToRadians(int16_t decidegrees)
     {
         while (decidegrees > 18000)

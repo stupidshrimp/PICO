@@ -442,3 +442,40 @@ def test_reconnect_state_initialised_before_worker_thread_start():
 
     assert source.index("self._last_port_check = 0.0", processor_start) < worker_start
     assert source.index("self._last_reconnect_attempt = 0.0", processor_start) < worker_start
+
+
+def test_read_single_parameter_assembles_chunked_text_selection():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.parameter_query_update = DummySignal()
+
+    field_id = 7
+    full_payload = (
+        bytes([0, 9])
+        + b"Telem Ratio\x00"
+        + b"Std;Off;1:128;1:64;1:32;1:16;1:8;1:4;1:2;Race\x00"
+        + bytes([8, 0, 9, 0])
+        + b"\x00"
+    )
+    chunk_payloads = [full_payload[:24], full_payload[24:50], full_payload[50:]]
+    requested_chunks = []
+
+    def read_chunk(requested_field_id, chunk_index):
+        requested_chunks.append((requested_field_id, chunk_index))
+        if requested_field_id != field_id or chunk_index >= len(chunk_payloads):
+            return None
+        return {
+            "field_id": requested_field_id,
+            "chunks_remaining": len(chunk_payloads) - chunk_index - 1,
+            "chunk_payload": chunk_payloads[chunk_index],
+        }
+
+    processor._read_parameter_chunk = read_chunk
+
+    entry = processor._read_single_parameter(field_id)
+
+    assert requested_chunks == [(field_id, 0), (field_id, 1), (field_id, 2)]
+    assert entry["name"] == "Telem Ratio"
+    assert entry["value"] == 8
+    assert entry["selected"] == "1:2"
+    assert entry["options"][-2:] == ["1:2", "Race"]
+    assert entry["chunks_remaining"] == 0
