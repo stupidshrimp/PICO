@@ -138,6 +138,11 @@ def validate_port(name: str, port: str) -> bool:
 widgets = None
 
 class MainWindow(QMainWindow):
+    # Keep these in lockstep with flight_controller/Main.ino so the OSD
+    # desired-state cue mirrors the FC's FBW setpoint calculation.
+    FBW_MAX_ROLL_ANGLE_DEG = 45.0
+    FBW_MAX_PITCH_ANGLE_DEG = 30.0
+
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
@@ -159,6 +164,9 @@ class MainWindow(QMainWindow):
         # Control mode setup
         self.control_mode = "Manual"  # Default mode
         self.control_mode_channel = 4  # Channel 5 (0-based index)
+        self.desired_fbw_roll = None
+        self.desired_fbw_pitch = None
+        self._latest_control_channels = [CRSF_CHANNEL_CENTER] * 16
         self.update_control_mode_label()
         # Shortcut to toggle control mode
         self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
@@ -1217,6 +1225,8 @@ class MainWindow(QMainWindow):
         ):
             self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
+        self._update_desired_fbw_attitude_from_stick(joy_pitch, joy_roll)
+
         if norm_pitch is None or norm_roll is None:
             self.pitch_indicator.setValue(0)
             self.roll_indicator.setValue(0)
@@ -2070,6 +2080,79 @@ class MainWindow(QMainWindow):
         print(f"Attitude telemetry frequency: {frequency:.2f} Hz", flush=True)
 
     @staticmethod
+    def _normalise_crsf_channel_for_fbw(value: int | float) -> float:
+        """Mirror the FC's ``mapRcToNormalized`` helper for FBW setpoints."""
+
+        in_min = float(CRSF_CHANNEL_MIN)
+        in_max = float(CRSF_CHANNEL_MAX)
+        clamped = max(in_min, min(in_max, float(value)))
+        half_range = (in_max - in_min) * 0.5
+        if half_range <= 0.0:
+            return 0.0
+        center = in_min + half_range
+        normalized = (clamped - center) / half_range
+        return max(-1.0, min(1.0, normalized))
+
+    def _desired_fbw_attitude_from_channels(
+        self, channels: list[int]
+    ) -> tuple[float, float]:
+        """Return desired roll/pitch degrees using the FC's FBW math."""
+
+        roll_raw = channels[0] if len(channels) > 0 else CRSF_CHANNEL_CENTER
+        pitch_raw = channels[1] if len(channels) > 1 else CRSF_CHANNEL_CENTER
+        roll_norm = self._normalise_crsf_channel_for_fbw(roll_raw)
+        pitch_norm = self._normalise_crsf_channel_for_fbw(pitch_raw)
+        desired_roll = roll_norm * self.FBW_MAX_ROLL_ANGLE_DEG
+        desired_pitch = pitch_norm * self.FBW_MAX_PITCH_ANGLE_DEG
+        return desired_roll, desired_pitch
+
+    def _update_desired_fbw_attitude(
+        self, channels: list[int], enabled: Optional[bool] = None
+    ) -> None:
+        """Cache and publish the desired FBW attitude cue for the OSD."""
+
+        self._latest_control_channels = list(channels[:16])
+        show_desired = (
+            self.control_mode == "Fly-By-Wire" if enabled is None else enabled
+        )
+        if show_desired:
+            self.desired_fbw_roll, self.desired_fbw_pitch = (
+                self._desired_fbw_attitude_from_channels(channels)
+            )
+        else:
+            self.desired_fbw_roll = None
+            self.desired_fbw_pitch = None
+
+        if hasattr(self, "rollpitch_osd"):
+            self.rollpitch_osd.setDesiredRollPitch(
+                self.desired_fbw_roll,
+                self.desired_fbw_pitch,
+                visible=show_desired,
+            )
+
+    def _update_desired_fbw_attitude_from_stick(
+        self, joy_pitch: Optional[float], joy_roll: Optional[float]
+    ) -> None:
+        """Refresh the OSD cue from the same joystick-to-CRSF mapping as TX."""
+
+        if self.control_mode != "Fly-By-Wire":
+            self._update_desired_fbw_attitude(
+                getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16),
+                enabled=False,
+            )
+            return
+
+        channels = list(
+            getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
+        )
+        if len(channels) < 16:
+            channels.extend([CRSF_CHANNEL_CENTER] * (16 - len(channels)))
+        if joy_roll is not None and joy_pitch is not None:
+            channels[0] = JoystickRawHandler._map_to_crsf(joy_roll)
+            channels[1] = JoystickRawHandler._map_to_crsf(joy_pitch)
+        self._update_desired_fbw_attitude(channels, enabled=True)
+
+    @staticmethod
     def _map_axis_to_crsf(value: float) -> int:
         """Map a normalized control value (``-1`` to ``1``) to CRSF range."""
 
@@ -2113,6 +2196,7 @@ class MainWindow(QMainWindow):
         # Control mode channel: send low for Manual, high for Fly-By-Wire.
         mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
         channels[self.control_mode_channel] = mode_value
+        self._update_desired_fbw_attitude(channels)
         return channels
 
     def transmit_data(self):
@@ -2143,6 +2227,9 @@ class MainWindow(QMainWindow):
         """Toggle between Manual and Fly-By-Wire modes."""
         self.control_mode = "Fly-By-Wire" if self.control_mode == "Manual" else "Manual"
         self.update_control_mode_label()
+        self._update_desired_fbw_attitude(
+            getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
+        )
         sound_name = "fbw" if self.control_mode == "Fly-By-Wire" else "manual"
         self.play_sound(sound_name)
 

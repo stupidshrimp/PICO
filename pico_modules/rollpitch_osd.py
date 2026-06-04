@@ -1,4 +1,4 @@
-"""Simple roll/pitch on‑screen display widget.
+"""Simple roll/pitch on-screen display widget.
 
 This module draws an artificial horizon (pitch ladder) that reacts to roll
 and pitch values.  The previous version only rendered a handful of fixed
@@ -12,14 +12,18 @@ creating a repeating pattern used on real attitude indicators.
 import math
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QColor
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, Qt
+
 
 class RollPitchOSD(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pitch = 0.0
         self._roll = 0.0
+        self._desired_pitch = None
+        self._desired_roll = None
+        self._desired_visible = False
         self._initialized = False
         self._smoothing = 0.2  # Weight for new samples
         self.setMinimumSize(300, 300)
@@ -68,6 +72,141 @@ class RollPitchOSD(QWidget):
             self._roll = self._roll * (1 - self._smoothing) + roll_deg * self._smoothing
             self._pitch = self._pitch * (1 - self._smoothing) + pitch_deg * self._smoothing
         self.update()
+
+    def setDesiredRollPitch(
+        self, roll_deg: float | None, pitch_deg: float | None, visible: bool = True
+    ) -> None:
+        """Update the FBW desired-attitude overlay.
+
+        The desired cue is intentionally unsmoothed so it represents the latest
+        command sent by the ground station rather than the delayed/smoothed
+        telemetry attitude.
+        """
+
+        if (
+            not visible
+            or roll_deg is None
+            or pitch_deg is None
+            or not math.isfinite(roll_deg)
+            or not math.isfinite(pitch_deg)
+        ):
+            self._desired_visible = False
+            self._desired_roll = None
+            self._desired_pitch = None
+            self.update()
+            return
+
+        self._desired_roll = float(roll_deg)
+        self._desired_pitch = float(pitch_deg)
+        self._desired_visible = True
+        self.update()
+
+    def _draw_desired_attitude_overlay(
+        self, painter: QPainter, center_x: float, center_y: float, scale: float
+    ) -> None:
+        """Draw a modern FBW command cue over the actual attitude ladder."""
+
+        if (
+            not self._desired_visible
+            or self._desired_roll is None
+            or self._desired_pitch is None
+        ):
+            return
+
+        cyan = QColor(0, 229, 255)
+        cyan_soft = QColor(0, 229, 255, 82)
+        cyan_glow = QColor(0, 229, 255, 42)
+        ink = QColor(4, 16, 22, 205)
+        white = QColor(235, 252, 255)
+
+        desired_y = self._desired_pitch * scale
+        half_width = self.width() / 2
+        cue_half_len = max(52.0, half_width * 0.32)
+        center_gap = 30.0
+        tick = 9.0
+
+        painter.save()
+        painter.translate(center_x, center_y)
+        painter.rotate(self._desired_roll)
+
+        # Soft glow beneath the target line keeps the command cue readable on
+        # bright video while preserving the existing ladder color language.
+        painter.setPen(
+            QPen(cyan_glow, 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        )
+        painter.drawLine(-cue_half_len, desired_y, -center_gap, desired_y)
+        painter.drawLine(center_gap, desired_y, cue_half_len, desired_y)
+
+        painter.setPen(
+            QPen(cyan_soft, 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        )
+        painter.drawLine(-cue_half_len, desired_y, -center_gap, desired_y)
+        painter.drawLine(center_gap, desired_y, cue_half_len, desired_y)
+
+        painter.setPen(QPen(cyan, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(-cue_half_len, desired_y, -center_gap, desired_y)
+        painter.drawLine(center_gap, desired_y, cue_half_len, desired_y)
+        painter.drawLine(
+            -cue_half_len, desired_y - tick, -cue_half_len, desired_y + tick
+        )
+        painter.drawLine(
+            cue_half_len, desired_y - tick, cue_half_len, desired_y + tick
+        )
+
+        # A small diamond at the commanded center makes the desired state easy
+        # to pick out even when the desired and actual horizons overlap.
+        diamond = QPolygonF(
+            [
+                QPointF(0.0, desired_y - 7.0),
+                QPointF(8.0, desired_y),
+                QPointF(0.0, desired_y + 7.0),
+                QPointF(-8.0, desired_y),
+            ]
+        )
+        painter.setBrush(QBrush(ink))
+        painter.setPen(QPen(cyan, 2))
+        painter.drawPolygon(diamond)
+        painter.restore()
+
+        # Sleek status chip with command and current tracking error.
+        roll_error = self._desired_roll - self._roll
+        pitch_error = self._desired_pitch - self._pitch
+        chip_text = (
+            f"FBW CMD  R {self._desired_roll:+04.1f}°  P {self._desired_pitch:+04.1f}°"
+            f"   ERR {roll_error:+04.1f}/{pitch_error:+04.1f}°"
+        )
+
+        painter.save()
+        font = QFont("Inter", 8)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        chip_width = metrics.horizontalAdvance(chip_text) + 22
+        chip_height = 26
+        chip_x = max(10, int(center_x - chip_width / 2))
+        chip_y = max(10, self.height() - chip_height - 12)
+        chip_rect = QRectF(chip_x, chip_y, chip_width, chip_height)
+
+        painter.setPen(QPen(QColor(0, 229, 255, 115), 1))
+        painter.setBrush(QBrush(QColor(3, 18, 25, 178)))
+        painter.drawRoundedRect(chip_rect, 10, 10)
+
+        painter.setPen(
+            QPen(cyan, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        )
+        painter.drawLine(
+            chip_x + 9,
+            chip_y + chip_height / 2,
+            chip_x + 21,
+            chip_y + chip_height / 2,
+        )
+        painter.setPen(white)
+        painter.drawText(
+            QRectF(chip_x + 27, chip_y, chip_width - 34, chip_height),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            chip_text,
+        )
+        painter.restore()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -165,7 +304,6 @@ class RollPitchOSD(QWidget):
             color.setAlphaF(alpha)
             painter.setPen(QPen(color, 2))
 
-
             if pitch_deg == 0:
                 # Draw a continuous line across the centre for the true horizon
                 painter.drawLine(-half_len, y, half_len, y)
@@ -175,6 +313,8 @@ class RollPitchOSD(QWidget):
                 painter.drawLine(GAP_SIZE / 2, y, half_len, y)
 
         painter.restore()
+
+        self._draw_desired_attitude_overlay(painter, center_x, center_y, SCALE)
 
         # Reference cross that stays fixed regardless of roll
         pen = QPen(Qt.gray, 2)
