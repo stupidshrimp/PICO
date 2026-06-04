@@ -3041,6 +3041,51 @@ background-repeat: no-repeat;</string>
                              </layout>
                             </item>
                             <item>
+                             <layout class="QVBoxLayout" name="throttleModeLayout">
+                              <property name="spacing">
+                               <number>4</number>
+                              </property>
+                              <property name="leftMargin">
+                               <number>0</number>
+                              </property>
+                              <property name="topMargin">
+                               <number>8</number>
+                              </property>
+                              <property name="rightMargin">
+                               <number>0</number>
+                              </property>
+                              <property name="bottomMargin">
+                               <number>0</number>
+                              </property>
+                              <item>
+                               <widget class="QLabel" name="throttleModeTitle">
+                                <property name="font">
+                                 <font>
+                                  <bold>true</bold>
+                                  <underline>true</underline>
+                                 </font>
+                                </property>
+                                <property name="text">
+                                 <string>Throttle Mode</string>
+                                </property>
+                                <property name="alignment">
+                                 <set>Qt::AlignHCenter|Qt::AlignVCenter</set>
+                                </property>
+                               </widget>
+                              </item>
+                              <item>
+                               <widget class="QLabel" name="throttleModeLabel">
+                                <property name="text">
+                                 <string>Manual</string>
+                                </property>
+                                <property name="alignment">
+                                 <set>Qt::AlignHCenter|Qt::AlignVCenter</set>
+                                </property>
+                               </widget>
+                              </item>
+                             </layout>
+                            </item>
+                            <item>
                              <spacer name="controlInputsRightSpacer">
                               <property name="orientation">
                                <enum>Qt::Orientation::Horizontal</enum>
