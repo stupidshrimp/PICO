@@ -1519,6 +1519,26 @@ class Ui_MainWindow(object):
 
         self.controlInputsLayout.addLayout(self.controlModeLayout)
 
+        self.throttleModeLayout = QVBoxLayout()
+        self.throttleModeLayout.setSpacing(4)
+        self.throttleModeLayout.setObjectName(u"throttleModeLayout")
+        self.throttleModeLayout.setContentsMargins(0, 8, 0, 0)
+        self.throttleModeTitle = QLabel(self.controlSectionFrame)
+        self.throttleModeTitle.setObjectName(u"throttleModeTitle")
+        self.throttleModeTitle.setFont(font5)
+        self.throttleModeTitle.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.throttleModeLayout.addWidget(self.throttleModeTitle)
+
+        self.throttleModeLabel = QLabel(self.controlSectionFrame)
+        self.throttleModeLabel.setObjectName(u"throttleModeLabel")
+        self.throttleModeLabel.setAlignment(Qt.AlignHCenter|Qt.AlignVCenter)
+
+        self.throttleModeLayout.addWidget(self.throttleModeLabel)
+
+
+        self.controlInputsLayout.addLayout(self.throttleModeLayout)
+
         self.controlInputsRightSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         self.controlInputsLayout.addItem(self.controlInputsRightSpacer)
@@ -1919,6 +1939,8 @@ class Ui_MainWindow(object):
         self.InputsLabel.setText(QCoreApplication.translate("MainWindow", u"Control Inputs", None))
         self.controlModeTitle.setText(QCoreApplication.translate("MainWindow", u"Control Mode", None))
         self.controlModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
+        self.throttleModeTitle.setText(QCoreApplication.translate("MainWindow", u"Throttle Mode", None))
+        self.throttleModeLabel.setText(QCoreApplication.translate("MainWindow", u"Manual", None))
         self.signalHealthTitle.setText(QCoreApplication.translate("MainWindow", u"Signal health", None))
         self.rssiALabel.setText(QCoreApplication.translate("MainWindow", u"RSSI A: --", None))
         self.rssiBLabel.setText(QCoreApplication.translate("MainWindow", u"RSSI B: --", None))
