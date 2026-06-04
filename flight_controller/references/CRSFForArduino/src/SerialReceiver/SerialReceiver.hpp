@@ -118,6 +118,9 @@ namespace serialReceiverLayer
         void setLinkDownCallback(linkDownCallback_t callback);
         void setLinkUpCallback(linkUpCallback_t callback);
         bool isLinkUp() const;
+#if CRSF_TELEMETRY_ENABLED > 0
+        uint32_t getTelemetryFramesSent() const;
+#endif
         void checkLinkDown();
         void setLinkUp();
 
@@ -141,6 +144,7 @@ namespace serialReceiverLayer
 
 #if CRSF_TELEMETRY_ENABLED > 0
         Telemetry *telemetry = nullptr;
+        uint32_t _telemetryFramesSent = 0;
 #endif
 
 #if CRSF_RC_ENABLED > 0

@@ -503,6 +503,9 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.transmit_debug_update.connect(
                     self._handle_transmit_debug
                 )
+                self.crsf_processor.parameter_query_update.connect(
+                    self._handle_parameter_query_update
+                )
                 self.crsf_processor.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
@@ -519,6 +522,7 @@ class MainWindow(QMainWindow):
         # Track transmission state and countdown handling for the configuration
         # page's terminate/start button.
         self.transmission_active = True
+        self._update_parameter_query_button_state()
         self._transmission_hold_timer = QTimer(self)
         self._transmission_hold_timer.setInterval(50)
         self._transmission_hold_timer.timeout.connect(
@@ -1775,6 +1779,53 @@ class MainWindow(QMainWindow):
 
         self.debug_page.log_packet("control_tx", stats)
 
+    @Slot(str)
+    def _handle_parameter_query_update(self, message: str) -> None:
+        """Append CRSF parameter-query diagnostics to the Debug tab."""
+
+        self.debug_page.append_message(message)
+
+    def _update_parameter_query_button_state(self) -> None:
+        """Enable ELRS parameter querying only while RC packet transmission is stopped."""
+
+        debug_page = getattr(self, "debug_page", None)
+        if debug_page is None:
+            return
+        if self.transmission_active:
+            debug_page.set_parameter_query_enabled(
+                False,
+                "Stop packet transmission before querying ELRS parameters.",
+            )
+        elif not self.crsf_processor:
+            debug_page.set_parameter_query_enabled(
+                False,
+                "Connect the ELRS/CRSF transmitter before querying parameters.",
+            )
+        else:
+            debug_page.set_parameter_query_enabled(
+                True,
+                "Query the ELRS TX module CRSF parameter table.",
+            )
+
+    def query_elrs_parameters_from_debug_page(self) -> None:
+        """Request ELRS TX module parameter information from the Debug tab."""
+
+        if self.transmission_active:
+            self.debug_page.append_message(
+                "ELRS parameter query blocked: stop packet transmission first."
+            )
+            self._update_parameter_query_button_state()
+            return
+        if not self.crsf_processor:
+            self.debug_page.append_message(
+                "ELRS parameter query failed: CRSF transmitter is not connected."
+            )
+            self._update_parameter_query_button_state()
+            return
+
+        self.debug_page.append_message("Starting ELRS TX module CRSF parameter query...")
+        self.crsf_processor.parameter_query_request.emit()
+
     @Slot(object)
     def _handle_serial_debug(self, payload) -> None:
         """Log raw serial bytes to the Debug tab when requested."""
@@ -2567,6 +2618,7 @@ class MainWindow(QMainWindow):
         self._transmission_hold_timer.stop()
         self._apply_transmission_button_style("inactive")
         self.transmission_control_button.setText("Start transmitting packets")
+        self._update_parameter_query_button_state()
         self._mute_sounds(["telemetryoffline", "disconnectedalarm", "disconnectalarm"], 2.0)
         self.play_sound("elrsterminated.mp3")
 
@@ -2587,6 +2639,7 @@ class MainWindow(QMainWindow):
         self._transmission_pressed_while_inactive = False
         self._apply_transmission_button_style("active")
         self.transmission_control_button.setText("Terminate transmission")
+        self._update_parameter_query_button_state()
         self.play_sound("elrsinitiated.mp3")
 
     def update_port_lists(self):
@@ -2704,10 +2757,14 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.transmit_debug_update.connect(
                     self._handle_transmit_debug
                 )
+                self.crsf_processor.parameter_query_update.connect(
+                    self._handle_parameter_query_update
+                )
                 self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
+        self._update_parameter_query_button_state()
         save_config(self.config)
 
     def on_packet_interval_changed(self):

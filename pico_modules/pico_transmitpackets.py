@@ -119,6 +119,17 @@ class CRSFPacketProcessor(QObject):
     CRSF_SYNC = 0xC8
     TELEMETRY_SYNC = 0xEA  # Start byte used for telemetry frames
 
+    CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA
+    CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE
+    CRSF_ADDRESS_ELRS_LUA = 0xEF
+
+    CRSF_FRAMETYPE_DEVICE_PING = 0x28
+    CRSF_FRAMETYPE_DEVICE_INFO = 0x29
+    CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY = 0x2B
+    CRSF_FRAMETYPE_PARAMETER_READ = 0x2C
+    CRSF_FRAMETYPE_PARAMETER_WRITE = 0x2D
+
+
     telemetry_ready = Signal(object)
     serial_data = Signal(object)
     channel_update = Signal(list)
@@ -126,7 +137,9 @@ class CRSFPacketProcessor(QObject):
     transmission_enabled_update = Signal(bool)
     transmission_start_update = Signal(list)
     raw_serial_debug_update = Signal(bool)
+    parameter_query_request = Signal()
     transmit_debug_update = Signal(object)
+    parameter_query_update = Signal(str)
     error = Signal(str)
 
     class PacketsTypes(IntEnum):
@@ -210,6 +223,7 @@ class CRSFPacketProcessor(QObject):
         self._tx_bytes_written = 0
         self._tx_last_interval_ms = None
         self._tx_last_bytes_to_write = 0
+        self._parameter_query_active = False
 
         # Move telemetry processing off the GUI thread.  The processor lives in
         # its own QThread where serial I/O and packet decoding occur so video
@@ -222,6 +236,7 @@ class CRSFPacketProcessor(QObject):
         self.transmission_enabled_update.connect(self.set_transmission_enabled)
         self.transmission_start_update.connect(self.update_channels_and_enable)
         self.raw_serial_debug_update.connect(self.set_raw_serial_debug_enabled)
+        self.parameter_query_request.connect(self.query_elrs_parameters)
         self._thread.start()
 
 
@@ -563,6 +578,8 @@ class CRSFPacketProcessor(QObject):
     @Slot()
     def read_serial_data(self):
         """Read available telemetry data and decode all received packets."""
+        if getattr(self, "_parameter_query_active", False):
+            return
         if not self.serial or self.serial.bytesAvailable() <= 0:
             return
 
@@ -907,6 +924,256 @@ class CRSFPacketProcessor(QObject):
 
         return 0
 
+
+
+    def _emit_parameter_query_line(self, message: str) -> None:
+        signal = getattr(self, "parameter_query_update", None)
+        if signal is not None:
+            signal.emit(message)
+
+    def _create_extended_packet(self, frame_type: int, dest: int, origin: int, payload: bytes = b"") -> bytes:
+        length = len(payload) + 4  # type + destination + origin + crc
+        packet = bytearray([dest, length, frame_type, dest, origin])
+        packet.extend(payload)
+        packet.append(self.crc8_data(packet[2:]))
+        return bytes(packet)
+
+    def _try_extract_parameter_entry(self, packet: dict[str, object]) -> dict[str, object] | None:
+        data = packet.get("data", b"")
+        if not isinstance(data, bytes) or len(data) < 4:
+            return None
+
+        field_id = data[0]
+        chunks_remaining = data[1]
+        parent = data[2]
+        param_type = data[3] & 0x3F
+        rest = data[4:]
+        nul = rest.find(b"\x00")
+        if nul < 0:
+            return None
+
+        name = rest[:nul].decode("ascii", errors="replace")
+        value = None
+        selected = None
+        options: list[str] = []
+        units = ""
+        detail_offset = nul + 1
+
+        if param_type == 9:  # CRSF_TEXT_SELECTION
+            option_blob = rest[detail_offset:]
+            opt_nul = option_blob.find(b"\x00")
+            if opt_nul >= 0:
+                options_text = option_blob[:opt_nul].decode("ascii", errors="replace")
+                options = options_text.split(";") if options_text else []
+                value_offset = detail_offset + opt_nul + 1
+                if len(rest) >= value_offset + 4:
+                    value = int(rest[value_offset])
+                    if 0 <= value < len(options):
+                        selected = options[value]
+                    units_blob = rest[value_offset + 4:]
+                    units_nul = units_blob.find(b"\x00")
+                    if units_nul >= 0:
+                        units = units_blob[:units_nul].decode("ascii", errors="replace")
+                    else:
+                        units = units_blob.decode("ascii", errors="replace")
+
+        return {
+            "field_id": field_id,
+            "chunks_remaining": chunks_remaining,
+            "parent": parent,
+            "type": param_type,
+            "name": name,
+            "value": value,
+            "selected": selected,
+            "options": options,
+            "units": units,
+        }
+
+    def _parse_parameter_query_frames(self, buffer: bytearray) -> list[dict[str, object]]:
+        frames: list[dict[str, object]] = []
+        while True:
+            if len(buffer) < 3:
+                break
+            if buffer[0] not in (
+                self.CRSF_SYNC,
+                self.TELEMETRY_SYNC,
+                self.CRSF_ADDRESS_RADIO_TRANSMITTER,
+                self.CRSF_ADDRESS_CRSF_TRANSMITTER,
+            ):
+                del buffer[0]
+                continue
+
+            length = buffer[1]
+            if length < 2 or length > 64:
+                del buffer[0]
+                continue
+
+            frame_end = length + 2
+            if len(buffer) < frame_end:
+                break
+
+            if self.crc8_data(buffer[2:frame_end - 1]) != buffer[frame_end - 1]:
+                del buffer[0]
+                continue
+
+            packet = bytes(buffer[:frame_end])
+            del buffer[:frame_end]
+            frame_type = packet[2]
+            payload = packet[3:frame_end - 1]
+            frame: dict[str, object] = {
+                "address": packet[0],
+                "type": frame_type,
+                "payload": payload,
+                "raw": packet,
+            }
+            if frame_type >= self.CRSF_FRAMETYPE_DEVICE_PING and len(payload) >= 2:
+                frame["dest"] = payload[0]
+                frame["origin"] = payload[1]
+                frame["data"] = payload[2:]
+            else:
+                frame["data"] = payload
+            frames.append(frame)
+        return frames
+
+    def _write_query_packet(self, packet: bytes) -> bool:
+        if not self.serial:
+            return False
+        written = self.serial.write(packet)
+        if written == -1:
+            self._emit_parameter_query_line(f"CRSF query write failed: {self.serial.errorString()}")
+            return False
+        self.serial.waitForBytesWritten(100)
+        return True
+
+    def _collect_query_frames(self, timeout_ms: int = 250) -> list[dict[str, object]]:
+        if not self.serial:
+            return []
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        buffer = bytearray()
+        frames: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            if self.serial.bytesAvailable() <= 0:
+                remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+                self.serial.waitForReadyRead(min(50, remaining_ms))
+            if self.serial.bytesAvailable() > 0:
+                buffer.extend(bytes(self.serial.readAll()))
+                frames.extend(self._parse_parameter_query_frames(buffer))
+        return frames
+
+    def _read_single_parameter(self, field_id: int) -> dict[str, object] | None:
+        packet = self._create_extended_packet(
+            self.CRSF_FRAMETYPE_PARAMETER_READ,
+            self.CRSF_ADDRESS_CRSF_TRANSMITTER,
+            self.CRSF_ADDRESS_ELRS_LUA,
+            bytes([field_id, 0]),
+        )
+        if not self._write_query_packet(packet):
+            return None
+
+        for frame in self._collect_query_frames(180):
+            if frame.get("type") != self.CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY:
+                continue
+            entry = self._try_extract_parameter_entry(frame)
+            if entry and entry.get("field_id") == field_id:
+                return entry
+        return None
+
+    @Slot()
+    def query_elrs_parameters(self):
+        """Query the TX module's CRSF parameter table while RC transmission is stopped."""
+        if self._tx_enabled:
+            self._emit_parameter_query_line("ELRS parameter query blocked: stop packet transmission first.")
+            return
+        if not self.is_connected():
+            self._emit_parameter_query_line("ELRS parameter query failed: CRSF serial port is not connected.")
+            return
+
+        constants = (
+            ("DEVICE_PING", self.CRSF_FRAMETYPE_DEVICE_PING),
+            ("DEVICE_INFO", self.CRSF_FRAMETYPE_DEVICE_INFO),
+            ("PARAMETER_SETTINGS_ENTRY", self.CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY),
+            ("PARAMETER_READ", self.CRSF_FRAMETYPE_PARAMETER_READ),
+            ("PARAMETER_WRITE", self.CRSF_FRAMETYPE_PARAMETER_WRITE),
+        )
+        self._emit_parameter_query_line("CRSF parameter query frame types:")
+        for name, value in constants:
+            self._emit_parameter_query_line(f"  {name:<28} 0x{value:02X}")
+
+        self._parameter_query_active = True
+        old_raw_debug = self._raw_serial_debug_enabled
+        self._raw_serial_debug_enabled = False
+        try:
+            try:
+                self.serial.readyRead.disconnect(self.read_serial_data)
+            except Exception:
+                pass
+            self._rx_buffer.clear()
+            if self.serial.bytesAvailable() > 0:
+                self.serial.readAll()
+
+            self._emit_parameter_query_line("Sending DEVICE_PING to ELRS TX module...")
+            ping = self._create_extended_packet(
+                self.CRSF_FRAMETYPE_DEVICE_PING,
+                self.CRSF_ADDRESS_CRSF_TRANSMITTER,
+                self.CRSF_ADDRESS_ELRS_LUA,
+            )
+            self._write_query_packet(ping)
+            device_name = None
+            field_count = None
+            for frame in self._collect_query_frames(500):
+                if frame.get("type") != self.CRSF_FRAMETYPE_DEVICE_INFO:
+                    continue
+                data = frame.get("data", b"")
+                if not isinstance(data, bytes):
+                    continue
+                nul = data.find(b"\x00")
+                if nul >= 0:
+                    device_name = data[:nul].decode("ascii", errors="replace")
+                    info = data[nul + 1:]
+                    if len(info) >= 14:
+                        field_count = int(info[12])
+                    self._emit_parameter_query_line(
+                        f"DEVICE_INFO: name={device_name or '--'} field_count={field_count if field_count is not None else '--'}"
+                    )
+                    break
+
+            max_field = field_count if field_count is not None else 64
+            telem_entry = None
+            self._emit_parameter_query_line(f"Reading up to {max_field} parameter entries...")
+            for field_id in range(1, max_field + 1):
+                entry = self._read_single_parameter(field_id)
+                if not entry:
+                    continue
+                if entry.get("name") == "Telem Ratio":
+                    telem_entry = entry
+                    break
+
+            if telem_entry is None:
+                self._emit_parameter_query_line("Telem Ratio parameter was not found in the TX module parameter table.")
+                return
+
+            value = telem_entry.get("value")
+            selected = telem_entry.get("selected") or "--"
+            options = telem_entry.get("options") or []
+            self._emit_parameter_query_line(
+                f"Telem Ratio: value={value if value is not None else '--'} selected={selected}"
+            )
+            if options:
+                self._emit_parameter_query_line(f"Telem Ratio options: {';'.join(str(option) for option in options)}")
+            if value == 8 and selected == "1:2":
+                self._emit_parameter_query_line("Confirmed: TX module reports telemetry ratio 1:2.")
+            else:
+                self._emit_parameter_query_line("Warning: TX module did not report Telem Ratio as value 8 / 1:2.")
+        except Exception as exc:
+            logger.exception("ELRS parameter query failed")
+            self._emit_parameter_query_line(f"ELRS parameter query failed: {exc}")
+        finally:
+            self._raw_serial_debug_enabled = old_raw_debug
+            try:
+                self.serial.readyRead.connect(self.read_serial_data)
+            except Exception:
+                pass
+            self._parameter_query_active = False
 
     @Slot()
     def close_serial(self):

@@ -58,6 +58,7 @@ namespace sketchLayer
 
         void setLinkUpCallback(void (*callback)());
         void setLinkDownCallback(void (*callback)());
+        uint32_t getTelemetryFramesSent() const;
 
         // Telemetry functions.
         void telemetryWriteAttitude(int16_t roll, int16_t pitch, int16_t yaw);

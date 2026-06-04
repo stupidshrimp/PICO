@@ -212,6 +212,7 @@ struct ControlDebugCounters {
   uint32_t yawServoWrites;
   uint32_t attitudeTelemetryWrites;
   uint32_t gpsTelemetryWrites;
+  uint32_t crsfTelemetryUartFrames;
   uint32_t loopIterations;
   uint32_t crsfServiceCalls;
   uint32_t maxRcAgeUs;
@@ -231,6 +232,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.yawServoWrites = 0;
   controlDebugCounters.attitudeTelemetryWrites = 0;
   controlDebugCounters.gpsTelemetryWrites = 0;
+  controlDebugCounters.crsfTelemetryUartFrames = 0;
   controlDebugCounters.loopIterations = 0;
   controlDebugCounters.crsfServiceCalls = 0;
   controlDebugCounters.maxRcAgeUs = 0;
@@ -238,6 +240,7 @@ void resetControlDebugCounters() {
 
 // Create a CRSFforArduino instance using Serial3.
 CRSFforArduino crsf(&Serial3);
+uint32_t lastCrsfTelemetryFramesSent = 0;
 
 // Store the latest received RC channel data.
 serialReceiverLayer::rcChannels_t latestRcChannels;
@@ -479,6 +482,10 @@ void serviceCrsfLink() {
   uint32_t timingStartUs = micros();
 #endif
   crsf.update();
+  const uint32_t telemetryFramesSent = crsf.getTelemetryFramesSent();
+  controlDebugCounters.crsfTelemetryUartFrames +=
+      static_cast<uint32_t>(telemetryFramesSent - lastCrsfTelemetryFramesSent);
+  lastCrsfTelemetryFramesSent = telemetryFramesSent;
   ++controlDebugCounters.crsfServiceCalls;
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingCrsfUpdate, timingStartUs);
@@ -681,6 +688,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
   Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
   Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
+  Serial.print(" tlm_uart_hz="); Serial.print(controlDebugCounters.crsfTelemetryUartFrames * scale, 1);
   Serial.print(" servo_loop_fresh_hz="); Serial.print(controlDebugCounters.servoLoopFresh * scale, 1);
   Serial.print(" servo_loop_stale_hz="); Serial.print(controlDebugCounters.servoLoopStale * scale, 1);
   Serial.print(" servo_writes_hz=");
@@ -695,6 +703,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.println(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
 
+  lastCrsfTelemetryFramesSent = crsf.getTelemetryFramesSent();
   resetControlDebugCounters();
 #endif
 }

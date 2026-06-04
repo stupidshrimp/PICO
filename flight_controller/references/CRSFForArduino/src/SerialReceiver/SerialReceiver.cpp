@@ -161,6 +161,9 @@ namespace serialReceiverLayer
             crsf = serialReceiver.crsf;
             _linkIsUp = serialReceiver._linkIsUp;
             _lastChannelsPacket = serialReceiver._lastChannelsPacket;
+#if CRSF_TELEMETRY_ENABLED > 0
+            _telemetryFramesSent = serialReceiver._telemetryFramesSent;
+#endif
             _rawDataCallback = serialReceiver._rawDataCallback;
             _linkUpCallback = serialReceiver._linkUpCallback;
             _linkDownCallback = serialReceiver._linkDownCallback;
@@ -548,6 +551,7 @@ namespace serialReceiverLayer
                 if (telemetry->update())
                 {
                     telemetry->sendTelemetryData(_uart);
+                    ++_telemetryFramesSent;
                     telemetryFrameQueued = true;
                 }
 #endif
@@ -585,6 +589,14 @@ namespace serialReceiverLayer
             
         }
         checkLinkDown();
+    }
+#endif
+
+
+#if CRSF_TELEMETRY_ENABLED > 0
+    uint32_t SerialReceiver::getTelemetryFramesSent() const
+    {
+        return _telemetryFramesSent;
     }
 #endif
 

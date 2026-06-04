@@ -109,6 +109,10 @@ class DebugPage:
 
         button_row = QHBoxLayout()
         button_row.addStretch()
+        self.parameter_query_button = QPushButton("Query ELRS Parameters")
+        self.parameter_query_button.setMinimumSize(220, 48)
+        self.parameter_query_button.clicked.connect(self._on_parameter_query_clicked)
+        button_row.addWidget(self.parameter_query_button)
         self.monitor_button = QPushButton("Start Monitoring")
         self.monitor_button.setMinimumSize(200, 48)
         self.monitor_button.clicked.connect(self._on_monitor_clicked)
@@ -159,6 +163,9 @@ class DebugPage:
             telemetry_all,
         )
 
+    def _on_parameter_query_clicked(self) -> None:
+        self._main_window.query_elrs_parameters_from_debug_page()
+
     # ------------------------------------------------------------------
     # Methods invoked from the main window
     # ------------------------------------------------------------------
@@ -202,6 +209,11 @@ class DebugPage:
         self._packet_timestamps.clear()
         self.frequency_label.setText("Packet frequency: --")
         self.append_message("Monitoring stopped.")
+
+    def set_parameter_query_enabled(self, enabled: bool, reason: str = "") -> None:
+        if hasattr(self, "parameter_query_button"):
+            self.parameter_query_button.setEnabled(enabled)
+            self.parameter_query_button.setToolTip(reason)
 
     def append_message(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
