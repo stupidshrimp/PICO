@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
     },
     "throttle": {
         # Auto-throttle target and conservative PID defaults.
-        "target_airspeed_mph": 45.0,
+        "target_airspeed_mph": 20.0,
         "pid_kp": 0.8,
         "pid_ki": 0.04,
         "pid_kd": 0.15,
