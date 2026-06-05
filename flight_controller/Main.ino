@@ -292,6 +292,9 @@ const uint16_t CONTROL_MODE_FLY_BY_WIRE_MIN = CONTROL_MODE_FLY_BY_WIRE_TARGET - 
 const uint16_t SERVO_MIN_US = 1000;
 const uint16_t SERVO_MAX_US = 2000;
 const uint16_t SERVO_CENTER_US = 1500;
+const uint16_t SERVO_HALF_TRAVEL_US = (SERVO_MAX_US - SERVO_MIN_US) / 2;
+const uint16_t SERVO_CALIBRATION_ACTIVE_US = SERVO_CENTER_US + ((SERVO_HALF_TRAVEL_US * 9) / 10);
+const uint16_t SERVO_INDICATOR_HOLD_MS = 350;
 
 // Fly-by-wire tuning constants.
 const float FBW_MAX_ROLL_ANGLE_DEG = 45.0f;
@@ -463,6 +466,49 @@ uint16_t mapRcToUs(uint16_t value) {
 bool shouldUpdateServo(uint16_t newCommandUs, uint16_t lastCommandUs, uint32_t lastWriteUs, uint32_t nowUs) {
   return abs(static_cast<int>(newCommandUs) - static_cast<int>(lastCommandUs)) >= SERVO_UPDATE_HYSTERESIS_US ||
          (uint32_t)(nowUs - lastWriteUs) >= SERVO_FORCE_REFRESH_PERIOD_US;
+}
+
+void writeRollPitchIndicator(uint16_t commandUs) {
+  servoRoll.writeMicroseconds(commandUs);
+  servoPitch.writeMicroseconds(commandUs);
+  lastRollCommandUs = commandUs;
+  lastPitchCommandUs = commandUs;
+  lastRollWriteUs = micros();
+  lastPitchWriteUs = lastRollWriteUs;
+}
+
+void centerAllServos() {
+  writeRollPitchIndicator(SERVO_CENTER_US);
+  servoYaw.writeMicroseconds(SERVO_CENTER_US);
+  lastYawCommandUs = SERVO_CENTER_US;
+  lastYawWriteUs = lastRollWriteUs;
+}
+
+void initializeServoOutputs() {
+  servoRoll.attach(A1);
+  servoPitch.attach(A2);
+  servoYaw.attach(A3);
+
+  centerAllServos();
+}
+
+void haltStartupWithNeutralServos() {
+  centerAllServos();
+  while (1) { ; }
+}
+
+void signalCalibrationActive() {
+  writeRollPitchIndicator(SERVO_CALIBRATION_ACTIVE_US);
+  delay(SERVO_INDICATOR_HOLD_MS);
+  centerAllServos();
+}
+
+void signalCalibrationComplete() {
+  writeRollPitchIndicator(SERVO_MIN_US);
+  delay(SERVO_INDICATOR_HOLD_MS);
+  writeRollPitchIndicator(SERVO_MAX_US);
+  delay(SERVO_INDICATOR_HOLD_MS);
+  writeRollPitchIndicator(SERVO_CENTER_US);
 }
 
 bool rcInputFresh(uint32_t nowUs) {
@@ -786,6 +832,15 @@ void setup() {
     delay(10);
   }
 
+  // ----- Initialize Servo Outputs -----
+  initializeServoOutputs();
+
+  // Briefly move the ailerons and elevator before sensor calibration begins,
+  // then return to neutral before any blocking I2C sensor calls. This gives the
+  // pilot a visible startup-calibration indication without holding the surfaces
+  // near an end stop if a disconnected sensor stalls initialization.
+  signalCalibrationActive();
+
   // ----- Initialize I2C -----
   I2C_Alternate.begin();
   I2C_Alternate.setClock(400000);
@@ -809,7 +864,7 @@ void setup() {
     Serial.println("Check IMU wiring or try cycling power");
     Serial.print("Status: ");
     Serial.println(status);
-    while (1) {}
+    haltStartupWithNeutralServos();
   }
   Serial.println("IMU Calibration complete...");
 
@@ -820,20 +875,6 @@ void setup() {
   snprintf(bufferTxSer, sizeof(bufferTxSer)-1, "Adafruit STM32F405 Feather Express (%s)\r\n",
            (FPU_PRECISION == PRECISION_SINGLE) ? "Float32" : "Double64");
   Serial.print(bufferTxSer);
-
-  // ----- Initialize Servo Outputs -----
-  servoRoll.attach(A1);
-  servoPitch.attach(A2);
-  servoYaw.attach(A3);
-  servoRoll.writeMicroseconds(SERVO_CENTER_US);
-  servoPitch.writeMicroseconds(SERVO_CENTER_US);
-  servoYaw.writeMicroseconds(SERVO_CENTER_US);
-  lastRollCommandUs = SERVO_CENTER_US;
-  lastPitchCommandUs = SERVO_CENTER_US;
-  lastYawCommandUs = SERVO_CENTER_US;
-  lastRollWriteUs = micros();
-  lastPitchWriteUs = lastRollWriteUs;
-  lastYawWriteUs = lastRollWriteUs;
 
   for (size_t i = 0; i < (sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0])); ++i) {
     latestRcChannels.value[i] = RC_INPUT_CENTER;
@@ -854,9 +895,15 @@ void setup() {
   // Use a baud rate of 921600 as required.
   if (!crsf.begin(921600)) {
     Serial.println("CRSF for Arduino initialization failed!");
-    while (1) { ; }
+    haltStartupWithNeutralServos();
   }
   crsf.setRcChannelsCallback(rcChannelsCallback);
+
+  // Sweep the ailerons and elevator through full travel once after all startup
+  // initialization is complete, then return them to neutral for normal servo
+  // operation.
+  signalCalibrationComplete();
+
   resetPeriodicTimers();
   Serial.println("CRSF Telemetry Ready");
 }
