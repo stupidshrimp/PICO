@@ -176,12 +176,14 @@ MS5611 barometer(&I2C_Alternate, 0x77);
 SimpleMPU9250 IMU(I2C_Alternate, 0x68);
 
 // ----- Servo Outputs -----
-// Roll  (channel 1) -> A1
-// Pitch (channel 2) -> A2
-// Yaw   (channel 4) -> A3
+// Roll     (channel 1) -> A1
+// Pitch    (channel 2) -> A2
+// Throttle (channel 3) -> A4
+// Yaw      (channel 4) -> A3
 Servo servoRoll;
 Servo servoPitch;
 Servo servoYaw;
+Servo servoThrottle;
 
 // Cache the last commanded servo pulse widths so we only update hardware
 // when values change. This reduces Servo library ISR load and helps keep
@@ -189,9 +191,11 @@ Servo servoYaw;
 uint16_t lastRollCommandUs = 0;
 uint16_t lastPitchCommandUs = 0;
 uint16_t lastYawCommandUs = 0;
+uint16_t lastThrottleCommandUs = 0;
 uint32_t lastRollWriteUs = 0;
 uint32_t lastPitchWriteUs = 0;
 uint32_t lastYawWriteUs = 0;
+uint32_t lastThrottleWriteUs = 0;
 uint32_t lastControlUpdateUs = 0;
 uint32_t lastRcPacketUs = 0;
 bool rcReceiverFailsafeActive = true;
@@ -210,6 +214,7 @@ struct ControlDebugCounters {
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
+  uint32_t throttleServoWrites;
   uint32_t attitudeTelemetryWrites;
   uint32_t gpsTelemetryWrites;
   uint32_t crsfTelemetryUartFrames;
@@ -245,6 +250,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
+  controlDebugCounters.throttleServoWrites = 0;
   controlDebugCounters.attitudeTelemetryWrites = 0;
   controlDebugCounters.gpsTelemetryWrites = 0;
   controlDebugCounters.crsfTelemetryUartFrames = 0;
@@ -276,12 +282,13 @@ serialReceiverLayer::serialReceiverDiagnostics_t lastCrsfDiagnostics = {};
 serialReceiverLayer::rcChannels_t latestRcChannels;
 
 ControlMode controlMode = CONTROL_MODE_MANUAL;
+ThrottleMode throttleMode = THROTTLE_MODE_MANUAL;
 
 const uint16_t RC_INPUT_MIN = 172;
 const uint16_t RC_INPUT_MAX = 1811;
 const uint16_t RC_INPUT_CENTER = (RC_INPUT_MIN + RC_INPUT_MAX) / 2;
 
-// Mode channel targets from the ground station (channel 5) and a guard band to avoid chatter.
+// Mode channel targets from the ground station (channel 6) and a guard band to avoid chatter.
 const uint16_t CONTROL_MODE_MANUAL_TARGET = 400;
 const uint16_t CONTROL_MODE_FLY_BY_WIRE_TARGET = 1700;
 const uint16_t CONTROL_MODE_SWITCH_DEADBAND = 150;
@@ -289,9 +296,24 @@ const uint16_t CONTROL_MODE_SWITCH_DEADBAND = 150;
 const uint16_t CONTROL_MODE_MANUAL_MAX = CONTROL_MODE_MANUAL_TARGET + CONTROL_MODE_SWITCH_DEADBAND;
 const uint16_t CONTROL_MODE_FLY_BY_WIRE_MIN = CONTROL_MODE_FLY_BY_WIRE_TARGET - CONTROL_MODE_SWITCH_DEADBAND;
 
+// Throttle mode is carried on CH7/AUX3 so CH5/AUX1 can stay dedicated to ELRS
+// arming and CH6/AUX2 can carry Manual/Fly-By-Wire mode.
+const uint16_t THROTTLE_MODE_MANUAL_TARGET = 400;
+const uint16_t THROTTLE_MODE_AUTO_TARGET = 1700;
+const uint16_t THROTTLE_MODE_SWITCH_DEADBAND = 150;
+const uint16_t THROTTLE_MODE_MANUAL_MAX = THROTTLE_MODE_MANUAL_TARGET + THROTTLE_MODE_SWITCH_DEADBAND;
+const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MODE_SWITCH_DEADBAND;
+
+const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
+const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
+const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 100000UL;
+
 const uint16_t SERVO_MIN_US = 1000;
 const uint16_t SERVO_MAX_US = 2000;
 const uint16_t SERVO_CENTER_US = 1500;
+const uint16_t THROTTLE_MIN_US = 1000;
+const uint16_t THROTTLE_MAX_US = 2000;
+const uint16_t THROTTLE_CUT_US = THROTTLE_MIN_US;
 const uint16_t SERVO_HALF_TRAVEL_US = (SERVO_MAX_US - SERVO_MIN_US) / 2;
 const uint16_t SERVO_CALIBRATION_ACTIVE_US = SERVO_CENTER_US + ((SERVO_HALF_TRAVEL_US * 9) / 10);
 const uint16_t SERVO_INDICATOR_HOLD_MS = 350;
@@ -312,6 +334,15 @@ const float FBW_ROLL_KD = 0.9f;
 const float FBW_PITCH_KP = 6.0f;
 const float FBW_PITCH_KI = 0.30f;
 const float FBW_PITCH_KD = 1.1f;
+
+// Airspeed-hold throttle PID. Output is interpreted as percent-per-second and
+// integrated into the current auto-throttle command at the control-loop rate.
+const float AUTO_THROTTLE_KP = 0.8f;
+const float AUTO_THROTTLE_KI = 0.04f;
+const float AUTO_THROTTLE_KD = 0.15f;
+const float AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S = 100.0f;
+const float AUTO_THROTTLE_INTEGRAL_LIMIT = 100.0f;
+const float AUTO_THROTTLE_ERROR_DEADBAND_MPH = 0.2f;
 
 struct LowPassFilter {
   float cutoffHz;
@@ -426,6 +457,18 @@ PIDController pitchPid(FBW_PITCH_KP, FBW_PITCH_KI, FBW_PITCH_KD,
                        -FBW_PID_INTEGRAL_LIMIT, FBW_PID_INTEGRAL_LIMIT,
                        FBW_PID_ERROR_DEADBAND_DEG);
 
+PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
+                          -AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
+                          AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
+                          -AUTO_THROTTLE_INTEGRAL_LIMIT,
+                          AUTO_THROTTLE_INTEGRAL_LIMIT,
+                          AUTO_THROTTLE_ERROR_DEADBAND_MPH);
+
+float autoThrottlePercent = 0.0f;
+float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
+uint32_t lastAirspeedUpdateUs = 0;
+bool latestAirspeedValid = false;
+
 LowPassFilter rollAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>(SS_DT));
 LowPassFilter pitchAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>(SS_DT));
 
@@ -462,6 +505,23 @@ uint16_t mapRcToUs(uint16_t value) {
                     (RC_INPUT_MAX - RC_INPUT_MIN) + outMin);
 }
 
+float mapRcToPercent(uint16_t value) {
+  if (value < RC_INPUT_MIN) value = RC_INPUT_MIN;
+  if (value > RC_INPUT_MAX) value = RC_INPUT_MAX;
+  return (static_cast<float>(value - RC_INPUT_MIN) * 100.0f) /
+         static_cast<float>(RC_INPUT_MAX - RC_INPUT_MIN);
+}
+
+uint16_t mapPercentToThrottleUs(float percent) {
+  percent = constrain(percent, 0.0f, 100.0f);
+  return static_cast<uint16_t>(roundf(
+      THROTTLE_MIN_US + (percent / 100.0f) * (THROTTLE_MAX_US - THROTTLE_MIN_US)));
+}
+
+float mapRcToAutoThrottleTargetMph(uint16_t value) {
+  return (mapRcToPercent(value) / 100.0f) * AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH;
+}
+
 
 bool shouldUpdateServo(uint16_t newCommandUs, uint16_t lastCommandUs, uint32_t lastWriteUs, uint32_t nowUs) {
   return abs(static_cast<int>(newCommandUs) - static_cast<int>(lastCommandUs)) >= SERVO_UPDATE_HYSTERESIS_US ||
@@ -480,14 +540,18 @@ void writeRollPitchIndicator(uint16_t commandUs) {
 void centerAllServos() {
   writeRollPitchIndicator(SERVO_CENTER_US);
   servoYaw.writeMicroseconds(SERVO_CENTER_US);
+  servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
   lastYawCommandUs = SERVO_CENTER_US;
+  lastThrottleCommandUs = THROTTLE_CUT_US;
   lastYawWriteUs = lastRollWriteUs;
+  lastThrottleWriteUs = lastRollWriteUs;
 }
 
 void initializeServoOutputs() {
   servoRoll.attach(A1);
   servoPitch.attach(A2);
   servoYaw.attach(A3);
+  servoThrottle.attach(A4);
 
   centerAllServos();
 }
@@ -516,6 +580,12 @@ bool rcInputFresh(uint32_t nowUs) {
          (uint32_t)(nowUs - lastRcPacketUs) <= RC_FAILSAFE_TIMEOUT_US;
 }
 
+bool airspeedInputFresh(uint32_t nowUs) {
+  return latestAirspeedValid &&
+         lastAirspeedUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
+}
+
 float mapRcToNormalized(uint16_t value) {
   const float inMin = static_cast<float>(RC_INPUT_MIN);
   const float inMax = static_cast<float>(RC_INPUT_MAX);
@@ -539,6 +609,16 @@ void setControlMode(ControlMode newMode) {
   }
 }
 
+void setThrottleMode(ThrottleMode newMode) {
+  if (throttleMode != newMode) {
+    throttleMode = newMode;
+    throttlePid.reset();
+    if (newMode == THROTTLE_MODE_MANUAL) {
+      autoThrottlePercent = 0.0f;
+    }
+  }
+}
+
 void updateControlMode() {
   // Manual/Fly-By-Wire mode is carried on CH6/AUX2 so CH5/AUX1 can remain
   // dedicated to the ELRS arm state.  CRSF channel arrays are zero-indexed.
@@ -552,6 +632,22 @@ void updateControlMode() {
     setControlMode(CONTROL_MODE_MANUAL);
   } else if (modeValue >= CONTROL_MODE_FLY_BY_WIRE_MIN) {
     setControlMode(CONTROL_MODE_FLY_BY_WIRE);
+  }
+}
+
+void updateThrottleMode() {
+  // Auto throttle mode is carried on CH7/AUX3.  CH5/AUX1 remains the ELRS arm
+  // state and CH6/AUX2 remains Manual/Fly-By-Wire mode.
+  const size_t throttleModeChannelIndex = 6;
+  const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if (throttleModeChannelIndex >= channelCount) {
+    return;
+  }
+  uint16_t modeValue = latestRcChannels.value[throttleModeChannelIndex];
+  if (modeValue <= THROTTLE_MODE_MANUAL_MAX) {
+    setThrottleMode(THROTTLE_MODE_MANUAL);
+  } else if (modeValue >= THROTTLE_MODE_AUTO_MIN) {
+    setThrottleMode(THROTTLE_MODE_AUTO);
   }
 }
 
@@ -595,6 +691,7 @@ void serviceCrsfLink() {
   recordTiming(timingCrsfUpdate, timingStartUs);
 #endif
   updateControlMode();
+  updateThrottleMode();
 }
 
 // ----- GPS -----
@@ -743,9 +840,13 @@ void updateAirspeedCache() {
   if (isnan(airspeedMph)) {
     // Serial.println("Airspeed sensor error");
     airspeedMph = 0.0f;
+    latestAirspeedValid = false;
+  } else {
+    latestAirspeedValid = true;
   }
   latestAirspeedMph = airspeedMph;
   airSpeedCms = airspeedMph * 44.704f;   // mph to cm/s
+  lastAirspeedUpdateUs = micros();
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingAirspeed, timingStartUs);
 #endif
@@ -809,14 +910,18 @@ void maybePrintControlDebugStats() {
   Serial.print(" servo_writes_hz=");
   Serial.print(controlDebugCounters.rollServoWrites * scale, 1); Serial.print('/');
   Serial.print(controlDebugCounters.pitchServoWrites * scale, 1); Serial.print('/');
-  Serial.print(controlDebugCounters.yawServoWrites * scale, 1);
+  Serial.print(controlDebugCounters.yawServoWrites * scale, 1); Serial.print('/');
+  Serial.print(controlDebugCounters.throttleServoWrites * scale, 1);
   Serial.print(" crsf_service_hz="); Serial.print(controlDebugCounters.crsfServiceCalls * scale, 1);
   Serial.print(" loop_hz="); Serial.print(controlDebugCounters.loopIterations * scale, 1);
   Serial.print(" rc_age_ms="); Serial.print(currentRcAgeUs / 1000.0f, 1);
   Serial.print(" rc_max_age_ms="); Serial.print(maxRcAgeUs / 1000.0f, 1);
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
-  Serial.print(" mode="); Serial.println(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+  Serial.print(" mode="); Serial.print(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+  Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
+  Serial.print(" throttle_target_mph="); Serial.print(latestAutoThrottleTargetMph, 1);
+  Serial.print(" auto_throttle_pct="); Serial.println(autoThrottlePercent, 1);
 
   lastCrsfDiagnostics = crsf.getDiagnostics();
   resetControlDebugCounters();
@@ -1050,22 +1155,27 @@ void loop() {
       if (!rcFailsafeActive) {
         rollPid.reset();
         pitchPid.reset();
+        throttlePid.reset();
         rollAngleFilter.reset();
         pitchAngleFilter.reset();
       }
+      autoThrottlePercent = 0.0f;
       rcFailsafeActive = true;
       setControlMode(CONTROL_MODE_MANUAL);
+      setThrottleMode(THROTTLE_MODE_MANUAL);
     } else {
       rcFailsafeActive = false;
     }
 
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
+    uint16_t rcThrottleRaw = (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_MIN;
     uint16_t rcYawRaw = (channelCount > 3) ? latestRcChannels.value[3] : RC_INPUT_CENTER;
 
     uint16_t rollCommandUs = SERVO_CENTER_US;
     uint16_t pitchCommandUs = SERVO_CENTER_US;
     uint16_t yawCommandUs = rcFresh ? mapRcToUs(rcYawRaw) : SERVO_CENTER_US;
+    uint16_t throttleCommandUs = THROTTLE_CUT_US;
 
     if (!rcFresh) {
       rollCommandUs = SERVO_CENTER_US;
@@ -1091,6 +1201,25 @@ void loop() {
       pitchCommandUs = mapRcToUs(rcPitchRaw);
     }
 
+    if (!rcFresh) {
+      throttleCommandUs = THROTTLE_CUT_US;
+    } else if (throttleMode == THROTTLE_MODE_AUTO) {
+      latestAutoThrottleTargetMph = mapRcToAutoThrottleTargetMph(rcThrottleRaw);
+      if (!airspeedInputFresh(servoUpdateUs)) {
+        throttlePid.reset();
+        autoThrottlePercent = 0.0f;
+      } else {
+        float throttleAdjustment = throttlePid.update(
+            latestAutoThrottleTargetMph, latestAirspeedMph, controlDt) * controlDt;
+        autoThrottlePercent = constrain(autoThrottlePercent + throttleAdjustment, 0.0f, 100.0f);
+      }
+      throttleCommandUs = mapPercentToThrottleUs(autoThrottlePercent);
+    } else {
+      throttlePid.reset();
+      autoThrottlePercent = mapRcToPercent(rcThrottleRaw);
+      throttleCommandUs = mapPercentToThrottleUs(autoThrottlePercent);
+    }
+
     if (shouldUpdateServo(rollCommandUs, lastRollCommandUs, lastRollWriteUs, servoUpdateUs)) {
       servoRoll.writeMicroseconds(rollCommandUs);
       lastRollCommandUs = rollCommandUs;
@@ -1110,6 +1239,13 @@ void loop() {
       lastYawCommandUs = yawCommandUs;
       lastYawWriteUs = servoUpdateUs;
       ++controlDebugCounters.yawServoWrites;
+    }
+
+    if (shouldUpdateServo(throttleCommandUs, lastThrottleCommandUs, lastThrottleWriteUs, servoUpdateUs)) {
+      servoThrottle.writeMicroseconds(throttleCommandUs);
+      lastThrottleCommandUs = throttleCommandUs;
+      lastThrottleWriteUs = servoUpdateUs;
+      ++controlDebugCounters.throttleServoWrites;
     }
 
     // Give CRSF a chance to run immediately after any servo updates in case
