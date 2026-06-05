@@ -2,6 +2,43 @@ import json
 import os
 from copy import deepcopy
 
+ALLOWED_ATTITUDE_PACKET_RATES_HZ = (100, 250, 500)
+DEFAULT_ATTITUDE_PACKET_RATE_HZ = 250
+
+
+def packet_interval_ms_from_rate(rate_hz: int) -> int:
+    """Return the CRSF RC packet interval for a supported attitude rate."""
+
+    try:
+        rate = int(rate_hz)
+    except (TypeError, ValueError):
+        rate = DEFAULT_ATTITUDE_PACKET_RATE_HZ
+    if rate not in ALLOWED_ATTITUDE_PACKET_RATES_HZ:
+        rate = DEFAULT_ATTITUDE_PACKET_RATE_HZ
+    return max(1, int(round(1000 / rate)))
+
+
+def packet_rate_hz_from_interval(interval_ms: int) -> int:
+    """Return the supported attitude packet rate nearest to an interval."""
+
+    try:
+        interval = max(1, int(interval_ms))
+    except (TypeError, ValueError):
+        return DEFAULT_ATTITUDE_PACKET_RATE_HZ
+
+    actual_rate = 1000 / interval
+    return min(
+        ALLOWED_ATTITUDE_PACKET_RATES_HZ,
+        key=lambda supported_rate: abs(supported_rate - actual_rate),
+    )
+
+
+def normalise_packet_interval_ms(interval_ms: int) -> int:
+    """Clamp a configured CRSF interval to one of the supported rates."""
+
+    return packet_interval_ms_from_rate(packet_rate_hz_from_interval(interval_ms))
+
+
 DEFAULT_CONFIG = {
     "joystick": {
         "port": "COM14",
@@ -14,8 +51,8 @@ DEFAULT_CONFIG = {
     "crsf": {
         "port": "COM3",
         "baudrate": 921600,
-        # Worker-thread RC frame interval in ms (4 ms = 250 Hz)
-        "packet_interval": 4,
+        # Worker-thread RC frame interval in ms (10/4/2 ms = 100/250/500 Hz)
+        "packet_interval": packet_interval_ms_from_rate(DEFAULT_ATTITUDE_PACKET_RATE_HZ),
         # GUI/control-input polling interval; the worker repeats the latest
         # channel state at packet_interval so UI load cannot lower RC frame rate.
         "channel_update_interval": 8,
@@ -98,6 +135,11 @@ def load_config(path: str = "config.json"):
                     config[section] = values
         except Exception as exc:
             print(f"Failed to read config file '{path}': {exc}")
+
+    crsf_config = config.setdefault("crsf", {})
+    crsf_config["packet_interval"] = normalise_packet_interval_ms(
+        crsf_config.get("packet_interval")
+    )
 
     # Environment variable overrides
     joystick_port = os.getenv("JOYSTICK_PORT")

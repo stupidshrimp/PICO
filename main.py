@@ -110,7 +110,13 @@ from pico_modules.altitude_osd import AltitudeOSD
 from pico_modules.airspeed_osd import AirspeedOSD
 from pico_modules.compass_osd import CompassOSD
 
-from config import load_config, save_config
+from config import (
+    ALLOWED_ATTITUDE_PACKET_RATES_HZ,
+    packet_interval_ms_from_rate,
+    packet_rate_hz_from_interval,
+    load_config,
+    save_config,
+)
 
 from modules.data_page import DataPage
 from modules.debug_page import DebugPage
@@ -2840,7 +2846,7 @@ class MainWindow(QMainWindow):
         )
         rf_layout.addWidget(
             QLabel(
-                "ELRS firmware set to 250 Hz packet rate with telemetry reporting rate of 75 Hz (13 ms)."
+                "Select the attitude/RC packet rate to match the ELRS link configuration."
             )
         )
         self.pico_rate_label = QLabel()
@@ -2854,13 +2860,15 @@ class MainWindow(QMainWindow):
         rf_layout.addLayout(rf_port_row)
 
         rate_row = QHBoxLayout()
-        rate_row.addWidget(QLabel("Packet Interval (ms)"))
-        self.packet_interval_edit = QLineEdit()
-        self.packet_interval_edit.setText(
-            str(self.crsf_cfg.get("packet_interval", 4))
+        rate_row.addWidget(QLabel("Attitude/RC Packet Rate"))
+        self.packet_rate_combo = QComboBox()
+        for rate_hz in ALLOWED_ATTITUDE_PACKET_RATES_HZ:
+            self.packet_rate_combo.addItem(f"{rate_hz} Hz", rate_hz)
+        configured_rate = packet_rate_hz_from_interval(
+            self.crsf_cfg.get("packet_interval", 4)
         )
-        self.packet_interval_edit.setFixedWidth(80)
-        rate_row.addWidget(self.packet_interval_edit)
+        self.packet_rate_combo.setCurrentText(f"{configured_rate} Hz")
+        rate_row.addWidget(self.packet_rate_combo)
         rf_layout.addLayout(rate_row)
         add_separator()
 
@@ -3151,7 +3159,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
         self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
-        self.packet_interval_edit.editingFinished.connect(self.on_packet_interval_changed)
+        self.packet_rate_combo.currentIndexChanged.connect(self.on_packet_rate_changed)
         self.deadzone_slider.valueChanged.connect(self.on_deadzone_changed)
         self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
         self.yaw_sensitivity_slider.valueChanged.connect(
@@ -3789,12 +3797,9 @@ class MainWindow(QMainWindow):
         self._update_link_diagnostics_button_state()
         save_config(self.config)
 
-    def on_packet_interval_changed(self):
-        try:
-            interval = int(self.packet_interval_edit.text())
-        except ValueError:
-            interval = self.crsf_cfg.get("packet_interval", 4)
-            self.packet_interval_edit.setText(str(interval))
+    def on_packet_rate_changed(self, *_):
+        rate_hz = self.packet_rate_combo.currentData()
+        interval = packet_interval_ms_from_rate(rate_hz)
         self.crsf_cfg["packet_interval"] = interval
         if self.crsf_processor:
             self.crsf_processor.packet_interval_update.emit(interval)
@@ -3803,10 +3808,11 @@ class MainWindow(QMainWindow):
 
     def update_pico_rate_label(self):
         interval = self.crsf_cfg.get("packet_interval", 4)
-        freq = 0
-        if interval:
-            freq = 1000 / interval
-        self.pico_rate_label.setText(f"PICO writing packets at {freq:.0f} Hz.")
+        rate_hz = packet_rate_hz_from_interval(interval)
+        actual_freq = 1000 / packet_interval_ms_from_rate(rate_hz)
+        self.pico_rate_label.setText(
+            f"PICO writing RC packets at {actual_freq:.0f} Hz."
+        )
 
     def on_deadzone_changed(self, value: int):
         self.joystick_cfg["deadzone"] = value
