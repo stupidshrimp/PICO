@@ -256,6 +256,7 @@ class MainWindow(QMainWindow):
             "gps": deque(),
             "total": deque(),
         }
+        self._last_telemetry_packet_times = {}
         self._last_attitude_packet_timestamp = None
         self._last_control_update_debug_timestamp = None
 
@@ -2026,6 +2027,7 @@ class MainWindow(QMainWindow):
         if self._telemetry_debug_logging and packet_type != "link_stats":
             logging.debug("Telemetry %s: %s", packet_type, values)
         self.last_telemetry_time = time.monotonic()
+        self._last_telemetry_packet_times[packet_type] = self.last_telemetry_time
         self._update_sortie_button_availability()
         now = self.last_telemetry_time
         if packet_type == "attitude":
@@ -2466,6 +2468,38 @@ class MainWindow(QMainWindow):
             self._on_transmission_button_released
         )
 
+        self.preflight_verification_button = QPushButton("Pre flight verification")
+        self.preflight_verification_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preflight_verification_button.setMinimumHeight(44)
+        self.preflight_verification_button.setSizePolicy(button_policy)
+        self.preflight_verification_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: rgb(30, 136, 229);"
+            "color: white;"
+            "font-weight: bold;"
+            "border-radius: 8px;"
+            "padding: 8px 16px;"
+            "}"
+            "QPushButton:hover {background-color: rgb(66, 165, 245);}"
+            "QPushButton:pressed {background-color: rgb(21, 101, 192);}"
+            "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
+        )
+        layout.addWidget(self.preflight_verification_button)
+
+        self.preflight_status_label = QLabel(
+            "Pre-flight verification has not been run yet."
+        )
+        self.preflight_status_label.setWordWrap(True)
+        self.preflight_status_label.setStyleSheet(
+            "color: rgb(220, 220, 220); padding: 4px 2px;"
+        )
+        layout.addWidget(self.preflight_status_label)
+        layout.addSpacing(12)
+
+        self.preflight_verification_button.clicked.connect(
+            self._show_preflight_verification
+        )
+
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
         def add_section(title, *, show_status=True):
@@ -2778,6 +2812,306 @@ class MainWindow(QMainWindow):
         self.update_port_lists()
 
         self.reinitialize_ports_button.clicked.connect(self.reinitialize_serial_ports)
+
+    def _packet_rate(self, key: str) -> float:
+        """Return the current one-second packet rate for a telemetry stream."""
+
+        queue = self._packet_times.get(key)
+        if not queue:
+            return 0.0
+        now = time.monotonic()
+        self._prune_packet_times(queue, now)
+        return len(queue) / self._rate_window_seconds
+
+    def _telemetry_packet_age(self, packet_type: str) -> Optional[float]:
+        """Return seconds since the last packet of ``packet_type`` was received."""
+
+        timestamp = self._last_telemetry_packet_times.get(packet_type)
+        if timestamp is None:
+            return None
+        return time.monotonic() - timestamp
+
+    def _is_packet_fresh(self, packet_type: str, timeout: float = 2.0) -> bool:
+        """Return whether the named telemetry packet arrived recently."""
+
+        age = self._telemetry_packet_age(packet_type)
+        return age is not None and age <= timeout
+
+    def _format_preflight_age(self, packet_type: str) -> str:
+        """Format packet age for display in the pre-flight report."""
+
+        age = self._telemetry_packet_age(packet_type)
+        if age is None:
+            return "never received"
+        if age < 1.0:
+            return "received just now"
+        return f"received {age:.1f}s ago"
+
+    def _add_preflight_check(
+        self,
+        rows: list[tuple[str, str]],
+        severity: str,
+        message: str,
+    ) -> None:
+        """Append one formatted pre-flight check result."""
+
+        rows.append((severity, message))
+
+    def _run_preflight_verification(self) -> tuple[str, list[tuple[str, str]]]:
+        """Evaluate telemetry, signal, port, and local safety readiness."""
+
+        rows: list[tuple[str, str]] = []
+
+        available_ports = {p.device for p in list_ports.comports()}
+        crsf_port = self.crsf_cfg.get("port")
+        joystick_port = self.joystick_cfg.get("port")
+
+        crsf_ready = (
+            self.crsf_processor is not None
+            and bool(crsf_port)
+            and str(crsf_port).lower() != "not connected"
+            and crsf_port in available_ports
+        )
+        self._add_preflight_check(
+            rows,
+            "pass" if crsf_ready else "fail",
+            (
+                f"ELRS/CRSF radio port {crsf_port} is connected."
+                if crsf_ready
+                else "ELRS/CRSF radio port is not connected or is unavailable."
+            ),
+        )
+
+        joystick_ready = (
+            self.joystick is not None
+            and bool(joystick_port)
+            and str(joystick_port).lower() != "not connected"
+            and joystick_port in available_ports
+        )
+        self._add_preflight_check(
+            rows,
+            "pass" if joystick_ready else "warn",
+            (
+                f"Control system port {joystick_port} is connected."
+                if joystick_ready
+                else "Control system port is not connected; verify keyboard fallback or reconnect joystick."
+            ),
+        )
+
+        self._add_preflight_check(
+            rows,
+            "pass" if self.transmission_active else "fail",
+            (
+                "CRSF channel transmission is active."
+                if self.transmission_active
+                else "CRSF channel transmission is terminated."
+            ),
+        )
+
+        throttle_safe = float(getattr(self, "throttle_percent", 0)) <= 0.1
+        self._add_preflight_check(
+            rows,
+            "pass" if throttle_safe else "fail",
+            (
+                "Throttle command is at idle."
+                if throttle_safe
+                else f"Throttle command is {self.throttle_percent:.0f}%; cut throttle before pre-flight."
+            ),
+        )
+
+        link_fresh = self._is_packet_fresh("link_stats")
+        link_quality = self.telemetry_state.get("link_quality")
+        downlink_quality = self.telemetry_state.get("downlink_quality")
+        snr = self.telemetry_state.get("snr")
+        downlink_snr = self.telemetry_state.get("downlink_snr")
+        link_good = (
+            link_fresh
+            and link_quality is not None
+            and downlink_quality is not None
+            and snr is not None
+            and downlink_snr is not None
+            and link_quality >= 60
+            and downlink_quality >= 60
+            and snr >= 5
+            and downlink_snr >= 5
+        )
+        self._add_preflight_check(
+            rows,
+            "pass" if link_good else "fail",
+            (
+                f"Signal is good: uplink LQ {link_quality}%, downlink LQ {downlink_quality}%, SNR {snr}/{downlink_snr} dB."
+                if link_good
+                else "Signal check failed: link statistics are stale/missing or below good thresholds (LQ >= 60%, SNR >= 5 dB)."
+            ),
+        )
+
+        telemetry_streams = (
+            ("attitude", "Attitude telemetry"),
+            ("gps", "GPS telemetry"),
+            ("battery", "Battery telemetry"),
+        )
+        for packet_type, label in telemetry_streams:
+            fresh = self._is_packet_fresh(packet_type)
+            rate = self._packet_rate(packet_type) if packet_type in self._packet_times else 0.0
+            self._add_preflight_check(
+                rows,
+                "pass" if fresh else "fail",
+                (
+                    f"{label} is fresh ({self._format_preflight_age(packet_type)}, {rate:.1f} Hz)."
+                    if fresh
+                    else f"{label} is missing or stale ({self._format_preflight_age(packet_type)})."
+                ),
+            )
+
+        telemetry_values = self.telemetry_state
+        attitude_sane = all(
+            value is not None and -180 <= float(value) <= 180
+            for value in (
+                telemetry_values.get("pitch"),
+                telemetry_values.get("roll"),
+                telemetry_values.get("yaw"),
+            )
+        )
+        self._add_preflight_check(
+            rows,
+            "pass" if attitude_sane else "fail",
+            (
+                "Attitude values are within expected ranges."
+                if attitude_sane
+                else "Attitude values are missing or outside expected ranges."
+            ),
+        )
+
+        gps_values_present = all(
+            telemetry_values.get(field) is not None
+            for field in ("latitude", "longitude", "altitude_ft", "airspeed_mph", "satellites")
+        )
+        gps_sane = False
+        if gps_values_present:
+            try:
+                lat = float(telemetry_values.get("latitude"))
+                lon = float(telemetry_values.get("longitude"))
+                altitude = float(telemetry_values.get("altitude_ft"))
+                airspeed = float(telemetry_values.get("airspeed_mph"))
+                satellites = int(telemetry_values.get("satellites"))
+                gps_sane = (
+                    -90 <= lat <= 90
+                    and -180 <= lon <= 180
+                    and -2000 <= altitude <= 120000
+                    and 0 <= airspeed <= 500
+                    and satellites >= 4
+                )
+            except (TypeError, ValueError):
+                gps_sane = False
+        self._add_preflight_check(
+            rows,
+            "pass" if gps_sane else "warn",
+            (
+                f"GPS values are sane with {telemetry_values.get('satellites')} satellites."
+                if gps_sane
+                else "GPS values are missing, out of range, or have fewer than 4 satellites."
+            ),
+        )
+
+        battery_voltage = telemetry_values.get("battery_voltage")
+        battery_percent = telemetry_values.get("battery_percent")
+        battery_good = False
+        if battery_voltage is not None:
+            try:
+                voltage = float(battery_voltage)
+                percent = float(battery_percent) if battery_percent is not None else (
+                    voltage / self._battery_full_voltage * 100.0
+                    if self._battery_full_voltage else 0.0
+                )
+                battery_good = voltage > 0 and percent >= 25.0
+            except (TypeError, ValueError):
+                battery_good = False
+        self._add_preflight_check(
+            rows,
+            "pass" if battery_good else "warn",
+            (
+                f"Battery telemetry is usable: {float(battery_voltage):.2f} V, {float(battery_percent):.0f}% estimated."
+                if battery_good and battery_percent is not None
+                else (
+                    f"Battery telemetry is usable: {float(battery_voltage):.2f} V."
+                    if battery_good
+                    else "Battery telemetry is missing or below 25% estimated charge."
+                )
+            ),
+        )
+
+        video_connected = False
+        if hasattr(self, "video_feed") and getattr(self.video_feed, "label", None) is not None:
+            pixmap = self.video_feed.label.pixmap()
+            video_connected = pixmap is not None and not pixmap.isNull()
+        self._add_preflight_check(
+            rows,
+            "pass" if video_connected else "warn",
+            (
+                "VTX video has produced a frame."
+                if video_connected
+                else "VTX video has not produced a frame yet."
+            ),
+        )
+
+        if any(severity == "fail" for severity, _ in rows):
+            overall = "fail"
+        elif any(severity == "warn" for severity, _ in rows):
+            overall = "warn"
+        else:
+            overall = "pass"
+
+        return overall, rows
+
+    def _preflight_report_html(
+        self, overall: str, rows: list[tuple[str, str]]
+    ) -> str:
+        """Build rich-text pre-flight report content."""
+
+        icons = {"pass": "✅", "warn": "⚠️", "fail": "❌"}
+        summary = {
+            "pass": "All pre-flight checks passed.",
+            "warn": "Pre-flight checks passed with warnings.",
+            "fail": "Pre-flight verification failed.",
+        }[overall]
+        items = "".join(
+            f"<li>{icons.get(severity, '•')} {message}</li>"
+            for severity, message in rows
+        )
+        return f"<b>{summary}</b><ul>{items}</ul>"
+
+    def _show_preflight_verification(self) -> None:
+        """Run the pre-flight verification and display the result."""
+
+        overall, rows = self._run_preflight_verification()
+        report = self._preflight_report_html(overall, rows)
+
+        if hasattr(self, "preflight_status_label"):
+            color = {
+                "pass": "rgb(76, 175, 80)",
+                "warn": "rgb(255, 193, 7)",
+                "fail": "rgb(244, 67, 54)",
+            }[overall]
+            plain_summary = {
+                "pass": "Pre-flight verification passed.",
+                "warn": "Pre-flight verification passed with warnings.",
+                "fail": "Pre-flight verification failed.",
+            }[overall]
+            self.preflight_status_label.setText(plain_summary)
+            self.preflight_status_label.setStyleSheet(
+                f"color: {color}; font-weight: bold; padding: 4px 2px;"
+            )
+
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Pre-flight verification")
+        message_box.setTextFormat(Qt.TextFormat.RichText)
+        message_box.setText(report)
+        message_box.setIcon(
+            QMessageBox.Icon.Information
+            if overall == "pass"
+            else QMessageBox.Icon.Warning
+        )
+        message_box.exec()
 
     def _apply_transmission_button_style(self, state: str) -> None:
         """Apply the configured stylesheet variant for the transmission button."""
