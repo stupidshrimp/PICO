@@ -215,6 +215,15 @@ class MainWindow(QMainWindow):
         self.throttle_mode_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         self.throttle_mode_shortcut.activated.connect(self.toggle_throttle_mode)
 
+        # Airborne detection state. The detector uses fresh GPS telemetry,
+        # pitot airspeed, and barometric altitude above a grounded baseline to
+        # debounce transitions between grounded and airborne.
+        self.airborne_state = "grounded"
+        self.airborne_baseline_altitude_ft = None
+        self._airborne_takeoff_start_time = None
+        self._airborne_landing_start_time = None
+        self._last_airborne_indicator_state = None
+
         # Sortie recording state and controls
         self._sortie_fields = [
             "pitch",
@@ -289,6 +298,7 @@ class MainWindow(QMainWindow):
         self._setup_gps_map()
 
         self._setup_command_sidebar()
+        self._setup_airborne_indicator()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
@@ -423,6 +433,14 @@ class MainWindow(QMainWindow):
         self.warning_cfg.setdefault("stall_alarm_enabled", True)
         self.warning_cfg.setdefault("altitude_alarm_enabled", True)
         self.warning_cfg.setdefault("bank_angle_alarm_enabled", True)
+        self.airborne_cfg = self.config.setdefault("airborne", {})
+        self.airborne_cfg.setdefault("takeoff_airspeed_multiplier", 1.2)
+        self.airborne_cfg.setdefault("takeoff_altitude_ft", 15.0)
+        self.airborne_cfg.setdefault("landed_airspeed_mph", 7.0)
+        self.airborne_cfg.setdefault("landed_altitude_ft", 5.0)
+        self.airborne_cfg.setdefault("takeoff_hold_s", 2.0)
+        self.airborne_cfg.setdefault("landing_hold_s", 5.0)
+        self.airborne_cfg.setdefault("gps_fresh_timeout_s", 2.0)
 
         self.osd_cfg = self.config.setdefault("osd", {})
         smoothing_percent = int(self.osd_cfg.get("attitude_smoothing", 20))
@@ -939,6 +957,44 @@ class MainWindow(QMainWindow):
 
         column_layout.addWidget(battery_container)
 
+        flight_status_container = QFrame(frame)
+        flight_status_container.setObjectName("flightStatusContainer")
+        flight_status_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        flight_status_container.setStyleSheet(panel_style)
+
+        flight_status_layout = QHBoxLayout(flight_status_container)
+        flight_status_layout.setContentsMargins(12, 12, 12, 12)
+        flight_status_layout.setSpacing(12)
+
+        flight_status_text_layout = QVBoxLayout()
+        flight_status_text_layout.setContentsMargins(0, 0, 0, 0)
+        flight_status_text_layout.setSpacing(2)
+
+        flight_status_title = QLabel("Flight Status", flight_status_container)
+        flight_status_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        flight_status_title.setFont(signal_title.font())
+        flight_status_title.setStyleSheet("color: white;")
+        flight_status_text_layout.addWidget(flight_status_title)
+
+        self.airborne_status_label = QLabel("GROUNDED", flight_status_container)
+        self.airborne_status_label.setObjectName("airborneStatusLabel")
+        self.airborne_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.airborne_status_label.setMinimumHeight(28)
+        flight_status_text_layout.addWidget(self.airborne_status_label)
+
+        flight_status_layout.addLayout(flight_status_text_layout, 1)
+
+        self.airborne_status_dot = QLabel(flight_status_container)
+        self.airborne_status_dot.setObjectName("airborneStatusDot")
+        self.airborne_status_dot.setFixedSize(14, 14)
+        flight_status_layout.addWidget(
+            self.airborne_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+
+        column_layout.addWidget(flight_status_container)
+
         autopilot_container = QFrame(frame)
         autopilot_container.setObjectName("autopilotContainer")
         autopilot_container.setSizePolicy(
@@ -973,6 +1029,55 @@ class MainWindow(QMainWindow):
             autopilot_layout.addWidget(label)
 
         column_layout.addWidget(autopilot_container)
+
+    def _setup_airborne_indicator(self) -> None:
+        """Initialise the command-page grounded/airborne indicator."""
+
+        self._last_airborne_indicator_state = None
+        self._update_airborne_indicator()
+
+    def _update_airborne_indicator(self) -> None:
+        """Render a minimal flight-state pill in the command sidebar."""
+
+        label = getattr(self, "airborne_status_label", None)
+        dot = getattr(self, "airborne_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "airborne" if self.airborne_state == "airborne" else "grounded"
+        if state == self._last_airborne_indicator_state:
+            return
+
+        if state == "airborne":
+            text = "AIRBORNE"
+            accent = "#00e5ff"
+            background = "rgba(0, 229, 255, 32)"
+            border = "rgba(0, 229, 255, 155)"
+            dot_shadow = "rgba(0, 229, 255, 95)"
+        else:
+            text = "GROUNDED"
+            accent = "#9aa4b2"
+            background = "rgba(154, 164, 178, 24)"
+            border = "rgba(154, 164, 178, 105)"
+            dot_shadow = "rgba(154, 164, 178, 70)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_airborne_indicator_state = state
 
     def _setup_sortie_section(self) -> None:
         """Create the Sortie controls within the settings sidebar."""
@@ -1290,8 +1395,10 @@ class MainWindow(QMainWindow):
 
         self._update_sortie_button_availability()
         self._update_rate_labels()
+        now = time.monotonic()
+        self._update_airborne_state(now)
         # Check for any telemetry-based warnings
-        self.check_warnings()
+        self.check_warnings(now)
 
         # ------------------------------------------------------------------
         # Joystick values update the label texts
@@ -1421,6 +1528,116 @@ class MainWindow(QMainWindow):
         return (now - self.last_airspeed_packet_time) <= max(
             0.0, self.auto_throttle_airspeed_stale_timeout
         )
+
+    def _safe_float(self, value, default: Optional[float] = None) -> Optional[float]:
+        """Return ``value`` as a finite float, or ``default`` when invalid."""
+
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if math.isfinite(parsed) else default
+
+    def _airborne_config_value(self, key: str, default: float) -> float:
+        """Read a positive numeric airborne-detector setting."""
+
+        value = self._safe_float(self.airborne_cfg.get(key), default)
+        if value is None:
+            return float(default)
+        return max(0.0, value)
+
+    def _takeoff_airspeed_threshold_mph(self) -> float:
+        """Derive takeoff speed from the stall warning within the desired band."""
+
+        stall_speed = self._safe_float(self.warning_cfg.get("stall_airspeed"), 10.0)
+        multiplier = self._airborne_config_value("takeoff_airspeed_multiplier", 1.2)
+        derived = max(0.0, (stall_speed or 0.0) * multiplier)
+        return max(12.0, min(18.0, derived))
+
+    def _airspeed_value_fresh(self, now: float, timeout: float) -> bool:
+        if self.last_airspeed_packet_time is None:
+            return False
+        return (now - self.last_airspeed_packet_time) <= max(0.0, timeout)
+
+    def _current_altitude_agl_ft(self) -> Optional[float]:
+        altitude = self._safe_float(self.current_altitude)
+        if altitude is None or self.airborne_baseline_altitude_ft is None:
+            return None
+        return altitude - self.airborne_baseline_altitude_ft
+
+    def _reset_airborne_baseline(self, altitude_ft: float) -> None:
+        self.airborne_baseline_altitude_ft = altitude_ft
+        self._airborne_takeoff_start_time = None
+        self._airborne_landing_start_time = None
+
+    def _update_airborne_state(self, now: Optional[float] = None) -> None:
+        """Debounce telemetry into either grounded or airborne state."""
+
+        if now is None:
+            now = time.monotonic()
+
+        gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        if not self._is_packet_fresh("gps", gps_timeout):
+            self._airborne_takeoff_start_time = None
+            self._airborne_landing_start_time = None
+            return
+
+        airspeed = self._safe_float(self.current_airspeed)
+        altitude = self._safe_float(self.current_altitude)
+        if airspeed is None or altitude is None:
+            self._airborne_takeoff_start_time = None
+            self._airborne_landing_start_time = None
+            return
+
+        if self.airborne_baseline_altitude_ft is None or self.airborne_state == "grounded":
+            baseline = self.airborne_baseline_altitude_ft
+            if baseline is None or abs(altitude - baseline) <= self._airborne_config_value(
+                "landed_altitude_ft", 5.0
+            ):
+                self.airborne_baseline_altitude_ft = altitude
+
+        altitude_agl = self._current_altitude_agl_ft()
+        if altitude_agl is None:
+            self._reset_airborne_baseline(altitude)
+            altitude_agl = 0.0
+
+        if self.airborne_state == "grounded":
+            takeoff_condition = (
+                airspeed > self._takeoff_airspeed_threshold_mph()
+                and altitude_agl > self._airborne_config_value("takeoff_altitude_ft", 15.0)
+            )
+            if takeoff_condition:
+                if self._airborne_takeoff_start_time is None:
+                    self._airborne_takeoff_start_time = now
+                elif now - self._airborne_takeoff_start_time >= self._airborne_config_value(
+                    "takeoff_hold_s", 2.0
+                ):
+                    self.airborne_state = "airborne"
+                    self._airborne_takeoff_start_time = None
+                    self._airborne_landing_start_time = None
+                    self._update_airborne_indicator()
+            else:
+                self._airborne_takeoff_start_time = None
+            return
+
+        landed_condition = (
+            airspeed < self._airborne_config_value("landed_airspeed_mph", 7.0)
+            and altitude_agl < self._airborne_config_value("landed_altitude_ft", 5.0)
+        )
+        if landed_condition:
+            if self._airborne_landing_start_time is None:
+                self._airborne_landing_start_time = now
+            elif now - self._airborne_landing_start_time >= self._airborne_config_value(
+                "landing_hold_s", 5.0
+            ):
+                self.airborne_state = "grounded"
+                self._reset_airborne_baseline(altitude)
+                self._update_airborne_indicator()
+        else:
+            self._airborne_landing_start_time = None
+
+    def _is_airborne(self) -> bool:
+        return self.airborne_state == "airborne"
 
     def _fail_safe_auto_throttle(self, now: Optional[float] = None) -> None:
         """Reset auto throttle and ramp throttle down when airspeed is stale."""
@@ -1811,23 +2028,26 @@ class MainWindow(QMainWindow):
             ):
                 self.link_stats_first_received_time = None
 
-    def check_warnings(self):
+    def check_warnings(self, now: Optional[float] = None):
         """Evaluate telemetry values against configured thresholds and play alarms."""
-        if (
-            self.current_airspeed is None
-            or self.current_altitude is None
-            or self.telemetry_roll is None
-        ):
+        if now is None:
+            now = time.monotonic()
+
+        airspeed = self._safe_float(self.current_airspeed)
+        altitude = self._safe_float(self.current_altitude)
+        roll = self._safe_float(self.telemetry_roll)
+        if airspeed is None or altitude is None or roll is None:
             return
 
-        now = time.monotonic()
+        airborne = self._is_airborne()
 
-        # Airspeed warning: low airspeed at high altitude
+        # Airspeed warning: low airspeed at high altitude while airborne.
         stall_enabled = self.warning_cfg.get("stall_alarm_enabled", True)
         if (
-            stall_enabled
-            and self.current_airspeed < self.warning_cfg.get("stall_airspeed", 0)
-            and self.current_altitude > self.warning_cfg.get("stall_altitude", 0)
+            airborne
+            and stall_enabled
+            and airspeed < self.warning_cfg.get("stall_airspeed", 0)
+            and altitude > self.warning_cfg.get("stall_altitude", 0)
         ):
             if self.stall_alarm_start_time is None:
                 self.stall_alarm_start_time = now
@@ -1841,14 +2061,13 @@ class MainWindow(QMainWindow):
             self.stall_alarm_start_time = None
             self.stall_alarm_playing = False
 
-        # Altitude warning: low altitude at high airspeed
+        # Altitude warning: low altitude at high airspeed while airborne.
         altitude_enabled = self.warning_cfg.get("altitude_alarm_enabled", True)
         if (
-            altitude_enabled
-            and self.current_altitude
-            < self.warning_cfg.get("altitude_alarm_altitude", 0)
-            and self.current_airspeed
-            > self.warning_cfg.get("altitude_alarm_airspeed", 0)
+            airborne
+            and altitude_enabled
+            and altitude < self.warning_cfg.get("altitude_alarm_altitude", 0)
+            and airspeed > self.warning_cfg.get("altitude_alarm_airspeed", 0)
         ):
             if self.altitude_alarm_start_time is None:
                 self.altitude_alarm_start_time = now
@@ -1869,10 +2088,7 @@ class MainWindow(QMainWindow):
 
         # Roll angle warning
         bank_enabled = self.warning_cfg.get("bank_angle_alarm_enabled", True)
-        if (
-            bank_enabled
-            and abs(self.telemetry_roll) > self.warning_cfg.get("roll_angle", 0)
-        ):
+        if bank_enabled and abs(roll) > self.warning_cfg.get("roll_angle", 0):
             if self.roll_alarm_start_time is None:
                 self.roll_alarm_start_time = now
             elif now - self.roll_alarm_start_time > 1.0 and not self.roll_alarm_playing:
@@ -2107,6 +2323,7 @@ class MainWindow(QMainWindow):
             self.telemetry_state["ground_course"] = course
             self.telemetry_state["satellites"] = sats
             self.data_page.add_flight_metrics(alt, speed)
+            self._update_airborne_state(now)
             if gps_has_fix:
                 self._latest_gps_fix = (lat_value, lon_value)
                 self._latest_gps_fix_seq += 1
@@ -2796,6 +3013,49 @@ class MainWindow(QMainWindow):
         warn_layout, _ = add_section("Warning System")
 
         warn_layout.addWidget(QLabel("Air Speed Alarm"))
+        airborne_note = QLabel(
+            "Stall and low-altitude/high-speed alarms sound only after the "
+            "airborne detector confirms flight."
+        )
+        airborne_note.setWordWrap(True)
+        airborne_note.setStyleSheet("color: rgb(154, 164, 178); font-size: 11px;")
+        warn_layout.addWidget(airborne_note)
+
+        airborne_takeoff_row = QHBoxLayout()
+        airborne_takeoff_row.addWidget(QLabel("Airborne when AGL >"))
+        self.airborne_takeoff_alt_spin = QDoubleSpinBox()
+        self.airborne_takeoff_alt_spin.setRange(0.0, 200.0)
+        self.airborne_takeoff_alt_spin.setDecimals(1)
+        self.airborne_takeoff_alt_spin.setSingleStep(1.0)
+        self.airborne_takeoff_alt_spin.setValue(
+            self._airborne_config_value("takeoff_altitude_ft", 15.0)
+        )
+        self.airborne_takeoff_alt_spin.setSuffix(" ft")
+        airborne_takeoff_row.addWidget(self.airborne_takeoff_alt_spin)
+        warn_layout.addLayout(airborne_takeoff_row)
+
+        airborne_landed_row = QHBoxLayout()
+        airborne_landed_row.addWidget(QLabel("Grounded below"))
+        self.airborne_landed_speed_spin = QDoubleSpinBox()
+        self.airborne_landed_speed_spin.setRange(0.0, 50.0)
+        self.airborne_landed_speed_spin.setDecimals(1)
+        self.airborne_landed_speed_spin.setSingleStep(0.5)
+        self.airborne_landed_speed_spin.setValue(
+            self._airborne_config_value("landed_airspeed_mph", 7.0)
+        )
+        self.airborne_landed_speed_spin.setSuffix(" mph")
+        airborne_landed_row.addWidget(self.airborne_landed_speed_spin)
+        self.airborne_landed_alt_spin = QDoubleSpinBox()
+        self.airborne_landed_alt_spin.setRange(0.0, 50.0)
+        self.airborne_landed_alt_spin.setDecimals(1)
+        self.airborne_landed_alt_spin.setSingleStep(0.5)
+        self.airborne_landed_alt_spin.setValue(
+            self._airborne_config_value("landed_altitude_ft", 5.0)
+        )
+        self.airborne_landed_alt_spin.setSuffix(" ft AGL")
+        airborne_landed_row.addWidget(self.airborne_landed_alt_spin)
+        warn_layout.addLayout(airborne_landed_row)
+
         stall_speed_row = QHBoxLayout()
         stall_speed_row.addWidget(QLabel("Airspeed <"))
         self.stall_speed_slider = QSlider(Qt.Horizontal)
@@ -2881,6 +3141,15 @@ class MainWindow(QMainWindow):
         self.fbw_pitch_limit_spin.valueChanged.connect(self.on_fbw_pitch_limit_changed)
         self.auto_throttle_target_spin.valueChanged.connect(
             self.on_auto_throttle_target_changed
+        )
+        self.airborne_takeoff_alt_spin.valueChanged.connect(
+            self.on_airborne_takeoff_alt_changed
+        )
+        self.airborne_landed_speed_spin.valueChanged.connect(
+            self.on_airborne_landed_speed_changed
+        )
+        self.airborne_landed_alt_spin.valueChanged.connect(
+            self.on_airborne_landed_alt_changed
         )
         self.stall_speed_slider.valueChanged.connect(self.on_stall_speed_changed)
         self.stall_alt_slider.valueChanged.connect(self.on_stall_alt_changed)
@@ -3588,9 +3857,25 @@ class MainWindow(QMainWindow):
             self.rollpitch_osd.set_smoothing(percent / 100.0)
         save_config(self.config)
 
+    def on_airborne_takeoff_alt_changed(self, value: float):
+        self.airborne_cfg["takeoff_altitude_ft"] = float(value)
+        self._airborne_takeoff_start_time = None
+        save_config(self.config)
+
+    def on_airborne_landed_speed_changed(self, value: float):
+        self.airborne_cfg["landed_airspeed_mph"] = float(value)
+        self._airborne_landing_start_time = None
+        save_config(self.config)
+
+    def on_airborne_landed_alt_changed(self, value: float):
+        self.airborne_cfg["landed_altitude_ft"] = float(value)
+        self._airborne_landing_start_time = None
+        save_config(self.config)
+
     def on_stall_speed_changed(self, value: int):
         self.warning_cfg["stall_airspeed"] = value
         self.stall_speed_value.setText(str(value))
+        self._airborne_takeoff_start_time = None
         save_config(self.config)
 
     def on_stall_alt_changed(self, value: int):
