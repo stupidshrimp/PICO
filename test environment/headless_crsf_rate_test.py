@@ -76,6 +76,9 @@ def _build_static_channels(args: argparse.Namespace) -> list[int]:
     channels[1] = _normalised_axis_to_crsf(args.pitch)
     channels[2] = _percent_to_crsf(args.throttle_percent)
     channels[3] = _normalised_axis_to_crsf(args.yaw)
+    # Keep ELRS AUX1/CH5 high for arming and drive Manual/Fly-By-Wire on
+    # AUX2/CH6, matching the GUI and flight-controller firmware.
+    channels[4] = CRSF_CHANNEL_MAX
     channels[args.mode_channel - 1] = args.mode_value
     return channels
 
@@ -216,7 +219,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--pitch", type=float, default=0.0, help="Static pitch command, normalized -1.0..1.0")
     parser.add_argument("--yaw", type=float, default=0.0, help="Static yaw command, normalized -1.0..1.0")
     parser.add_argument("--throttle-percent", type=float, default=0.0, help="Static throttle command, 0..100 percent")
-    parser.add_argument("--mode-channel", type=int, default=5, help="1-based control-mode channel to set")
+    parser.add_argument("--mode-channel", type=int, default=6, help="1-based control-mode channel to set")
     parser.add_argument("--mode-value", type=int, default=400, help="CRSF value for the control-mode channel")
     parser.add_argument("--duration-s", type=float, default=0.0, help="Run duration; 0 means until Ctrl+C")
     parser.add_argument("--print-interval-ms", type=int, default=1000, help="Terminal diagnostics print interval")

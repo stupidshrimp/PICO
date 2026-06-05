@@ -298,19 +298,14 @@ const uint16_t RC_INPUT_MAX = 1811;
 const uint16_t RC_INPUT_CENTER = (RC_INPUT_MIN + RC_INPUT_MAX) / 2;
 
 // Mode channel targets from the ground station (channel 6) and a guard band to avoid chatter.
-const uint16_t CONTROL_MODE_MANUAL_TARGET = 400;
 const uint16_t CONTROL_MODE_FLY_BY_WIRE_TARGET = 1700;
 const uint16_t CONTROL_MODE_SWITCH_DEADBAND = 150;
-
-const uint16_t CONTROL_MODE_MANUAL_MAX = CONTROL_MODE_MANUAL_TARGET + CONTROL_MODE_SWITCH_DEADBAND;
 const uint16_t CONTROL_MODE_FLY_BY_WIRE_MIN = CONTROL_MODE_FLY_BY_WIRE_TARGET - CONTROL_MODE_SWITCH_DEADBAND;
 
 // Throttle mode is carried on CH7/AUX3 so CH5/AUX1 can stay dedicated to ELRS
 // arming and CH6/AUX2 can carry Manual/Fly-By-Wire mode.
-const uint16_t THROTTLE_MODE_MANUAL_TARGET = 400;
 const uint16_t THROTTLE_MODE_AUTO_TARGET = 1700;
 const uint16_t THROTTLE_MODE_SWITCH_DEADBAND = 150;
-const uint16_t THROTTLE_MODE_MANUAL_MAX = THROTTLE_MODE_MANUAL_TARGET + THROTTLE_MODE_SWITCH_DEADBAND;
 const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MODE_SWITCH_DEADBAND;
 
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
@@ -654,13 +649,15 @@ void updateControlMode() {
   }
 
   const uint16_t modeValue = latestRcChannels.value[modeChannelIndex];
-  if (modeValue <= CONTROL_MODE_MANUAL_MAX) {
-    setControlMode(CONTROL_MODE_MANUAL);
-  } else if (modeValue >= CONTROL_MODE_FLY_BY_WIRE_MIN) {
+  if (modeValue >= CONTROL_MODE_FLY_BY_WIRE_MIN) {
     setControlMode(CONTROL_MODE_FLY_BY_WIRE);
+  } else {
+    // Treat every non-high value as Manual.  Leaving the previous FBW state
+    // latched while AUX2 is centered or transient made the roll/pitch PID stay
+    // active after the ground station requested Manual.  Manual is the safe
+    // default unless the mode channel is explicitly driven high.
+    setControlMode(CONTROL_MODE_MANUAL);
   }
-  // Values between the Manual and Fly-By-Wire thresholds remain in the current
-  // mode so the switch deadband still prevents chatter during AUX2 transients.
 }
 
 void updateThrottleMode() {
@@ -669,13 +666,16 @@ void updateThrottleMode() {
   const size_t throttleModeChannelIndex = 6;
   const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
   if (throttleModeChannelIndex >= channelCount) {
+    setThrottleMode(THROTTLE_MODE_MANUAL);
     return;
   }
   uint16_t modeValue = latestRcChannels.value[throttleModeChannelIndex];
-  if (modeValue <= THROTTLE_MODE_MANUAL_MAX) {
-    setThrottleMode(THROTTLE_MODE_MANUAL);
-  } else if (modeValue >= THROTTLE_MODE_AUTO_MIN) {
+  if (modeValue >= THROTTLE_MODE_AUTO_MIN) {
     setThrottleMode(THROTTLE_MODE_AUTO);
+  } else {
+    // Match the control-mode fail-safe behavior: require an explicit high AUX3
+    // command before enabling the throttle PID, otherwise pass throttle through.
+    setThrottleMode(THROTTLE_MODE_MANUAL);
   }
 }
 
@@ -951,7 +951,9 @@ void maybePrintControlDebugStats() {
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.print(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+  Serial.print(" mode_ch="); Serial.print(latestRcChannels.value[5]);
   Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
+  Serial.print(" throttle_mode_ch="); Serial.print(latestRcChannels.value[6]);
   Serial.print(" throttle_target_mph="); Serial.print(latestAutoThrottleTargetMph, 1);
   Serial.print(" auto_throttle_pct="); Serial.println(autoThrottlePercent, 1);
 
