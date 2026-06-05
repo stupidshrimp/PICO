@@ -540,7 +540,9 @@ void setControlMode(ControlMode newMode) {
 }
 
 void updateControlMode() {
-  const size_t modeChannelIndex = 4;
+  // Manual/Fly-By-Wire mode is carried on CH6/AUX2 so CH5/AUX1 can remain
+  // dedicated to the ELRS arm state.  CRSF channel arrays are zero-indexed.
+  const size_t modeChannelIndex = 5;
   const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
   if (modeChannelIndex >= channelCount) {
     return;

@@ -201,7 +201,8 @@ class MainWindow(QMainWindow):
 
         # Control mode setup
         self.control_mode = "Manual"  # Default mode
-        self.control_mode_channel = 4  # Channel 5 (0-based index)
+        self.elrs_arm_channel = 4  # Channel 5/AUX1 (0-based index)
+        self.control_mode_channel = 5  # Channel 6/AUX2 (0-based index)
         self.desired_fbw_roll = None
         self.desired_fbw_pitch = None
         self._latest_control_channels = [CRSF_CHANNEL_CENTER] * 16
@@ -2621,6 +2622,10 @@ class MainWindow(QMainWindow):
 
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
+
+        # Keep ELRS AUX1/CH5 high so the link remains in its armed state.
+        # Manual/Fly-By-Wire is carried separately on AUX2/CH6.
+        channels[self.elrs_arm_channel] = CRSF_CHANNEL_MAX
 
         # Control mode channel: send low for Manual, high for Fly-By-Wire.
         mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
