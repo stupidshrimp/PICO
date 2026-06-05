@@ -591,13 +591,9 @@ uint32_t barometerRawTemperature = 0;
 uint32_t lastBarometerTemperatureUs = 0;
 bool barometerTemperatureValid = false;
 
-struct AttitudeTelemetryFrame {
-  int16_t roll;
-  int16_t pitch;
-  int16_t yaw;
-};
-
-AttitudeTelemetryFrame latestAttitudeFrame = {0, 0, 0};
+int16_t latestAttitudeRoll = 0;
+int16_t latestAttitudePitch = 0;
+int16_t latestAttitudeYaw = 0;
 bool attitudeSampleValid = false;
 
 void updateGpsCache() {
@@ -980,9 +976,9 @@ void loop() {
     
     // Cache the most recent attitude in decidegrees so telemetry can be
     // emitted independently of the EKF work.
-    latestAttitudeFrame.roll = static_cast<int16_t>(roundf(roll * 10.0f));
-    latestAttitudeFrame.pitch = static_cast<int16_t>(roundf(pitch * 10.0f));
-    latestAttitudeFrame.yaw = static_cast<int16_t>(roundf(yaw * 10.0f));
+    latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
+    latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
+    latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
     attitudeSampleValid = true;
 
     serviceCrsfLink();
@@ -1110,9 +1106,9 @@ void loop() {
   if (attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US) {
     attitudeTelemetryTimer = 0;
     crsf.telemetryWriteAttitude(
-        latestAttitudeFrame.roll,
-        latestAttitudeFrame.pitch,
-        latestAttitudeFrame.yaw);
+        latestAttitudeRoll,
+        latestAttitudePitch,
+        latestAttitudeYaw);
     serviceCrsfLink();
     attitudeTelemetrySentThisLoop = true;
     ++controlDebugCounters.attitudeTelemetryWrites;
