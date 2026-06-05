@@ -8,4 +8,9 @@ enum ControlMode {
   CONTROL_MODE_FLY_BY_WIRE
 };
 
+enum ThrottleMode {
+  THROTTLE_MODE_MANUAL = 0,
+  THROTTLE_MODE_AUTO
+};
+
 #endif // FEATHER_CONTROL_MODE_H

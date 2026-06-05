@@ -143,33 +143,6 @@ def validate_port(name: str, port: str) -> bool:
     return True
 
 
-class ThrottlePidController:
-    """Small PID helper for airspeed-hold throttle control."""
-
-    def __init__(self, kp: float, ki: float, kd: float, integral_limit: float = 100.0):
-        self.kp = float(kp)
-        self.ki = float(ki)
-        self.kd = float(kd)
-        self.integral_limit = abs(float(integral_limit))
-        self._integral = 0.0
-        self._previous_error = None
-
-    def reset(self) -> None:
-        self._integral = 0.0
-        self._previous_error = None
-
-    def update(self, error: float, dt: float) -> float:
-        dt = max(float(dt), 1e-3)
-        self._integral += error * dt
-        self._integral = max(
-            -self.integral_limit, min(self.integral_limit, self._integral)
-        )
-        derivative = 0.0
-        if self._previous_error is not None:
-            derivative = (error - self._previous_error) / dt
-        self._previous_error = error
-        return self.kp * error + self.ki * self._integral + self.kd * derivative
-
 widgets = None
 
 class MainWindow(QMainWindow):
@@ -211,12 +184,12 @@ class MainWindow(QMainWindow):
         self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
         self.mode_shortcut.activated.connect(self.toggle_control_mode)
 
-        # Throttle mode setup. Auto throttle computes the throttle target from
-        # telemetry airspeed; manual throttle keeps using keyboard input.
+        # Throttle mode setup. Manual mode sends CH3 as throttle percent; auto
+        # throttle sends CH3 as a desired airspeed setpoint for the FC-side PID.
         self.throttle_mode = "Manual"
         self.throttle_target_airspeed_mph = 20.0
-        self.throttle_pid = ThrottlePidController(kp=0.8, ki=0.04, kd=0.15)
-        self._last_auto_throttle_update = time.monotonic()
+        self.throttle_mode_channel = 6  # Channel 7/AUX3 (0-based index), CH5 is reserved.
+        self.auto_throttle_speed_channel_max_mph = 100.0
         self._setup_throttle_mode_indicator()
         self.update_throttle_mode_label()
         self.throttle_mode_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
@@ -420,21 +393,15 @@ class MainWindow(QMainWindow):
         self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
         self.throttle_cfg = self.config.setdefault("throttle", {})
         self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
-        self.throttle_cfg.setdefault("pid_kp", 0.8)
-        self.throttle_cfg.setdefault("pid_ki", 0.04)
-        self.throttle_cfg.setdefault("pid_kd", 0.15)
-        self.throttle_cfg.setdefault("airspeed_stale_timeout_s", 1.0)
-        self.auto_throttle_airspeed_stale_timeout = float(
-            self.throttle_cfg.get("airspeed_stale_timeout_s", 1.0)
+        self.throttle_cfg.setdefault("speed_channel_max_mph", 100.0)
+        self.auto_throttle_speed_channel_max_mph = max(
+            1.0, float(self.throttle_cfg.get("speed_channel_max_mph", 100.0))
         )
-        self.throttle_target_airspeed_mph = float(
+        self.throttle_target_airspeed_mph = self._clamp_auto_throttle_speed(
             self.throttle_cfg.get("target_airspeed_mph", 20.0)
         )
-        self.throttle_pid = ThrottlePidController(
-            kp=self.throttle_cfg.get("pid_kp", 0.8),
-            ki=self.throttle_cfg.get("pid_ki", 0.04),
-            kd=self.throttle_cfg.get("pid_kd", 0.15),
-        )
+        self.throttle_cfg["target_airspeed_mph"] = self.throttle_target_airspeed_mph
+        self.throttle_cfg["speed_channel_max_mph"] = self.auto_throttle_speed_channel_max_mph
         self.update_throttle_mode_label()
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
@@ -1363,7 +1330,7 @@ class MainWindow(QMainWindow):
             self.telemetry_state["stick_roll"] = None
 
         self.telemetry_state["stick_yaw"] = float(self.yaw_value) * self._stick_angle_scale
-        self.telemetry_state["stick_throttle"] = float(self.throttle_percent)
+        self.telemetry_state["stick_throttle"] = float(self._throttle_indicator_value())
         self._stick_last_update = time.monotonic()
 
         return joy_pitch, joy_roll, norm_pitch, norm_roll
@@ -1429,7 +1396,7 @@ class MainWindow(QMainWindow):
             self.pitch_indicator.setValue(norm_pitch)
             self.roll_indicator.setValue(norm_roll)
         self.yaw_indicator.setValue(self.yaw_value)
-        self.throttle_indicator.setValue(self.throttle_percent)
+        self._update_throttle_indicator()
 
         # ------------------------------------------------------------------
         # Telemetry still drives the OSD widgets
@@ -1452,22 +1419,24 @@ class MainWindow(QMainWindow):
     def cut_throttle(self) -> None:
         """Immediately drop the throttle to zero and return to manual throttle."""
         self.throttle_mode = "Manual"
-        self.throttle_pid.reset()
         self.target_throttle_percent = 0
         self.throttle_percent = 0
-        self.throttle_indicator.setValue(self.throttle_percent)
         self.update_throttle_mode_label()
+        self._update_throttle_indicator()
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt override naming
-        mapping = {
+        manual_mapping = {
             Qt.Key_A: 25,
             Qt.Key_S: 50,
             Qt.Key_D: 75,
             Qt.Key_F: 100,
         }
-        if event.key() in mapping:
+        if event.key() in manual_mapping:
             if self.throttle_mode == "Manual":
-                self.target_throttle_percent = mapping[event.key()]
+                self.target_throttle_percent = manual_mapping[event.key()]
+            # In Auto Throttle mode CH3 is driven only by the configured target
+            # airspeed on the configuration page, so throttle hotkeys do not
+            # mutate the active setpoint.
             event.accept()
         elif event.key() in (Qt.Key_Q, Qt.Key_E):
             self._handle_yaw_key(event.key(), True)
@@ -1485,9 +1454,10 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(event)
 
     def update_throttle(self):
-        """Update manual throttle ramping or auto-throttle PID output."""
+        """Update manual throttle ramping and refresh the throttle indicator."""
         if self.throttle_mode == "Auto Throttle":
-            self._update_auto_throttle_target()
+            self._update_throttle_indicator()
+            return
 
         if self.throttle_percent == self.target_throttle_percent:
             return
@@ -1501,41 +1471,54 @@ class MainWindow(QMainWindow):
             self.throttle_percent = max(
                 self.throttle_percent - step, self.target_throttle_percent
             )
-        self.throttle_indicator.setValue(self.throttle_percent)
+        self._update_throttle_indicator()
 
-    def _update_auto_throttle_target(self) -> None:
-        """Use fresh telemetry airspeed and a PID loop to choose throttle."""
-        now = time.monotonic()
-        if not self._has_fresh_airspeed(now):
-            self._fail_safe_auto_throttle(now)
-            return
+    def _clamp_auto_throttle_speed(self, speed_mph: float) -> float:
+        """Clamp an auto-throttle speed setpoint to the CH3 converter range."""
 
         try:
-            current_airspeed = float(self.current_airspeed)
+            speed = float(speed_mph)
         except (TypeError, ValueError):
-            self._fail_safe_auto_throttle(now)
-            return
-        if not math.isfinite(current_airspeed):
-            self._fail_safe_auto_throttle(now)
-            return
+            speed = 20.0
+        if not math.isfinite(speed):
+            speed = 20.0
+        return max(0.0, min(self.auto_throttle_speed_channel_max_mph, speed))
 
-        dt = now - self._last_auto_throttle_update
-        self._last_auto_throttle_update = now
-        error = self.throttle_target_airspeed_mph - current_airspeed
-        adjustment = self.throttle_pid.update(error, dt) * dt
-        self.target_throttle_percent = max(
-            0.0, min(100.0, float(self.target_throttle_percent) + adjustment)
-        )
+    def set_auto_throttle_target_speed(self, speed_mph: float) -> None:
+        """Persist the configured target speed sent on CH3 in Auto Throttle."""
 
-    def _has_fresh_airspeed(self, now: Optional[float] = None) -> bool:
-        """Return True when the cached airspeed came from recent GPS telemetry."""
-        if self.last_airspeed_packet_time is None or self.current_airspeed is None:
-            return False
-        if now is None:
-            now = time.monotonic()
-        return (now - self.last_airspeed_packet_time) <= max(
-            0.0, self.auto_throttle_airspeed_stale_timeout
-        )
+        self.throttle_target_airspeed_mph = self._clamp_auto_throttle_speed(speed_mph)
+        self.throttle_cfg["target_airspeed_mph"] = self.throttle_target_airspeed_mph
+        if hasattr(self, "auto_throttle_target_spin"):
+            self.auto_throttle_target_spin.blockSignals(True)
+            self.auto_throttle_target_spin.setValue(self.throttle_target_airspeed_mph)
+            self.auto_throttle_target_spin.blockSignals(False)
+        self.update_throttle_mode_label()
+        self._update_throttle_indicator()
+        save_config(self.config)
+
+    def _throttle_indicator_value(self) -> float:
+        """Return the value shown by the throttle bar in the current mode."""
+
+        if self.throttle_mode == "Auto Throttle":
+            return self.throttle_target_airspeed_mph
+        return float(getattr(self, "throttle_percent", 0))
+
+    def _update_throttle_indicator(self) -> None:
+        """Show manual throttle percent or auto-throttle target speed on the bar."""
+
+        if not hasattr(self, "throttle_indicator"):
+            return
+        value = self._throttle_indicator_value()
+        self.throttle_indicator.setValue(value)
+        if self.throttle_mode == "Auto Throttle":
+            self.throttle_indicator.setToolTip(
+                f"Auto throttle target: {self.throttle_target_airspeed_mph:.0f} mph"
+            )
+        else:
+            self.throttle_indicator.setToolTip(
+                f"Manual throttle command: {self.throttle_percent:.0f}%"
+            )
 
     def _safe_float(self, value, default: Optional[float] = None) -> Optional[float]:
         """Return ``value`` as a finite float, or ``default`` when invalid."""
@@ -1662,12 +1645,6 @@ class MainWindow(QMainWindow):
 
     def _is_airborne(self) -> bool:
         return self.airborne_state == "airborne"
-
-    def _fail_safe_auto_throttle(self, now: Optional[float] = None) -> None:
-        """Reset auto throttle and ramp throttle down when airspeed is stale."""
-        self.throttle_pid.reset()
-        self.target_throttle_percent = 0
-        self._last_auto_throttle_update = time.monotonic() if now is None else now
 
     def update_yaw(self) -> None:
         """Gradually move the yaw indicator toward its target value."""
@@ -2609,16 +2586,22 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Error during transmission: {e}")
 
-        # Map throttle percentage to CRSF channel range (172-1811).
-        # ``getattr`` keeps startup/reconnect safe even if this helper is called
-        # before every UI widget has finished initialising.
+        # CH3 carries manual throttle percent in Manual mode. In Auto Throttle
+        # mode it carries the configured target airspeed from the configuration
+        # page; the FC applies the same converter in reverse before running its
+        # local throttle PID.
         throttle_min = CRSF_CHANNEL_MIN
         throttle_max = CRSF_CHANNEL_MAX
         throttle_span = throttle_max - throttle_min
-        clamped_percent = max(
-            0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
-        )
-        channels[2] = int((clamped_percent / 100) * throttle_span + throttle_min)
+        if self.throttle_mode == "Auto Throttle":
+            channel_fraction = self._clamp_auto_throttle_speed(
+                self.throttle_target_airspeed_mph
+            ) / self.auto_throttle_speed_channel_max_mph
+        else:
+            channel_fraction = max(
+                0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
+            ) / 100.0
+        channels[2] = int(channel_fraction * throttle_span + throttle_min)
 
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
@@ -2630,6 +2613,12 @@ class MainWindow(QMainWindow):
         # Control mode channel: send low for Manual, high for Fly-By-Wire.
         mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
         channels[self.control_mode_channel] = mode_value
+
+        # Throttle mode channel: AUX3/CH7 avoids CH5/AUX1 arming and CH6/AUX2
+        # flight-control mode. Low is manual throttle, high is FC auto throttle.
+        throttle_mode_value = 1700 if self.throttle_mode == "Auto Throttle" else 400
+        channels[self.throttle_mode_channel] = throttle_mode_value
+
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)
         self._update_desired_fbw_attitude(channels)
@@ -2690,7 +2679,12 @@ class MainWindow(QMainWindow):
         if hasattr(self.ui, "throttleModeLabel"):
             is_manual = self.throttle_mode == "Manual"
             color = "rgb(0, 255, 0)" if is_manual else "rgb(255, 165, 0)"
-            self.ui.throttleModeLabel.setText(self.throttle_mode)
+            label = (
+                self.throttle_mode
+                if is_manual
+                else f"Auto {self.throttle_target_airspeed_mph:.0f} mph"
+            )
+            self.ui.throttleModeLabel.setText(label)
             self.ui.throttleModeLabel.setStyleSheet(f"color: {color};")
 
     def toggle_throttle_mode(self):
@@ -2698,9 +2692,8 @@ class MainWindow(QMainWindow):
         self.throttle_mode = (
             "Auto Throttle" if self.throttle_mode == "Manual" else "Manual"
         )
-        self._last_auto_throttle_update = time.monotonic()
-        self.throttle_pid.reset()
         self.update_throttle_mode_label()
+        self._update_throttle_indicator()
 
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
@@ -2956,7 +2949,7 @@ class MainWindow(QMainWindow):
         auto_throttle_row = QHBoxLayout()
         auto_throttle_row.addWidget(QLabel("Auto throttle target airspeed (mph)"))
         self.auto_throttle_target_spin = QDoubleSpinBox()
-        self.auto_throttle_target_spin.setRange(0.0, 250.0)
+        self.auto_throttle_target_spin.setRange(0.0, self.auto_throttle_speed_channel_max_mph)
         self.auto_throttle_target_spin.setDecimals(1)
         self.auto_throttle_target_spin.setSingleStep(1.0)
         self.auto_throttle_target_spin.setValue(self.throttle_target_airspeed_mph)
@@ -3301,14 +3294,21 @@ class MainWindow(QMainWindow):
             ),
         )
 
-        throttle_safe = float(getattr(self, "throttle_percent", 0)) <= 0.1
+        throttle_safe = (
+            self.throttle_mode == "Manual"
+            and float(getattr(self, "throttle_percent", 0)) <= 0.1
+        )
         self._add_preflight_check(
             rows,
             "pass" if throttle_safe else "fail",
             (
                 "Throttle command is at idle."
                 if throttle_safe
-                else f"Throttle command is {self.throttle_percent:.0f}%; cut throttle before pre-flight."
+                else (
+                    f"Throttle command is {self.throttle_percent:.0f}%; cut throttle before pre-flight."
+                    if self.throttle_mode == "Manual"
+                    else f"Auto throttle target is {self.throttle_target_airspeed_mph:.0f} mph; cut throttle before pre-flight."
+                )
             ),
         )
 
@@ -3871,10 +3871,7 @@ class MainWindow(QMainWindow):
         save_config(self.config)
 
     def on_auto_throttle_target_changed(self, value: float):
-        self.throttle_target_airspeed_mph = float(value)
-        self.throttle_cfg["target_airspeed_mph"] = self.throttle_target_airspeed_mph
-        self.throttle_pid.reset()
-        save_config(self.config)
+        self.set_auto_throttle_target_speed(value)
 
     def on_attitude_smoothing_changed(self, value: int):
         try:
@@ -4433,4 +4430,3 @@ if __name__ == "__main__":
     finally:
         window.cleanup()
     sys.exit(exit_code)
-
