@@ -204,12 +204,12 @@ class MainWindow(QMainWindow):
         # Throttle mode setup. Auto throttle computes the throttle target from
         # telemetry airspeed; manual throttle keeps using keyboard input.
         self.throttle_mode = "Manual"
-        self.throttle_target_airspeed_mph = 45.0
+        self.throttle_target_airspeed_mph = 20.0
         self.throttle_pid = ThrottlePidController(kp=0.8, ki=0.04, kd=0.15)
         self._last_auto_throttle_update = time.monotonic()
         self._setup_throttle_mode_indicator()
         self.update_throttle_mode_label()
-        self.throttle_mode_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+        self.throttle_mode_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         self.throttle_mode_shortcut.activated.connect(self.toggle_throttle_mode)
 
         # Sortie recording state and controls
@@ -381,7 +381,7 @@ class MainWindow(QMainWindow):
         self.joystick_cfg.setdefault("yaw_sensitivity", 100)
         self.crsf_cfg = self.config.setdefault("crsf", {})
         self.throttle_cfg = self.config.setdefault("throttle", {})
-        self.throttle_cfg.setdefault("target_airspeed_mph", 45.0)
+        self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
         self.throttle_cfg.setdefault("pid_kp", 0.8)
         self.throttle_cfg.setdefault("pid_ki", 0.04)
         self.throttle_cfg.setdefault("pid_kd", 0.15)
@@ -390,7 +390,7 @@ class MainWindow(QMainWindow):
             self.throttle_cfg.get("airspeed_stale_timeout_s", 1.0)
         )
         self.throttle_target_airspeed_mph = float(
-            self.throttle_cfg.get("target_airspeed_mph", 45.0)
+            self.throttle_cfg.get("target_airspeed_mph", 20.0)
         )
         self.throttle_pid = ThrottlePidController(
             kp=self.throttle_cfg.get("pid_kp", 0.8),
@@ -2358,7 +2358,7 @@ class MainWindow(QMainWindow):
             widget = getattr(self.ui, attr, None)
             if widget is not None:
                 widget.setCursor(Qt.CursorShape.PointingHandCursor)
-                widget.setToolTip("Click or press Ctrl+T to toggle throttle mode")
+                widget.setToolTip("Click or press Ctrl+B to toggle throttle mode")
                 widget.mousePressEvent = self._handle_throttle_mode_indicator_click
 
     def _handle_throttle_mode_indicator_click(self, event) -> None:
