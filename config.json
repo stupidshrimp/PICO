@@ -13,6 +13,10 @@
         "packet_interval": 4,
         "channel_update_interval": 8
     },
+    "fbw": {
+        "max_roll_angle_deg": 45.0,
+        "max_pitch_angle_deg": 30.0
+    },
     "osd": {
         "attitude_smoothing": 100
     },
