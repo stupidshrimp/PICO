@@ -56,6 +56,17 @@ DEFAULT_CONFIG = {
         "altitude_alarm_enabled": True,
         "bank_angle_alarm_enabled": True,
     },
+    "airborne": {
+        # By default the takeoff detector derives its airspeed threshold from
+        # the stall warning speed instead of maintaining an independent value.
+        "takeoff_airspeed_multiplier": 1.2,
+        "takeoff_altitude_ft": 15.0,
+        "landed_airspeed_mph": 7.0,
+        "landed_altitude_ft": 5.0,
+        "takeoff_hold_s": 2.0,
+        "landing_hold_s": 5.0,
+        "gps_fresh_timeout_s": 2.0,
+    },
     "map": {
         # Initial center [lat, lon] and zoom level for the offline map
         "center": [0.0, 0.0],
