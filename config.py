@@ -28,6 +28,13 @@ DEFAULT_CONFIG = {
         "pid_kd": 0.15,
         "airspeed_stale_timeout_s": 1.0,
     },
+    "fbw": {
+        # Ground-station authority limits for Fly-By-Wire attitude commands.
+        # The flight controller still clamps at 80 degrees as a redundant
+        # safety limit; these values determine the actual commanded envelope.
+        "max_roll_angle_deg": 45.0,
+        "max_pitch_angle_deg": 30.0,
+    },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator
         "attitude_smoothing": 20,

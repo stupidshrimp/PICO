@@ -167,10 +167,13 @@ class ThrottlePidController:
 widgets = None
 
 class MainWindow(QMainWindow):
-    # Keep these in lockstep with flight_controller/Main.ino so the OSD
-    # desired-state cue mirrors the FC's FBW setpoint calculation.
-    FBW_MAX_ROLL_ANGLE_DEG = 45.0
-    FBW_MAX_PITCH_ANGLE_DEG = 30.0
+    # Keep these in lockstep with flight_controller/Main.ino. The GS scales
+    # Fly-By-Wire stick commands against these redundant FC safety limits, while
+    # the configurable ``fbw`` settings determine the operator-commanded limits.
+    FBW_FC_MAX_ROLL_ANGLE_DEG = 80.0
+    FBW_FC_MAX_PITCH_ANGLE_DEG = 80.0
+    DEFAULT_FBW_MAX_ROLL_ANGLE_DEG = 45.0
+    DEFAULT_FBW_MAX_PITCH_ANGLE_DEG = 30.0
 
     def __init__(self):
         super().__init__()
@@ -380,6 +383,23 @@ class MainWindow(QMainWindow):
         self.joystick_cfg = self.config.setdefault("joystick", {})
         self.joystick_cfg.setdefault("yaw_sensitivity", 100)
         self.crsf_cfg = self.config.setdefault("crsf", {})
+        self.fbw_cfg = self.config.setdefault("fbw", {})
+        self.fbw_max_roll_angle_deg = self._validated_fbw_limit(
+            self.fbw_cfg.get(
+                "max_roll_angle_deg", self.DEFAULT_FBW_MAX_ROLL_ANGLE_DEG
+            ),
+            self.FBW_FC_MAX_ROLL_ANGLE_DEG,
+            self.DEFAULT_FBW_MAX_ROLL_ANGLE_DEG,
+        )
+        self.fbw_max_pitch_angle_deg = self._validated_fbw_limit(
+            self.fbw_cfg.get(
+                "max_pitch_angle_deg", self.DEFAULT_FBW_MAX_PITCH_ANGLE_DEG
+            ),
+            self.FBW_FC_MAX_PITCH_ANGLE_DEG,
+            self.DEFAULT_FBW_MAX_PITCH_ANGLE_DEG,
+        )
+        self.fbw_cfg["max_roll_angle_deg"] = self.fbw_max_roll_angle_deg
+        self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
         self.throttle_cfg = self.config.setdefault("throttle", {})
         self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
         self.throttle_cfg.setdefault("pid_kp", 0.8)
@@ -2199,6 +2219,51 @@ class MainWindow(QMainWindow):
         print(f"Attitude telemetry frequency: {frequency:.2f} Hz", flush=True)
 
     @staticmethod
+    def _validated_fbw_limit(
+        value: int | float, fc_limit: float, default_limit: float
+    ) -> float:
+        """Clamp a GS FBW attitude limit to the FC's redundant safety envelope."""
+
+        try:
+            limit = float(value)
+        except (TypeError, ValueError):
+            limit = float(default_limit)
+        if not math.isfinite(limit):
+            limit = float(default_limit)
+        return max(0.0, min(float(fc_limit), limit))
+
+    def _fbw_limited_channel(
+        self, raw_channel: int | float, gs_limit_deg: float, fc_limit_deg: float
+    ) -> int:
+        """Scale a raw stick channel so the FC sees the GS FBW limit as full stick."""
+
+        input_norm = self._normalise_crsf_channel_for_fbw(raw_channel)
+        gs_limit_deg = self._validated_fbw_limit(
+            gs_limit_deg, fc_limit_deg, fc_limit_deg
+        )
+        if fc_limit_deg <= 0.0:
+            return CRSF_CHANNEL_CENTER
+        fc_norm = input_norm * (gs_limit_deg / fc_limit_deg)
+        return self._map_axis_to_crsf(fc_norm)
+
+    def _apply_fbw_command_limits(self, channels: list[int]) -> list[int]:
+        """Apply GS-configured FBW roll/pitch limits to outgoing RC channels."""
+
+        if len(channels) < 2:
+            channels.extend([CRSF_CHANNEL_CENTER] * (2 - len(channels)))
+        channels[0] = self._fbw_limited_channel(
+            channels[0],
+            self.fbw_max_roll_angle_deg,
+            self.FBW_FC_MAX_ROLL_ANGLE_DEG,
+        )
+        channels[1] = self._fbw_limited_channel(
+            channels[1],
+            self.fbw_max_pitch_angle_deg,
+            self.FBW_FC_MAX_PITCH_ANGLE_DEG,
+        )
+        return channels
+
+    @staticmethod
     def _normalise_crsf_channel_for_fbw(value: int | float) -> float:
         """Mirror the FC's ``mapRcToNormalized`` helper for FBW setpoints."""
 
@@ -2215,14 +2280,14 @@ class MainWindow(QMainWindow):
     def _desired_fbw_attitude_from_channels(
         self, channels: list[int]
     ) -> tuple[float, float]:
-        """Return desired roll/pitch degrees using the FC's FBW math."""
+        """Return desired roll/pitch degrees from the scaled command sent to the FC."""
 
         roll_raw = channels[0] if len(channels) > 0 else CRSF_CHANNEL_CENTER
         pitch_raw = channels[1] if len(channels) > 1 else CRSF_CHANNEL_CENTER
         roll_norm = self._normalise_crsf_channel_for_fbw(roll_raw)
         pitch_norm = self._normalise_crsf_channel_for_fbw(pitch_raw)
-        desired_roll = roll_norm * self.FBW_MAX_ROLL_ANGLE_DEG
-        desired_pitch = pitch_norm * self.FBW_MAX_PITCH_ANGLE_DEG
+        desired_roll = roll_norm * self.FBW_FC_MAX_ROLL_ANGLE_DEG
+        desired_pitch = pitch_norm * self.FBW_FC_MAX_PITCH_ANGLE_DEG
         return desired_roll, desired_pitch
 
     def _update_desired_fbw_attitude(
@@ -2269,6 +2334,7 @@ class MainWindow(QMainWindow):
         if joy_roll is not None and joy_pitch is not None:
             channels[0] = JoystickRawHandler._map_to_crsf(joy_roll)
             channels[1] = JoystickRawHandler._map_to_crsf(joy_pitch)
+            self._apply_fbw_command_limits(channels)
         self._update_desired_fbw_attitude(channels, enabled=True)
 
     @staticmethod
@@ -2315,6 +2381,8 @@ class MainWindow(QMainWindow):
         # Control mode channel: send low for Manual, high for Fly-By-Wire.
         mode_value = 1700 if self.control_mode == "Fly-By-Wire" else 400
         channels[self.control_mode_channel] = mode_value
+        if self.control_mode == "Fly-By-Wire":
+            self._apply_fbw_command_limits(channels)
         self._update_desired_fbw_attitude(channels)
         return channels
 
@@ -2614,6 +2682,26 @@ class MainWindow(QMainWindow):
         smooth_row.addWidget(self.smoothing_value_label)
         control_layout.addLayout(smooth_row)
 
+        fbw_roll_row = QHBoxLayout()
+        fbw_roll_row.addWidget(QLabel("FBW max roll (deg)"))
+        self.fbw_roll_limit_spin = QDoubleSpinBox()
+        self.fbw_roll_limit_spin.setRange(0.0, self.FBW_FC_MAX_ROLL_ANGLE_DEG)
+        self.fbw_roll_limit_spin.setDecimals(1)
+        self.fbw_roll_limit_spin.setSingleStep(1.0)
+        self.fbw_roll_limit_spin.setValue(self.fbw_max_roll_angle_deg)
+        fbw_roll_row.addWidget(self.fbw_roll_limit_spin)
+        control_layout.addLayout(fbw_roll_row)
+
+        fbw_pitch_row = QHBoxLayout()
+        fbw_pitch_row.addWidget(QLabel("FBW max pitch (deg)"))
+        self.fbw_pitch_limit_spin = QDoubleSpinBox()
+        self.fbw_pitch_limit_spin.setRange(0.0, self.FBW_FC_MAX_PITCH_ANGLE_DEG)
+        self.fbw_pitch_limit_spin.setDecimals(1)
+        self.fbw_pitch_limit_spin.setSingleStep(1.0)
+        self.fbw_pitch_limit_spin.setValue(self.fbw_max_pitch_angle_deg)
+        fbw_pitch_row.addWidget(self.fbw_pitch_limit_spin)
+        control_layout.addLayout(fbw_pitch_row)
+
         auto_throttle_row = QHBoxLayout()
         auto_throttle_row.addWidget(QLabel("Auto throttle target airspeed (mph)"))
         self.auto_throttle_target_spin = QDoubleSpinBox()
@@ -2789,6 +2877,8 @@ class MainWindow(QMainWindow):
             self.on_yaw_sensitivity_changed
         )
         self.smoothing_slider.valueChanged.connect(self.on_smoothing_changed)
+        self.fbw_roll_limit_spin.valueChanged.connect(self.on_fbw_roll_limit_changed)
+        self.fbw_pitch_limit_spin.valueChanged.connect(self.on_fbw_pitch_limit_changed)
         self.auto_throttle_target_spin.valueChanged.connect(
             self.on_auto_throttle_target_changed
         )
@@ -3453,6 +3543,30 @@ class MainWindow(QMainWindow):
         self.smoothing_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_smoothing(value)
+        save_config(self.config)
+
+    def on_fbw_roll_limit_changed(self, value: float):
+        self.fbw_max_roll_angle_deg = self._validated_fbw_limit(
+            value,
+            self.FBW_FC_MAX_ROLL_ANGLE_DEG,
+            self.DEFAULT_FBW_MAX_ROLL_ANGLE_DEG,
+        )
+        self.fbw_cfg["max_roll_angle_deg"] = self.fbw_max_roll_angle_deg
+        self._update_desired_fbw_attitude(
+            getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
+        )
+        save_config(self.config)
+
+    def on_fbw_pitch_limit_changed(self, value: float):
+        self.fbw_max_pitch_angle_deg = self._validated_fbw_limit(
+            value,
+            self.FBW_FC_MAX_PITCH_ANGLE_DEG,
+            self.DEFAULT_FBW_MAX_PITCH_ANGLE_DEG,
+        )
+        self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
+        self._update_desired_fbw_attitude(
+            getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
+        )
         save_config(self.config)
 
     def on_auto_throttle_target_changed(self, value: float):

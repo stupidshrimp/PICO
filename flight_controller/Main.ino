@@ -294,8 +294,8 @@ const uint16_t SERVO_MAX_US = 2000;
 const uint16_t SERVO_CENTER_US = 1500;
 
 // Fly-by-wire tuning constants.
-const float FBW_MAX_ROLL_ANGLE_DEG = 45.0f;
-const float FBW_MAX_PITCH_ANGLE_DEG = 30.0f;
+const float FBW_MAX_ROLL_ANGLE_DEG = 80.0f;
+const float FBW_MAX_PITCH_ANGLE_DEG = 80.0f;
 const float FBW_PID_OUTPUT_LIMIT_US = 400.0f;
 const float FBW_PID_INTEGRAL_LIMIT = 100.0f;
 const float FBW_ATTITUDE_FILTER_CUTOFF_HZ = 5.0f;
