@@ -110,6 +110,11 @@ constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
+// CRSF parser stalls in the field have shown up as 1-3 second gaps where raw
+// bytes still arrive but RC_CHANNELS_PACKED frames do not decode.  Keep the
+// last servo pulse during those short dropouts so surfaces do not twitch to
+// neutral, but still enter hard failsafe if the link stays quiet.
+constexpr uint32_t RC_SERVO_HOLD_TIMEOUT_US = 3000000UL;
 constexpr uint32_t BAROMETER_TEMPERATURE_PERIOD_US = 500000UL;
 
 struct TimingCounter {
@@ -207,6 +212,7 @@ struct ControlDebugCounters {
   uint32_t ekfUpdates;
   uint32_t servoLoopFresh;
   uint32_t servoLoopStale;
+  uint32_t servoLoopHold;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -242,6 +248,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.ekfUpdates = 0;
   controlDebugCounters.servoLoopFresh = 0;
   controlDebugCounters.servoLoopStale = 0;
+  controlDebugCounters.servoLoopHold = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -511,9 +518,16 @@ void signalCalibrationComplete() {
   writeRollPitchIndicator(SERVO_CENTER_US);
 }
 
+uint32_t rcInputAgeUs(uint32_t nowUs) {
+  return lastRcPacketUs == 0 ? UINT32_MAX : static_cast<uint32_t>(nowUs - lastRcPacketUs);
+}
+
 bool rcInputFresh(uint32_t nowUs) {
-  return lastRcPacketUs != 0 &&
-         (uint32_t)(nowUs - lastRcPacketUs) <= RC_FAILSAFE_TIMEOUT_US;
+  return rcInputAgeUs(nowUs) <= RC_FAILSAFE_TIMEOUT_US;
+}
+
+bool rcInputWithinServoHold(uint32_t nowUs) {
+  return rcInputAgeUs(nowUs) <= RC_SERVO_HOLD_TIMEOUT_US;
 }
 
 float mapRcToNormalized(uint16_t value) {
@@ -806,6 +820,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" tlm_last=0x"); Serial.print(controlDebugCounters.crsfLastTelemetryFrameType, HEX);
   Serial.print(" servo_loop_fresh_hz="); Serial.print(controlDebugCounters.servoLoopFresh * scale, 1);
   Serial.print(" servo_loop_stale_hz="); Serial.print(controlDebugCounters.servoLoopStale * scale, 1);
+  Serial.print(" servo_loop_hold_hz="); Serial.print(controlDebugCounters.servoLoopHold * scale, 1);
   Serial.print(" servo_writes_hz=");
   Serial.print(controlDebugCounters.rollServoWrites * scale, 1); Serial.print('/');
   Serial.print(controlDebugCounters.pitchServoWrites * scale, 1); Serial.print('/');
@@ -1035,8 +1050,9 @@ void loop() {
     const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
     const uint32_t servoUpdateUs = micros();
     const bool rcFresh = rcInputFresh(servoUpdateUs);
+    const bool rcServoHold = !rcFresh && rcInputWithinServoHold(servoUpdateUs);
     if (lastRcPacketUs != 0) {
-      const uint32_t rcAgeUs = static_cast<uint32_t>(servoUpdateUs - lastRcPacketUs);
+      const uint32_t rcAgeUs = rcInputAgeUs(servoUpdateUs);
       if (rcAgeUs > controlDebugCounters.maxRcAgeUs) {
         controlDebugCounters.maxRcAgeUs = rcAgeUs;
       }
@@ -1045,6 +1061,9 @@ void loop() {
       ++controlDebugCounters.servoLoopFresh;
     } else {
       ++controlDebugCounters.servoLoopStale;
+      if (rcServoHold) {
+        ++controlDebugCounters.servoLoopHold;
+      }
     }
     if (!rcFresh) {
       if (!rcFailsafeActive) {
@@ -1068,8 +1087,15 @@ void loop() {
     uint16_t yawCommandUs = rcFresh ? mapRcToUs(rcYawRaw) : SERVO_CENTER_US;
 
     if (!rcFresh) {
-      rollCommandUs = SERVO_CENTER_US;
-      pitchCommandUs = SERVO_CENTER_US;
+      if (rcServoHold) {
+        rollCommandUs = lastRollCommandUs;
+        pitchCommandUs = lastPitchCommandUs;
+        yawCommandUs = lastYawCommandUs;
+      } else {
+        rollCommandUs = SERVO_CENTER_US;
+        pitchCommandUs = SERVO_CENTER_US;
+        yawCommandUs = SERVO_CENTER_US;
+      }
     } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE) {
       float rollCommandNorm = mapRcToNormalized(rcRollRaw);
       float pitchCommandNorm = mapRcToNormalized(rcPitchRaw);
