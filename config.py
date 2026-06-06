@@ -88,10 +88,13 @@ DEFAULT_CONFIG = {
         "altitude_alarm_altitude": 20,
         # Trigger when |roll| > roll_angle
         "roll_angle": 45,
+        # Trigger when descent rate exceeds sink_rate_threshold_fps
+        "sink_rate_threshold_fps": 10.0,
         # Enable/disable individual telemetry alarms
         "stall_alarm_enabled": True,
         "altitude_alarm_enabled": True,
         "bank_angle_alarm_enabled": True,
+        "sink_rate_alarm_enabled": True,
     },
     "airborne": {
         # By default the takeoff detector derives its airspeed threshold from

@@ -29,7 +29,9 @@
         "roll_angle": 45,
         "stall_alarm_enabled": true,
         "altitude_alarm_enabled": true,
-        "bank_angle_alarm_enabled": true
+        "bank_angle_alarm_enabled": true,
+        "sink_rate_threshold_fps": 10.0,
+        "sink_rate_alarm_enabled": true
     },
     "map": {
         "center": [
