@@ -946,9 +946,13 @@ class MainWindow(QMainWindow):
         )
         flight_status_container.setStyleSheet(panel_style)
 
-        flight_status_layout = QHBoxLayout(flight_status_container)
+        flight_status_layout = QVBoxLayout(flight_status_container)
         flight_status_layout.setContentsMargins(12, 12, 12, 12)
-        flight_status_layout.setSpacing(12)
+        flight_status_layout.setSpacing(10)
+
+        flight_status_row = QHBoxLayout()
+        flight_status_row.setContentsMargins(0, 0, 0, 0)
+        flight_status_row.setSpacing(12)
 
         flight_status_text_layout = QVBoxLayout()
         flight_status_text_layout.setContentsMargins(0, 0, 0, 0)
@@ -966,54 +970,47 @@ class MainWindow(QMainWindow):
         self.airborne_status_label.setMinimumHeight(28)
         flight_status_text_layout.addWidget(self.airborne_status_label)
 
-        flight_status_layout.addLayout(flight_status_text_layout, 1)
+        flight_status_row.addLayout(flight_status_text_layout, 1)
 
         self.airborne_status_dot = QLabel(flight_status_container)
         self.airborne_status_dot.setObjectName("airborneStatusDot")
         self.airborne_status_dot.setFixedSize(14, 14)
-        flight_status_layout.addWidget(
+        flight_status_row.addWidget(
             self.airborne_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
+        flight_status_layout.addLayout(flight_status_row)
 
-        column_layout.addWidget(flight_status_container)
-
-        gps_fix_container = QFrame(frame)
-        gps_fix_container.setObjectName("gpsFixContainer")
-        gps_fix_container.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        gps_fix_container.setStyleSheet(panel_style)
-
-        gps_fix_layout = QHBoxLayout(gps_fix_container)
-        gps_fix_layout.setContentsMargins(12, 12, 12, 12)
-        gps_fix_layout.setSpacing(12)
+        gps_fix_row = QHBoxLayout()
+        gps_fix_row.setContentsMargins(0, 0, 0, 0)
+        gps_fix_row.setSpacing(12)
 
         gps_fix_text_layout = QVBoxLayout()
         gps_fix_text_layout.setContentsMargins(0, 0, 0, 0)
         gps_fix_text_layout.setSpacing(2)
 
-        gps_fix_title = QLabel("GPS Fix", gps_fix_container)
+        gps_fix_title = QLabel("GPS Fix", flight_status_container)
         gps_fix_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         gps_fix_title.setFont(signal_title.font())
         gps_fix_title.setStyleSheet("color: white;")
         gps_fix_text_layout.addWidget(gps_fix_title)
 
-        self.gps_fix_status_label = QLabel("NO FIX", gps_fix_container)
+        self.gps_fix_status_label = QLabel("NO FIX", flight_status_container)
         self.gps_fix_status_label.setObjectName("gpsFixStatusLabel")
         self.gps_fix_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.gps_fix_status_label.setMinimumHeight(28)
         gps_fix_text_layout.addWidget(self.gps_fix_status_label)
 
-        gps_fix_layout.addLayout(gps_fix_text_layout, 1)
+        gps_fix_row.addLayout(gps_fix_text_layout, 1)
 
-        self.gps_fix_status_dot = QLabel(gps_fix_container)
+        self.gps_fix_status_dot = QLabel(flight_status_container)
         self.gps_fix_status_dot.setObjectName("gpsFixStatusDot")
         self.gps_fix_status_dot.setFixedSize(14, 14)
-        gps_fix_layout.addWidget(
+        gps_fix_row.addWidget(
             self.gps_fix_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
+        flight_status_layout.addLayout(gps_fix_row)
 
-        column_layout.addWidget(gps_fix_container)
+        column_layout.addWidget(flight_status_container)
 
         autopilot_container = QFrame(frame)
         autopilot_container.setObjectName("autopilotContainer")
