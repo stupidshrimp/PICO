@@ -5,16 +5,47 @@ from queue import Empty, Full, Queue
 from PySide6.QtCore import QObject, Signal, QThread
 
 
+BUTTON_EVENT_RE = re.compile(r"Button\s+(\d+)\s+(PRESSED|RELEASED)", re.IGNORECASE)
+
+
+def parse_button_event(raw_line):
+    """Return a ``(button, pressed)`` tuple for joystick button event lines."""
+    match = BUTTON_EVENT_RE.search(raw_line)
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2).upper() == "PRESSED"
+
+
 class _SerialReader(QThread):
     """Background thread that pulls lines from the serial port."""
 
     error = Signal(str)
 
-    def __init__(self, serial_connection, stop_event, data_queue):
+    def __init__(self, serial_connection, stop_event, data_queue, button_queue):
         super().__init__()
         self.serial_connection = serial_connection
         self._stop = stop_event
         self.data_queue = data_queue
+        self.button_queue = button_queue
+
+    def _queue_raw_line(self, raw):
+        """Queue button edges losslessly and axis/debug lines through axis coalescing."""
+        button_event = parse_button_event(raw)
+        if button_event is not None:
+            self.button_queue.put_nowait(button_event)
+            return
+
+        try:
+            self.data_queue.put_nowait(raw)
+        except Full:
+            try:
+                self.data_queue.get_nowait()
+            except Empty:
+                pass
+            try:
+                self.data_queue.put_nowait(raw)
+            except Full:
+                pass
 
     def run(self):
         try:
@@ -25,17 +56,7 @@ class _SerialReader(QThread):
                     except (serial.SerialException, OSError) as exc:
                         self.error.emit(f"Serial connection error: {exc}")
                         break
-                    try:
-                        self.data_queue.put_nowait(raw)
-                    except Full:
-                        try:
-                            self.data_queue.get_nowait()
-                        except Empty:
-                            pass
-                        try:
-                            self.data_queue.put_nowait(raw)
-                        except Full:
-                            pass
+                    self._queue_raw_line(raw)
                 else:
                     self.msleep(5)
         except Exception as exc:  # pragma: no cover - serial read errors
@@ -67,8 +88,13 @@ class JoystickRawHandler(QObject):
         # use the newest stick position rather than replaying stale serial lines
         # after a short burst or GUI hiccup.
         self.data_queue = Queue(maxsize=8)
+        # Button edges are intentionally separate from the droppable axis queue so
+        # short GUI stalls cannot lose a mode toggle or yaw release.
+        self.button_queue = Queue()
         self.roll = 512
         self.pitch = 512
+        self.button_states = {}
+        self._button_events = []
         self.deadzone = deadzone  # percent
         self.sensitivity = sensitivity  # percent
         self.smoothing = smoothing  # percent
@@ -77,7 +103,9 @@ class JoystickRawHandler(QObject):
         self._stop = threading.Event()
 
         # Start background QThread to continually read data from the serial port
-        self.reading_thread = _SerialReader(self.serial_connection, self._stop, self.data_queue)
+        self.reading_thread = _SerialReader(
+            self.serial_connection, self._stop, self.data_queue, self.button_queue
+        )
         self.reading_thread.error.connect(self.error)
         self.reading_thread.start()
 
@@ -121,6 +149,43 @@ class JoystickRawHandler(QObject):
 
         return x, y
 
+    def _store_button_event(self, button, pressed):
+        """Update button state and append a pending event for consumers."""
+        if not hasattr(self, "button_states"):
+            self.button_states = {}
+        if not hasattr(self, "_button_events"):
+            self._button_events = []
+        self.button_states[button] = pressed
+        self._button_events.append((button, pressed))
+
+    def _parse_button_line(self, raw_line):
+        """Parse and store a button event line from the joystick sketch."""
+        button_event = parse_button_event(raw_line)
+        if button_event is None:
+            return False
+        self._store_button_event(*button_event)
+        return True
+
+    def _drain_button_queue(self):
+        """Move losslessly queued serial button edges into local pending events."""
+        if not hasattr(self, "button_queue"):
+            return
+        while True:
+            try:
+                button, pressed = self.button_queue.get_nowait()
+            except Empty:
+                break
+            self._store_button_event(button, pressed)
+
+    def consume_button_events(self):
+        """Return pending joystick button events and clear the event buffer."""
+        self._drain_button_queue()
+        if not hasattr(self, "_button_events"):
+            self._button_events = []
+        events = list(self._button_events)
+        self._button_events.clear()
+        return events
+
     def _apply_deadzone_sensitivity(self, value):
         """Apply deadzone and sensitivity to a raw axis value."""
         center = 512
@@ -147,9 +212,10 @@ class JoystickRawHandler(QObject):
             try:
                 latest_sample = self._parse_line(raw_line)
             except ValueError:
-                # Ignore unrelated lines such as button events.  Keep looking for
-                # the newest valid axis sample instead of letting stale queued
-                # values add control latency.
+                # Live button lines are routed into ``button_queue`` before this
+                # lossy axis queue.  Keep this fallback for tests or callers that
+                # inject raw button lines directly into ``data_queue``.
+                self._parse_button_line(raw_line)
                 continue
 
         if latest_sample is not None:

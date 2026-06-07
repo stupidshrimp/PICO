@@ -157,6 +157,14 @@ class MainWindow(QMainWindow):
     # flight_controller/Main.ino; CH3 auto-throttle setpoints are scaled by this
     # fixed range on both the GS and FC.
     AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0
+    JOYSTICK_THROTTLE_MODE_BUTTON = 1
+    JOYSTICK_CONTROL_MODE_BUTTON = 13
+    JOYSTICK_YAW_LEFT_BUTTON = 14
+    JOYSTICK_YAW_RIGHT_BUTTON = 15
+    SINK_RATE_STALE_TIMEOUT_S = 0.5
+    SINK_RATE_WINDOW_S = 1.5
+    SINK_RATE_MIN_WINDOW_S = 0.75
+    SINK_RATE_MIN_SAMPLE_INTERVAL_S = 0.01
 
     def __init__(self):
         super().__init__()
@@ -168,6 +176,8 @@ class MainWindow(QMainWindow):
         self.autopilot_time_label = None
         self.autopilot_longitude_label = None
         self.autopilot_latitude_label = None
+        self.gps_fix_status_label = None
+        self.gps_fix_status_dot = None
         # Size the window using the command page and keep it fixed. This
         # ensures the GUI is always large enough for its contents and does not
         # change size when switching between pages.
@@ -208,6 +218,8 @@ class MainWindow(QMainWindow):
         self._airborne_takeoff_start_time = None
         self._airborne_landing_start_time = None
         self._last_airborne_indicator_state = None
+        self._gps_has_lock: Optional[bool] = None
+        self._last_gps_fix_indicator_state = None
 
         # Sortie recording state and controls
         self._sortie_fields = [
@@ -284,6 +296,7 @@ class MainWindow(QMainWindow):
 
         self._setup_command_sidebar()
         self._setup_airborne_indicator()
+        self._setup_gps_fix_indicator()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
@@ -411,6 +424,8 @@ class MainWindow(QMainWindow):
         self.warning_cfg.setdefault("stall_alarm_enabled", True)
         self.warning_cfg.setdefault("altitude_alarm_enabled", True)
         self.warning_cfg.setdefault("bank_angle_alarm_enabled", True)
+        self.warning_cfg.setdefault("sink_rate_alarm_enabled", True)
+        self.warning_cfg.setdefault("sink_rate_threshold_fps", 10.0)
         self.airborne_cfg = self.config.setdefault("airborne", {})
         self.airborne_cfg.setdefault("takeoff_airspeed_multiplier", 1.2)
         self.airborne_cfg.setdefault("takeoff_altitude_ft", 15.0)
@@ -461,9 +476,11 @@ class MainWindow(QMainWindow):
         self.stall_alarm_playing = False
         self.altitude_alarm_playing = False
         self.roll_alarm_playing = False
+        self.sink_rate_alarm_playing = False
         self.stall_alarm_start_time = None
         self.altitude_alarm_start_time = None
         self.roll_alarm_start_time = None
+        self.sink_rate_alarm_start_time = None
         self.sound_players = {}
         self._muted_sounds = {}
         self.last_attitude_packet_time = None
@@ -636,6 +653,7 @@ class MainWindow(QMainWindow):
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
         self._yaw_keys_pressed: set[int] = set()
+        self._joystick_yaw_buttons_pressed: set[int] = set()
         self.yaw_sensitivity = int(self.joystick_cfg.get("yaw_sensitivity", 100))
         self._yaw_step_base = 0.05
         self.yaw_indicator.setValue(self.yaw_value)
@@ -670,9 +688,11 @@ class MainWindow(QMainWindow):
         self._latest_gps_fix_seq = 0
         self._last_pushed_gps_fix_seq = 0
         self._gps_first_fix_sent = False
-        self._gps_has_lock: Optional[bool] = None
         self.current_altitude = None
         self.current_airspeed = None
+        self.current_sink_rate_fps = None
+        self._sink_rate_samples = deque()
+        self._last_sink_rate_time = None
         self.last_airspeed_packet_time = None
         self.telemetry_state = {field: None for field in self._sortie_fields}
         self._update_battery_full_voltage()
@@ -942,9 +962,13 @@ class MainWindow(QMainWindow):
         )
         flight_status_container.setStyleSheet(panel_style)
 
-        flight_status_layout = QHBoxLayout(flight_status_container)
+        flight_status_layout = QVBoxLayout(flight_status_container)
         flight_status_layout.setContentsMargins(12, 12, 12, 12)
-        flight_status_layout.setSpacing(12)
+        flight_status_layout.setSpacing(10)
+
+        flight_status_row = QHBoxLayout()
+        flight_status_row.setContentsMargins(0, 0, 0, 0)
+        flight_status_row.setSpacing(12)
 
         flight_status_text_layout = QVBoxLayout()
         flight_status_text_layout.setContentsMargins(0, 0, 0, 0)
@@ -962,14 +986,45 @@ class MainWindow(QMainWindow):
         self.airborne_status_label.setMinimumHeight(28)
         flight_status_text_layout.addWidget(self.airborne_status_label)
 
-        flight_status_layout.addLayout(flight_status_text_layout, 1)
+        flight_status_row.addLayout(flight_status_text_layout, 1)
 
         self.airborne_status_dot = QLabel(flight_status_container)
         self.airborne_status_dot.setObjectName("airborneStatusDot")
         self.airborne_status_dot.setFixedSize(14, 14)
-        flight_status_layout.addWidget(
+        flight_status_row.addWidget(
             self.airborne_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
+        flight_status_layout.addLayout(flight_status_row)
+
+        gps_fix_row = QHBoxLayout()
+        gps_fix_row.setContentsMargins(0, 0, 0, 0)
+        gps_fix_row.setSpacing(12)
+
+        gps_fix_text_layout = QVBoxLayout()
+        gps_fix_text_layout.setContentsMargins(0, 0, 0, 0)
+        gps_fix_text_layout.setSpacing(2)
+
+        gps_fix_title = QLabel("GPS Fix", flight_status_container)
+        gps_fix_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        gps_fix_title.setFont(signal_title.font())
+        gps_fix_title.setStyleSheet("color: white;")
+        gps_fix_text_layout.addWidget(gps_fix_title)
+
+        self.gps_fix_status_label = QLabel("NO FIX", flight_status_container)
+        self.gps_fix_status_label.setObjectName("gpsFixStatusLabel")
+        self.gps_fix_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.gps_fix_status_label.setMinimumHeight(28)
+        gps_fix_text_layout.addWidget(self.gps_fix_status_label)
+
+        gps_fix_row.addLayout(gps_fix_text_layout, 1)
+
+        self.gps_fix_status_dot = QLabel(flight_status_container)
+        self.gps_fix_status_dot.setObjectName("gpsFixStatusDot")
+        self.gps_fix_status_dot.setFixedSize(14, 14)
+        gps_fix_row.addWidget(
+            self.gps_fix_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+        flight_status_layout.addLayout(gps_fix_row)
 
         column_layout.addWidget(flight_status_container)
 
@@ -1056,6 +1111,55 @@ class MainWindow(QMainWindow):
             "border-radius: 7px;"
         )
         self._last_airborne_indicator_state = state
+
+    def _setup_gps_fix_indicator(self) -> None:
+        """Initialise the command-page GPS fix indicator."""
+
+        self._last_gps_fix_indicator_state = None
+        self._update_gps_fix_indicator()
+
+    def _update_gps_fix_indicator(self) -> None:
+        """Render the current GPS fix state in the command sidebar."""
+
+        label = getattr(self, "gps_fix_status_label", None)
+        dot = getattr(self, "gps_fix_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "fix" if bool(self._gps_has_lock) else "no_fix"
+        if state == self._last_gps_fix_indicator_state:
+            return
+
+        if state == "fix":
+            text = "FIX VALID"
+            accent = "#21d07a"
+            background = "rgba(33, 208, 122, 32)"
+            border = "rgba(33, 208, 122, 155)"
+            dot_shadow = "rgba(33, 208, 122, 95)"
+        else:
+            text = "NO FIX"
+            accent = "#ff5252"
+            background = "rgba(255, 82, 82, 28)"
+            border = "rgba(255, 82, 82, 135)"
+            dot_shadow = "rgba(255, 82, 82, 75)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_gps_fix_indicator_state = state
 
     def _setup_sortie_section(self) -> None:
         """Create the Sortie controls within the settings sidebar."""
@@ -1390,6 +1494,7 @@ class MainWindow(QMainWindow):
         ):
             self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
+        self._handle_joystick_button_events()
         self._update_desired_fbw_attitude_from_stick(joy_pitch, joy_roll)
 
         if norm_pitch is None or norm_roll is None:
@@ -1553,6 +1658,83 @@ class MainWindow(QMainWindow):
             return False
         return (now - self.last_airspeed_packet_time) <= max(0.0, timeout)
 
+    def _reset_sink_rate_estimate(self) -> None:
+        """Clear cached sink-rate state so stale samples cannot trigger alarms."""
+
+        self.current_sink_rate_fps = None
+        self._sink_rate_samples.clear()
+        self._last_sink_rate_time = None
+
+    def _update_sink_rate_from_altitude(
+        self, altitude_ft: Optional[float], timestamp: float
+    ) -> None:
+        """Update the descent-rate estimate from successive altitude samples."""
+
+        if altitude_ft is None:
+            self._reset_sink_rate_estimate()
+            return
+
+        sample_time = timestamp
+        if (
+            self._last_sink_rate_time is not None
+            and timestamp - self._last_sink_rate_time
+            < self.SINK_RATE_MIN_SAMPLE_INTERVAL_S
+            and self._sink_rate_samples
+        ):
+            # Serial reads can drain several GPS frames in one GUI callback.
+            # Treat those near-simultaneous arrivals as one sample so burst
+            # delivery does not collapse the time window and inflate sink rate.
+            sample_time = self._last_sink_rate_time
+            self._sink_rate_samples[-1] = (sample_time, altitude_ft)
+        else:
+            self._sink_rate_samples.append((sample_time, altitude_ft))
+
+        cutoff = sample_time - self.SINK_RATE_WINDOW_S
+        while self._sink_rate_samples and self._sink_rate_samples[0][0] < cutoff:
+            self._sink_rate_samples.popleft()
+
+        self._last_sink_rate_time = sample_time
+        if len(self._sink_rate_samples) < 2:
+            self.current_sink_rate_fps = None
+            return
+
+        window_duration = self._sink_rate_samples[-1][0] - self._sink_rate_samples[0][0]
+        if window_duration < self.SINK_RATE_MIN_WINDOW_S:
+            self.current_sink_rate_fps = None
+            return
+
+        mean_time = sum(sample_time for sample_time, _ in self._sink_rate_samples) / len(
+            self._sink_rate_samples
+        )
+        mean_altitude = sum(altitude for _, altitude in self._sink_rate_samples) / len(
+            self._sink_rate_samples
+        )
+        time_variance = sum(
+            (sample_time - mean_time) ** 2 for sample_time, _ in self._sink_rate_samples
+        )
+        if time_variance <= 0:
+            self.current_sink_rate_fps = None
+            return
+
+        altitude_time_covariance = sum(
+            (sample_time - mean_time) * (altitude - mean_altitude)
+            for sample_time, altitude in self._sink_rate_samples
+        )
+        vertical_speed_fps = altitude_time_covariance / time_variance
+        self.current_sink_rate_fps = max(0.0, -vertical_speed_fps)
+
+    def _sink_rate_value_fresh(self, now: float) -> bool:
+        """Return whether the sink-rate estimate is based on recent GPS data."""
+
+        if self._last_sink_rate_time is None:
+            return False
+
+        if now - self._last_sink_rate_time <= self.SINK_RATE_STALE_TIMEOUT_S:
+            return True
+
+        self._reset_sink_rate_estimate()
+        return False
+
     def _current_altitude_agl_ft(self) -> Optional[float]:
         altitude = self._safe_float(self.current_altitude)
         if altitude is None or self.airborne_baseline_altitude_ft is None:
@@ -1672,17 +1854,59 @@ class MainWindow(QMainWindow):
             self._yaw_keys_pressed.add(key)
         else:
             self._yaw_keys_pressed.discard(key)
+        self._refresh_yaw_target()
 
-        if Qt.Key_Q in self._yaw_keys_pressed and Qt.Key_E in self._yaw_keys_pressed:
+    def _handle_joystick_yaw_button(self, button: int, pressed: bool) -> None:
+        """Update yaw target tracking based on joystick button input."""
+
+        if pressed:
+            self._joystick_yaw_buttons_pressed.add(button)
+        else:
+            self._joystick_yaw_buttons_pressed.discard(button)
+        self._refresh_yaw_target()
+
+    def _refresh_yaw_target(self) -> None:
+        """Combine keyboard and joystick yaw inputs into one yaw target."""
+
+        left_active = (
+            Qt.Key_Q in self._yaw_keys_pressed
+            or self.JOYSTICK_YAW_LEFT_BUTTON in self._joystick_yaw_buttons_pressed
+        )
+        right_active = (
+            Qt.Key_E in self._yaw_keys_pressed
+            or self.JOYSTICK_YAW_RIGHT_BUTTON in self._joystick_yaw_buttons_pressed
+        )
+
+        if left_active and right_active:
             target = 0.0
-        elif Qt.Key_Q in self._yaw_keys_pressed:
+        elif left_active:
             target = -1.0
-        elif Qt.Key_E in self._yaw_keys_pressed:
+        elif right_active:
             target = 1.0
         else:
             target = 0.0
 
         self.yaw_target_value = target
+
+    def _handle_joystick_button_events(self) -> None:
+        """Apply joystick button edges to mode toggles and yaw controls."""
+
+        joystick = getattr(self, "joystick", None)
+        if joystick is None or not hasattr(joystick, "consume_button_events"):
+            if self._joystick_yaw_buttons_pressed:
+                self._joystick_yaw_buttons_pressed.clear()
+                self._refresh_yaw_target()
+            return
+
+        for button, pressed in joystick.consume_button_events():
+            if button == self.JOYSTICK_CONTROL_MODE_BUTTON and pressed:
+                self.toggle_control_mode()
+            elif button == self.JOYSTICK_THROTTLE_MODE_BUTTON and pressed:
+                self.toggle_throttle_mode()
+            elif button == self.JOYSTICK_YAW_LEFT_BUTTON:
+                self._handle_joystick_yaw_button(button, pressed)
+            elif button == self.JOYSTICK_YAW_RIGHT_BUTTON:
+                self._handle_joystick_yaw_button(button, pressed)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:
@@ -2040,7 +2264,12 @@ class MainWindow(QMainWindow):
         airspeed = self._safe_float(self.current_airspeed)
         altitude = self._safe_float(self.current_altitude)
         roll = self._safe_float(self.telemetry_roll)
-        if airspeed is None or altitude is None or roll is None:
+        sink_rate = (
+            self._safe_float(self.current_sink_rate_fps)
+            if self._sink_rate_value_fresh(now)
+            else None
+        )
+        if airspeed is None or altitude is None:
             return
 
         airborne_warnings_armed = (
@@ -2096,7 +2325,11 @@ class MainWindow(QMainWindow):
 
         # Roll angle warning
         bank_enabled = self.warning_cfg.get("bank_angle_alarm_enabled", True)
-        if bank_enabled and abs(roll) > self.warning_cfg.get("roll_angle", 0):
+        if (
+            roll is not None
+            and bank_enabled
+            and abs(roll) > self.warning_cfg.get("roll_angle", 0)
+        ):
             if self.roll_alarm_start_time is None:
                 self.roll_alarm_start_time = now
             elif now - self.roll_alarm_start_time > 1.0 and not self.roll_alarm_playing:
@@ -2108,6 +2341,35 @@ class MainWindow(QMainWindow):
         else:
             self.roll_alarm_start_time = None
             self.roll_alarm_playing = False
+
+        # Sink-rate warning: excessive descent rate while airborne and not already
+        # satisfying the landing debounce.
+        sink_rate_enabled = self.warning_cfg.get("sink_rate_alarm_enabled", True)
+        sink_rate_threshold = self._safe_float(
+            self.warning_cfg.get("sink_rate_threshold_fps", 10.0), 10.0
+        )
+        if (
+            airborne_warnings_armed
+            and sink_rate_enabled
+            and sink_rate is not None
+            and sink_rate > sink_rate_threshold
+        ):
+            if self.sink_rate_alarm_start_time is None:
+                self.sink_rate_alarm_start_time = now
+            elif (
+                now - self.sink_rate_alarm_start_time > 1.0
+                and not self.sink_rate_alarm_playing
+            ):
+                self.sink_rate_alarm_playing = True
+                self.play_sound_sequence(
+                    ["sinkalarm", "sinkratewarning"],
+                    finished_callback=lambda: setattr(
+                        self, "sink_rate_alarm_playing", False
+                    ),
+                )
+        else:
+            self.sink_rate_alarm_start_time = None
+            self.sink_rate_alarm_playing = False
 
 
     def _set_crsf_raw_serial_debug(self, enabled: bool) -> None:
@@ -2316,6 +2578,10 @@ class MainWindow(QMainWindow):
             self.gps_lon = lon_value if lon_value is not None else lon
             self.current_altitude = alt
             self.current_airspeed = speed
+            if gps_has_fix:
+                self._update_sink_rate_from_altitude(self._safe_float(alt), now)
+            else:
+                self._update_sink_rate_from_altitude(None, now)
             try:
                 speed_value = float(speed)
             except (TypeError, ValueError):
@@ -2697,6 +2963,12 @@ class MainWindow(QMainWindow):
         )
         self.update_throttle_mode_label()
         self._update_throttle_indicator()
+        sound_name = (
+            "autothrottle"
+            if self.throttle_mode == "Auto Throttle"
+            else "manualthrottle"
+        )
+        self.play_sound(sound_name)
 
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
@@ -4239,6 +4511,7 @@ class MainWindow(QMainWindow):
         if self._gps_has_lock == has_lock:
             return
         self._gps_has_lock = has_lock
+        self._update_gps_fix_indicator()
         if not has_lock:
             self._latest_gps_fix = None
             default_lat, default_lon = self._map_initial_center
