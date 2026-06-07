@@ -69,6 +69,8 @@ class JoystickRawHandler(QObject):
         self.data_queue = Queue(maxsize=8)
         self.roll = 512
         self.pitch = 512
+        self.button_states = {}
+        self._button_events = []
         self.deadzone = deadzone  # percent
         self.sensitivity = sensitivity  # percent
         self.smoothing = smoothing  # percent
@@ -121,6 +123,32 @@ class JoystickRawHandler(QObject):
 
         return x, y
 
+    def _parse_button_line(self, raw_line):
+        """Parse and store a button event line from the joystick sketch."""
+        match = re.search(
+            r"Button\s+(\d+)\s+(PRESSED|RELEASED)", raw_line, re.IGNORECASE
+        )
+        if not match:
+            return False
+
+        button = int(match.group(1))
+        pressed = match.group(2).upper() == "PRESSED"
+        if not hasattr(self, "button_states"):
+            self.button_states = {}
+        if not hasattr(self, "_button_events"):
+            self._button_events = []
+        self.button_states[button] = pressed
+        self._button_events.append((button, pressed))
+        return True
+
+    def consume_button_events(self):
+        """Return pending joystick button events and clear the event buffer."""
+        if not hasattr(self, "_button_events"):
+            self._button_events = []
+        events = list(self._button_events)
+        self._button_events.clear()
+        return events
+
     def _apply_deadzone_sensitivity(self, value):
         """Apply deadzone and sensitivity to a raw axis value."""
         center = 512
@@ -147,9 +175,10 @@ class JoystickRawHandler(QObject):
             try:
                 latest_sample = self._parse_line(raw_line)
             except ValueError:
-                # Ignore unrelated lines such as button events.  Keep looking for
-                # the newest valid axis sample instead of letting stale queued
-                # values add control latency.
+                # Button events are interleaved with axis samples by the joystick
+                # sketch.  Preserve them for the GUI while still ignoring other
+                # unrelated debug lines and keeping axis latency low.
+                self._parse_button_line(raw_line)
                 continue
 
         if latest_sample is not None:

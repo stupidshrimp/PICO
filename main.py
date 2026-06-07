@@ -157,6 +157,10 @@ class MainWindow(QMainWindow):
     # flight_controller/Main.ino; CH3 auto-throttle setpoints are scaled by this
     # fixed range on both the GS and FC.
     AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0
+    JOYSTICK_THROTTLE_MODE_BUTTON = 1
+    JOYSTICK_CONTROL_MODE_BUTTON = 13
+    JOYSTICK_YAW_LEFT_BUTTON = 14
+    JOYSTICK_YAW_RIGHT_BUTTON = 15
 
     def __init__(self):
         super().__init__()
@@ -641,6 +645,7 @@ class MainWindow(QMainWindow):
         self.yaw_indicator.resize(self.ui.yawInput.size())
         self.yaw_indicator.show()
         self._yaw_keys_pressed: set[int] = set()
+        self._joystick_yaw_buttons_pressed: set[int] = set()
         self.yaw_sensitivity = int(self.joystick_cfg.get("yaw_sensitivity", 100))
         self._yaw_step_base = 0.05
         self.yaw_indicator.setValue(self.yaw_value)
@@ -1481,6 +1486,7 @@ class MainWindow(QMainWindow):
         ):
             self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
+        self._handle_joystick_button_events()
         self._update_desired_fbw_attitude_from_stick(joy_pitch, joy_roll)
 
         if norm_pitch is None or norm_roll is None:
@@ -1763,17 +1769,59 @@ class MainWindow(QMainWindow):
             self._yaw_keys_pressed.add(key)
         else:
             self._yaw_keys_pressed.discard(key)
+        self._refresh_yaw_target()
 
-        if Qt.Key_Q in self._yaw_keys_pressed and Qt.Key_E in self._yaw_keys_pressed:
+    def _handle_joystick_yaw_button(self, button: int, pressed: bool) -> None:
+        """Update yaw target tracking based on joystick button input."""
+
+        if pressed:
+            self._joystick_yaw_buttons_pressed.add(button)
+        else:
+            self._joystick_yaw_buttons_pressed.discard(button)
+        self._refresh_yaw_target()
+
+    def _refresh_yaw_target(self) -> None:
+        """Combine keyboard and joystick yaw inputs into one yaw target."""
+
+        left_active = (
+            Qt.Key_Q in self._yaw_keys_pressed
+            or self.JOYSTICK_YAW_LEFT_BUTTON in self._joystick_yaw_buttons_pressed
+        )
+        right_active = (
+            Qt.Key_E in self._yaw_keys_pressed
+            or self.JOYSTICK_YAW_RIGHT_BUTTON in self._joystick_yaw_buttons_pressed
+        )
+
+        if left_active and right_active:
             target = 0.0
-        elif Qt.Key_Q in self._yaw_keys_pressed:
+        elif left_active:
             target = -1.0
-        elif Qt.Key_E in self._yaw_keys_pressed:
+        elif right_active:
             target = 1.0
         else:
             target = 0.0
 
         self.yaw_target_value = target
+
+    def _handle_joystick_button_events(self) -> None:
+        """Apply joystick button edges to mode toggles and yaw controls."""
+
+        joystick = getattr(self, "joystick", None)
+        if joystick is None or not hasattr(joystick, "consume_button_events"):
+            if self._joystick_yaw_buttons_pressed:
+                self._joystick_yaw_buttons_pressed.clear()
+                self._refresh_yaw_target()
+            return
+
+        for button, pressed in joystick.consume_button_events():
+            if button == self.JOYSTICK_CONTROL_MODE_BUTTON and pressed:
+                self.toggle_control_mode()
+            elif button == self.JOYSTICK_THROTTLE_MODE_BUTTON and pressed:
+                self.toggle_throttle_mode()
+            elif button == self.JOYSTICK_YAW_LEFT_BUTTON:
+                self._handle_joystick_yaw_button(button, pressed)
+            elif button == self.JOYSTICK_YAW_RIGHT_BUTTON:
+                self._handle_joystick_yaw_button(button, pressed)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:

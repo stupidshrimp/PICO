@@ -38,3 +38,30 @@ def test_get_raw_values_ignores_invalid_lines_without_losing_last_state():
     assert pitch == 512
     assert roll == 512
     assert handler.data_queue.empty()
+
+
+def test_get_raw_values_buffers_button_events_between_axis_samples():
+    handler = _handler_with_queue(
+        "X=100 Y=200",
+        "Button 13 PRESSED",
+        "Button 14 RELEASED",
+        "X=300 Y=400",
+    )
+
+    pitch, roll = handler.get_raw_values()
+
+    assert pitch == 400
+    assert roll == 300
+    assert handler.consume_button_events() == [(13, True), (14, False)]
+    assert handler.button_states == {13: True, 14: False}
+    assert handler.consume_button_events() == []
+
+
+def test_button_event_parsing_is_case_insensitive():
+    handler = _handler_with_queue("button 1 pressed", "BUTTON 15 RELEASED")
+
+    pitch, roll = handler.get_raw_values()
+
+    assert pitch == 512
+    assert roll == 512
+    assert handler.consume_button_events() == [(1, True), (15, False)]
