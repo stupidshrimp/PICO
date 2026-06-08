@@ -58,12 +58,9 @@ DEFAULT_CONFIG = {
         "channel_update_interval": 8,
     },
     "throttle": {
-        # Auto-throttle target and conservative PID defaults.
+        # Auto-throttle target sent to the FC on CH3 when Auto Throttle is active.
+        # PID gains and stale-data timeouts live in flight_controller/Main.ino.
         "target_airspeed_mph": 20.0,
-        "pid_kp": 0.8,
-        "pid_ki": 0.04,
-        "pid_kd": 0.15,
-        "airspeed_stale_timeout_s": 1.0,
     },
     "fbw": {
         # Ground-station authority limits for Fly-By-Wire attitude commands.
@@ -144,6 +141,17 @@ def load_config(path: str = "config.json"):
     crsf_config["packet_interval"] = normalise_packet_interval_ms(
         crsf_config.get("packet_interval")
     )
+
+    # Remove legacy GS-side throttle PID/stale-timeout keys.  The FC owns these
+    # safety-critical control-loop values in flight_controller/Main.ino.
+    throttle_config = config.setdefault("throttle", {})
+    for legacy_key in (
+        "pid_kp",
+        "pid_ki",
+        "pid_kd",
+        "airspeed_stale_timeout_s",
+    ):
+        throttle_config.pop(legacy_key, None)
 
     # Environment variable overrides
     joystick_port = os.getenv("JOYSTICK_PORT")
