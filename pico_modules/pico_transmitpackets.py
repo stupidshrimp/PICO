@@ -250,35 +250,10 @@ class CRSFPacketProcessor(QObject):
         self._thread.start()
 
 
-    def _discard_serial_handle(self) -> None:
-        """Close and delete the current QSerialPort before a reconnect attempt."""
-
-        existing_serial = getattr(self, "serial", None)
-        if existing_serial is None:
-            return
-
-        self.serial = None
-        try:
-            if existing_serial.isOpen():
-                existing_serial.close()
-            existing_serial.deleteLater()
-        except Exception:
-            logger.debug("Failed to clean up stale serial port", exc_info=True)
-
-    @Slot()
-    def reconnect_serial(self):
-        """Force a fresh serial handle after the configured port reappears."""
-
-        self._discard_serial_handle()
-        self.connect_serial()
-
     @Slot()
     def connect_serial(self):
         """Attempt to connect to the specified serial port in the worker thread."""
         try:
-            if getattr(self, "serial", None) is not None:
-                self._discard_serial_handle()
-
             self.serial = QSerialPort(self.serial_port)
             self.serial.setBaudRate(self.baudrate)
             self.serial.setDataBits(QSerialPort.Data8)
@@ -298,10 +273,7 @@ class CRSFPacketProcessor(QObject):
                     "Failed to open serial port: %s", self.serial.errorString()
                 )
                 self.error.emit(f"Failed to open serial port: {self.serial.errorString()}")
-                failed_serial = self.serial
                 self.serial = None
-                if failed_serial is not None:
-                    failed_serial.deleteLater()
         except Exception as e:
             logger.exception("Failed to open serial port")
             self.error.emit(f"Failed to open serial port: {e}")
@@ -726,7 +698,6 @@ class CRSFPacketProcessor(QObject):
             # Check USB connection. This call is internally throttled so the
             # 250 Hz transmit loop does not enumerate ports on every tick.
             if not self.check_usb_connection():
-                self._discard_serial_handle()
                 return "Error"
 
             if not self.is_connected():
