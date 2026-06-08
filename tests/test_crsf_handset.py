@@ -117,30 +117,12 @@ def test_decode_handset_piggyback_payload():
     ]
 
 class DummyWritableSerial:
-    def __init__(self, write_result=None, pending_after_wait=0, wait_result=True):
+    def __init__(self):
         self.writes = []
-        self.write_result = write_result
-        self.pending_bytes = 0
-        self.pending_after_wait = pending_after_wait
-        self.wait_result = wait_result
-        self.wait_calls = []
 
     def write(self, payload: bytes) -> int:
         self.writes.append(payload)
-        result = len(payload) if self.write_result is None else self.write_result
-        self.pending_bytes = max(0, int(result))
-        return result
-
-    def bytesToWrite(self) -> int:
-        return self.pending_bytes
-
-    def waitForBytesWritten(self, timeout_ms: int) -> bool:
-        self.wait_calls.append(timeout_ms)
-        self.pending_bytes = self.pending_after_wait
-        return self.wait_result
-
-    def isOpen(self) -> bool:
-        return True
+        return len(payload)
 
     def errorString(self) -> str:
         return "dummy serial error"
@@ -188,68 +170,6 @@ def test_worker_transmit_writes_current_packet():
     assert result == "Good"
     assert len(serial.writes) == 1
     assert serial.writes[0] == bytes(processor.create_packet())
-
-
-def test_worker_transmit_rejects_short_serial_write():
-    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor.channels = [CRSF_CHANNEL_CENTER] * 16
-    packet_length = len(processor.create_packet())
-    serial = DummyWritableSerial(write_result=packet_length - 1)
-    processor.serial = serial
-    processor.error = DummySignal()
-    processor._tx_enabled = True
-    processor.check_usb_connection = lambda: True
-    processor.is_connected = lambda: True
-
-    result = processor.send_current_packet()
-
-    assert result.startswith("Error: Short CRSF serial write")
-    assert processor._tx_write_errors == 1
-    assert processor._diag_tx_errors == 1
-    assert processor._tx_sent_packets == 0
-    assert processor._diag_tx_sent == 0
-    assert processor.error.emitted
-
-
-def test_safe_shutdown_reports_failure_when_frame_does_not_flush(monkeypatch):
-    serial = DummyWritableSerial(pending_after_wait=1, wait_result=False)
-    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor.channels = [CRSF_CHANNEL_CENTER] * 16
-    processor.serial = serial
-    processor.error = DummySignal()
-    processor.safe_shutdown_complete = DummySignal()
-    processor._tx_enabled = True
-    processor._tx_interval_ms = 1
-    processor.check_usb_connection = lambda: True
-    processor.is_connected = lambda: True
-    monkeypatch.setattr("pico_modules.pico_transmitpackets.QThread.msleep", lambda _ms: None)
-
-    processor.send_safe_shutdown_packets([CRSF_CHANNEL_MIN] * 16, frame_count=1)
-
-    assert processor.safe_shutdown_complete.emitted == [False]
-    assert processor._tx_write_errors == 1
-    assert processor._diag_tx_errors == 1
-    assert processor.error.emitted == ["Safe shutdown CRSF frame did not flush before timeout"]
-
-
-def test_safe_shutdown_reports_success_after_full_write_flushes(monkeypatch):
-    serial = DummyWritableSerial(pending_after_wait=0, wait_result=True)
-    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
-    processor.channels = [CRSF_CHANNEL_CENTER] * 16
-    processor.serial = serial
-    processor.error = DummySignal()
-    processor.safe_shutdown_complete = DummySignal()
-    processor._tx_enabled = True
-    processor._tx_interval_ms = 1
-    processor.check_usb_connection = lambda: True
-    processor.is_connected = lambda: True
-    monkeypatch.setattr("pico_modules.pico_transmitpackets.QThread.msleep", lambda _ms: None)
-
-    processor.send_safe_shutdown_packets([CRSF_CHANNEL_MIN] * 16, frame_count=1)
-
-    assert processor.safe_shutdown_complete.emitted == [True]
-    assert serial.wait_calls
-    assert processor.error.emitted == []
 
 
 class DummyPacer:

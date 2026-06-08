@@ -599,62 +599,6 @@ class CRSFPacketProcessor(QObject):
         self._reset_tx_debug_window()
 
 
-    def _serial_is_open(self, serial) -> bool:
-        is_open = getattr(serial, "isOpen", None)
-        if is_open is None:
-            return True
-        return bool(is_open())
-
-    def _serial_error_string(self) -> str:
-        serial = getattr(self, "serial", None)
-        error_string = getattr(serial, "errorString", None)
-        if error_string is None:
-            return "unknown serial error"
-        return str(error_string())
-
-    def _record_tx_write_error(self) -> None:
-        self._tx_write_errors += 1
-        self._diag_tx_errors += 1
-
-    def _wait_for_serial_write_drain(self, serial, timeout_ms: int = 20) -> bool:
-        """Wait until Qt reports that the current serial write buffer is empty."""
-
-        if serial is None or not self._serial_is_open(serial):
-            return False
-
-        deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
-        bytes_to_write = getattr(serial, "bytesToWrite", None)
-        wait_for_bytes_written = getattr(serial, "waitForBytesWritten", None)
-
-        while True:
-            pending = None
-            if bytes_to_write is not None:
-                try:
-                    pending = int(bytes_to_write())
-                    self._tx_last_bytes_to_write = pending
-                except Exception:
-                    pending = None
-
-            if pending == 0:
-                return True
-
-            if wait_for_bytes_written is None:
-                return pending is None
-
-            remaining_ms = int((deadline - time.monotonic()) * 1000)
-            if remaining_ms <= 0:
-                return pending == 0
-
-            if not bool(wait_for_bytes_written(max(1, remaining_ms))):
-                if bytes_to_write is None:
-                    return False
-                try:
-                    pending = int(bytes_to_write())
-                    self._tx_last_bytes_to_write = pending
-                except Exception:
-                    return False
-                return pending == 0
-
     @Slot(list, int)
     def send_safe_shutdown_packets(self, safe_channels, frame_count=3):
         """Send throttle-cut/disarmed frames before periodic TX is disabled."""
@@ -666,16 +610,10 @@ class CRSFPacketProcessor(QObject):
             success = True
             for _ in range(count):
                 result = self.send_current_packet()
-                frame_success = result == "Good"
+                success = success and result == "Good"
                 serial = getattr(self, "serial", None)
-                if frame_success:
-                    frame_success = self._wait_for_serial_write_drain(serial, 20)
-                    if not frame_success:
-                        self._record_tx_write_error()
-                        message = "Safe shutdown CRSF frame did not flush before timeout"
-                        logger.error(message)
-                        self.error.emit(message)
-                success = success and frame_success
+                if serial is not None and serial.isOpen():
+                    serial.waitForBytesWritten(20)
                 QThread.msleep(max(1, int(getattr(self, "_tx_interval_ms", 4))))
         except Exception as exc:
             logger.exception("Failed to send safe shutdown packets")
@@ -714,24 +652,19 @@ class CRSFPacketProcessor(QObject):
 
             if self.serial:
                 packet = self.create_packet()
-                expected_bytes = len(packet)
-                bytes_written = int(self.serial.write(bytes(packet)))
-                if bytes_written != expected_bytes:
-                    self._record_tx_write_error()
-                    if bytes_written == -1:
-                        raise IOError(self._serial_error_string())
-                    raise IOError(
-                        f"Short CRSF serial write: wrote {bytes_written} of "
-                        f"{expected_bytes} bytes"
-                    )
+                bytes_written = self.serial.write(bytes(packet))
+                if bytes_written == -1:
+                    self._tx_write_errors += 1
+                    self._diag_tx_errors += 1
+                    raise IOError(self.serial.errorString())
                 now_perf = time.perf_counter()
                 if self._tx_debug_last_write_perf is not None:
                     self._tx_last_interval_ms = (now_perf - self._tx_debug_last_write_perf) * 1000.0
                 self._tx_debug_last_write_perf = now_perf
                 self._tx_sent_packets += 1
-                self._tx_bytes_written += bytes_written
+                self._tx_bytes_written += max(0, int(bytes_written))
                 self._diag_tx_sent += 1
-                self._diag_tx_bytes += bytes_written
+                self._diag_tx_bytes += max(0, int(bytes_written))
                 try:
                     self._tx_last_bytes_to_write = int(self.serial.bytesToWrite())
                 except Exception:
