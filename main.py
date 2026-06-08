@@ -658,6 +658,7 @@ class MainWindow(QMainWindow):
 
         # Setup configuration page for COM port selections
         self.setup_configuration_page()
+        self._start_serial_port_monitor()
 
         # Create joystick input indicators
         self.pitch_indicator = InputLine(Qt.Vertical, self.ui.pitchInput)
@@ -4200,9 +4201,38 @@ class MainWindow(QMainWindow):
         self._update_parameter_query_button_state()
         self.play_sound("elrsinitiated.mp3")
 
+    @staticmethod
+    def _available_serial_port_devices() -> list[str]:
+        """Return the serial device names currently reported by the OS."""
+
+        return [p.device for p in list_ports.comports()]
+
+    def _start_serial_port_monitor(self) -> None:
+        """Watch for hot-plugged serial ports and refresh the port dropdowns."""
+
+        self._serial_port_devices = set(self._available_serial_port_devices())
+        self._serial_port_monitor_timer = QTimer(self)
+        self._serial_port_monitor_timer.setInterval(1000)
+        self._serial_port_monitor_timer.timeout.connect(
+            self._refresh_port_lists_if_serial_ports_changed
+        )
+        self._serial_port_monitor_timer.start()
+
+    def _refresh_port_lists_if_serial_ports_changed(self) -> None:
+        """Refresh the dropdowns only when the OS serial-port list changes."""
+
+        current_ports = set(self._available_serial_port_devices())
+        if current_ports == getattr(self, "_serial_port_devices", set()):
+            return
+
+        self._serial_port_devices = current_ports
+        self.update_port_lists()
+
     def update_port_lists(self):
         """Refresh available serial ports and update the dropdowns."""
-        ports = ["Not connected"] + [p.device for p in list_ports.comports()]
+        available_ports = self._available_serial_port_devices()
+        self._serial_port_devices = set(available_ports)
+        ports = ["Not connected"] + available_ports
 
         def refresh(combo, handler):
             current = combo.currentText()
