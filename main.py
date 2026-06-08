@@ -886,6 +886,17 @@ class MainWindow(QMainWindow):
         )
         self._sidebar_panel_style = panel_style
 
+        def style_section_header(label: QLabel) -> None:
+            """Make command sidebar section titles bold without boxed label borders."""
+
+            title_font = label.font()
+            title_font.setBold(True)
+            title_font.setUnderline(False)
+            label.setFont(title_font)
+            label.setStyleSheet(
+                "color: white; background: transparent; border: none;"
+            )
+
         signal_container = QFrame(frame)
         signal_container.setObjectName("signalHealthContainer")
         signal_container.setSizePolicy(
@@ -900,6 +911,7 @@ class MainWindow(QMainWindow):
         signal_title = self.ui.signalHealthTitle
         signal_title.setParent(signal_container)
         signal_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        style_section_header(signal_title)
         signal_title.setSizePolicy(
             QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         )
@@ -953,7 +965,7 @@ class MainWindow(QMainWindow):
         battery_title.setObjectName("batteryHealthTitle")
         battery_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         battery_title.setFont(signal_title.font())
-        battery_title.setStyleSheet("color: white;")
+        style_section_header(battery_title)
         battery_layout.addWidget(battery_title)
 
         self.battery_percent_bar = QProgressBar(battery_container)
@@ -991,7 +1003,7 @@ class MainWindow(QMainWindow):
         flight_status_title = QLabel("Flight Status", flight_status_container)
         flight_status_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         flight_status_title.setFont(signal_title.font())
-        flight_status_title.setStyleSheet("color: white;")
+        style_section_header(flight_status_title)
         flight_status_text_layout.addWidget(flight_status_title)
 
         self.airborne_status_label = QLabel("GROUNDED", flight_status_container)
@@ -1021,7 +1033,7 @@ class MainWindow(QMainWindow):
         gps_fix_title = QLabel("GPS Fix", flight_status_container)
         gps_fix_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         gps_fix_title.setFont(signal_title.font())
-        gps_fix_title.setStyleSheet("color: white;")
+        style_section_header(gps_fix_title)
         gps_fix_text_layout.addWidget(gps_fix_title)
 
         self.gps_fix_status_label = QLabel("NO FIX", flight_status_container)
@@ -1056,7 +1068,7 @@ class MainWindow(QMainWindow):
         autopilot_title = QLabel("Autopilot", autopilot_container)
         autopilot_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         autopilot_title.setFont(signal_title.font())
-        autopilot_title.setStyleSheet("color: white;")
+        style_section_header(autopilot_title)
         autopilot_layout.addWidget(autopilot_title)
 
         self.autopilot_time_label = QLabel("Time to target: --", autopilot_container)
@@ -1075,7 +1087,10 @@ class MainWindow(QMainWindow):
             )
             autopilot_layout.addWidget(label)
 
-        column_layout.addWidget(autopilot_container)
+        show_autopilot_section = False
+        autopilot_container.setVisible(show_autopilot_section)
+        if show_autopilot_section:
+            column_layout.addWidget(autopilot_container)
 
     def _setup_airborne_indicator(self) -> None:
         """Initialise the command-page grounded/airborne indicator."""
