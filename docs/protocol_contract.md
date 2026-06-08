@@ -29,7 +29,7 @@ PWM `1000..2000 us` only after receiving the CRSF packet.
 | `1` | CH2 | Pitch | CRSF raw axis, `172..1811`, center `992` | Manual elevator command, or FBW desired pitch = normalized axis × `80 deg` |
 | `2` | CH3 | Throttle / auto-throttle setpoint | Manual: throttle percent mapped to `172..1811`; Auto Throttle: desired airspeed mapped linearly over `0..100 mph` | Manual throttle percent, or FC auto-throttle target airspeed |
 | `3` | CH4 | Yaw | CRSF raw axis, `172..1811`, center `992` | Manual rudder command; held/blended to neutral during short RC dropouts |
-| `4` | CH5 / AUX1 | ELRS arm/disarm state | Idle startup and shutdown safety frames drive low (`172`); operator-started active transmission drives high (`1811`) | Reserved for link/arm state; FC control modes do not use it |
+| `4` | CH5 / AUX1 | ELRS arm keepalive | GS drives high (`1811`) | Reserved for link/arm state; FC control modes do not use it |
 | `5` | CH6 / AUX2 | Control mode | Low (`400`) = Manual, high (`1700`) = Fly-By-Wire | FBW enabled when value is at least `1550`; otherwise Manual |
 | `6` | CH7 / AUX3 | Throttle mode | Low (`400`) = Manual Throttle, high (`1700`) = Auto Throttle | Auto throttle enabled when value is at least `1550`; otherwise Manual Throttle |
 | `7..15` | CH8..CH16 | Reserved | Center (`992`) unless future features define them | Ignored by current FC firmware |
@@ -44,7 +44,6 @@ PWM `1000..2000 us` only after receiving the CRSF packet.
 | Control-mode high threshold | `1550` | CH6 values at or above this threshold select Fly-By-Wire |
 | Throttle-mode high threshold | `1550` | CH7 values at or above this threshold select Auto Throttle |
 | Auto-throttle airspeed freshness timeout | `100000 us` (100 ms) | FC throttle PID is reset when pitot/airspeed data is stale, independent of GPS lock |
-| GS shutdown safety burst | 3 CRSF RC frames before TX disable | Roll/pitch/yaw neutral, throttle cut, CH5 low/disarmed, Manual control mode, and Manual throttle mode |
 
 ## FC → GS telemetry units
 
