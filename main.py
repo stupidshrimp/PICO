@@ -2642,8 +2642,8 @@ class MainWindow(QMainWindow):
         debug_page = getattr(self, "debug_page", None)
         if debug_page is None:
             return
-        crsf_processor = getattr(self, "crsf_processor", None)
-        if not crsf_processor:
+        if not self._is_crsf_debug_available():
+            self._link_diagnostics_active = False
             debug_page.set_link_diagnostics_enabled(
                 False,
                 False,
@@ -2659,7 +2659,7 @@ class MainWindow(QMainWindow):
     def toggle_link_diagnostics_from_debug_page(self) -> None:
         """Start or stop CRSF/ELRS link diagnostics from the Debug tab."""
 
-        if not self.crsf_processor:
+        if not self._is_crsf_debug_available():
             self.debug_page.append_message(
                 "Link diagnostics failed: CRSF transmitter is not connected."
             )
@@ -2677,12 +2677,12 @@ class MainWindow(QMainWindow):
         debug_page = getattr(self, "debug_page", None)
         if debug_page is None:
             return
-        if self.transmission_active:
+        if getattr(self, "transmission_active", False):
             debug_page.set_parameter_query_enabled(
                 False,
                 "Stop packet transmission before querying ELRS parameters.",
             )
-        elif not self.crsf_processor:
+        elif not self._is_crsf_debug_available():
             debug_page.set_parameter_query_enabled(
                 False,
                 "Connect the ELRS/CRSF transmitter before querying parameters.",
@@ -2702,7 +2702,7 @@ class MainWindow(QMainWindow):
             )
             self._update_parameter_query_button_state()
             return
-        if not self.crsf_processor:
+        if not self._is_crsf_debug_available():
             self.debug_page.append_message(
                 "ELRS parameter query failed: CRSF transmitter is not connected."
             )
@@ -3066,9 +3066,16 @@ class MainWindow(QMainWindow):
     ) -> Optional[CRSFPacketProcessor]:
         """Create a CRSF worker with safe initial channels and all signals wired."""
 
-        if not validate_port("CRSF", port):
-            print("CRSF disabled due to unavailable port.")
+        if not self._is_serial_port_configured(port):
+            print("CRSF port: Not connected")
             return None
+
+        available_ports = set(self._available_serial_port_devices())
+        if port not in available_ports:
+            print(
+                f"Warning: CRSF port '{port}' not found. "
+                "Creating retryable worker for hot-plug reconnect."
+            )
 
         initial_channels = (
             self._build_control_channels()
@@ -3383,7 +3390,17 @@ class MainWindow(QMainWindow):
             self._show_preflight_verification
         )
 
-        ports = ["Not connected"] + [p.device for p in list_ports.comports()]
+        available_ports = [p.device for p in list_ports.comports()]
+
+        def port_choices(*configured_ports: str | None) -> list[str]:
+            choices = ["Not connected"] + available_ports
+            for configured_port in configured_ports:
+                if (
+                    self._is_serial_port_configured(configured_port)
+                    and configured_port not in choices
+                ):
+                    choices.append(configured_port)
+            return choices
 
         def add_section(title, *, show_status=True):
             section = QWidget()
@@ -3426,7 +3443,7 @@ class MainWindow(QMainWindow):
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
         self.elrs_port_combo = QComboBox()
-        self.elrs_port_combo.addItems(ports)
+        self.elrs_port_combo.addItems(port_choices(self.crsf_cfg.get("port")))
         rf_port_row.addWidget(self.elrs_port_combo)
         rf_layout.addLayout(rf_port_row)
 
@@ -3451,7 +3468,7 @@ class MainWindow(QMainWindow):
         control_port_row = QHBoxLayout()
         control_port_row.addWidget(QLabel("Port"))
         self.control_port_combo = QComboBox()
-        self.control_port_combo.addItems(ports)
+        self.control_port_combo.addItems(port_choices(self.joystick_cfg.get("port")))
         control_port_row.addWidget(self.control_port_combo)
         control_layout.addLayout(control_port_row)
 
@@ -3781,7 +3798,7 @@ class MainWindow(QMainWindow):
 
         # Initial connection status
         self.update_connection_status(self.control_status, self.joystick is not None)
-        self.update_connection_status(self.rf_status, self.crsf_processor is not None)
+        self.update_connection_status(self.rf_status, self._is_crsf_port_available())
         # Video connection status is derived from the video feed itself
         layout.addStretch()
 
@@ -4319,7 +4336,25 @@ class MainWindow(QMainWindow):
         if self.transmission_active:
             return
 
-        if not self.crsf_processor:
+        if (
+            not self.crsf_processor
+            and self._is_serial_port_configured(self.crsf_cfg.get("port"))
+        ):
+            self.crsf_processor = self._create_crsf_processor(
+                self.crsf_cfg.get("port"), transmission_enabled=False
+            )
+            if self.crsf_processor:
+                self._set_crsf_raw_serial_debug(
+                    self._debug_monitoring and self._debug_serial_all
+                )
+                self.update_connection_status(
+                    self.rf_status, self._is_crsf_port_available()
+                )
+
+        if not self._can_start_crsf_transmission():
+            self.update_connection_status(
+                self.rf_status, self._is_crsf_port_available()
+            )
             self.transmission_active = False
             self._transmission_pressed_while_inactive = False
             self._apply_transmission_button_style("inactive")
@@ -4357,10 +4392,53 @@ class MainWindow(QMainWindow):
 
         return [p.device for p in list_ports.comports()]
 
+    @staticmethod
+    def _is_serial_port_configured(port: str | None) -> bool:
+        """Return True when a saved port names a real selection to retry."""
+
+        return bool(port) and str(port).lower() != "not connected"
+
+    def _is_configured_port_available(self, port: str | None) -> bool:
+        """Return True when a configured serial port is currently enumerated."""
+
+        return (
+            self._is_serial_port_configured(port)
+            and port in set(self._available_serial_port_devices())
+        )
+
+    def _is_crsf_port_available(self) -> bool:
+        """Return True when the configured CRSF port is currently enumerated."""
+
+        crsf_cfg = getattr(self, "crsf_cfg", {})
+        return self._is_configured_port_available(crsf_cfg.get("port"))
+
+    def _is_control_port_available(self) -> bool:
+        """Return True when the configured control port is currently enumerated."""
+
+        joystick_cfg = getattr(self, "joystick_cfg", {})
+        return self._is_configured_port_available(joystick_cfg.get("port"))
+
+    def _can_start_crsf_transmission(self) -> bool:
+        """Return True only when CRSF has a worker and an enumerated port."""
+
+        return (
+            getattr(self, "crsf_processor", None) is not None
+            and self._is_crsf_port_available()
+        )
+
+    def _is_crsf_debug_available(self) -> bool:
+        """Return True when CRSF debug actions have an available transmitter."""
+
+        return (
+            getattr(self, "crsf_processor", None) is not None
+            and self._is_crsf_port_available()
+        )
+
     def _start_serial_port_monitor(self) -> None:
         """Watch for hot-plugged serial ports and refresh the port dropdowns."""
 
         self._serial_port_devices = set(self._available_serial_port_devices())
+        self._crsf_port_available = self._is_crsf_port_available()
         self._serial_port_monitor_timer = QTimer(self)
         self._serial_port_monitor_timer.setInterval(1000)
         self._serial_port_monitor_timer.timeout.connect(
@@ -4384,19 +4462,67 @@ class MainWindow(QMainWindow):
         self._serial_port_devices = set(available_ports)
         ports = ["Not connected"] + available_ports
 
-        def refresh(combo, handler):
+        def refresh(combo, handler, *, preserved_port: str | None = None):
+            choices = list(ports)
             current = combo.currentText()
-            selected_port_available = current in ports
+            if (
+                self._is_serial_port_configured(preserved_port)
+                and preserved_port not in choices
+            ):
+                choices.append(preserved_port)
+
+            selected_port_available = current in choices
             combo.blockSignals(True)
             combo.clear()
-            combo.addItems(ports)
+            combo.addItems(choices)
             combo.setCurrentText(current if selected_port_available else "Not connected")
             combo.blockSignals(False)
             if not selected_port_available:
                 handler("Not connected")
 
-        refresh(self.control_port_combo, self.on_control_port_selected)
-        refresh(self.elrs_port_combo, self.on_elrs_port_selected)
+        refresh(
+            self.control_port_combo,
+            self.on_control_port_selected,
+            preserved_port=self.joystick_cfg.get("port"),
+        )
+        refresh(
+            self.elrs_port_combo,
+            self.on_elrs_port_selected,
+            preserved_port=self.crsf_cfg.get("port"),
+        )
+        control_port_available = self._is_control_port_available()
+        self.update_connection_status(self.control_status, control_port_available)
+        if not control_port_available and self.joystick:
+            try:
+                self.joystick.close()
+            except Exception:
+                pass
+            self.joystick = None
+        elif control_port_available and self.joystick is None:
+            self.joystick = self._create_joystick_handler(self.joystick_cfg.get("port"))
+            self.update_connection_status(self.control_status, self.joystick is not None)
+
+        crsf_port_available = self._is_crsf_port_available()
+        previous_crsf_port_available = getattr(
+            self, "_crsf_port_available", crsf_port_available
+        )
+        self._crsf_port_available = crsf_port_available
+        self.update_connection_status(self.rf_status, crsf_port_available)
+        if crsf_port_available:
+            if not self.crsf_processor:
+                self.crsf_processor = self._create_crsf_processor(
+                    self.crsf_cfg.get("port"), transmission_enabled=False
+                )
+                if self.crsf_processor:
+                    self._set_crsf_raw_serial_debug(
+                        self._debug_monitoring and self._debug_serial_all
+                    )
+            elif not previous_crsf_port_available:
+                QMetaObject.invokeMethod(
+                    self.crsf_processor, "reconnect_serial", Qt.QueuedConnection
+                )
+        self._update_parameter_query_button_state()
+        self._update_link_diagnostics_button_state()
         # Video receiver uses a fixed device index; no port list to refresh
 
     def reinitialize_serial_ports(self):
@@ -4494,7 +4620,8 @@ class MainWindow(QMainWindow):
                 self._apply_transmission_button_style("inactive")
                 self.transmission_control_button.setText("Start transmitting packets")
 
-        self.update_connection_status(self.rf_status, self.crsf_processor is not None)
+        self._crsf_port_available = self._is_crsf_port_available()
+        self.update_connection_status(self.rf_status, self._crsf_port_available)
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
         save_config(self.config)
