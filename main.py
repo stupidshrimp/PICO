@@ -76,6 +76,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
     QElapsedTimer,
+    QEventLoop,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QPixmap, QPalette, QColor
@@ -201,6 +202,8 @@ class MainWindow(QMainWindow):
         self.desired_fbw_roll = None
         self.desired_fbw_pitch = None
         self._latest_control_channels = [CRSF_CHANNEL_CENTER] * 16
+        self._safe_shutdown_frame_count = 3
+        self._safe_shutdown_timeout_ms = 250
         self.update_control_mode_label()
         # Shortcut to toggle control mode
         self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
@@ -598,63 +601,22 @@ class MainWindow(QMainWindow):
         self.throttle_percent = 0
         self.target_throttle_percent = 0
 
-        self.joystick = None
-        if validate_port("joystick", self.joystick_cfg.get("port")):
-            try:
-                self.joystick = JoystickRawHandler(
-                    port=self.joystick_cfg.get("port"),
-                    baudrate=self.joystick_cfg.get("baudrate"),
-                    deadzone=self.joystick_cfg.get("deadzone", 0),
-                    sensitivity=self.joystick_cfg.get("sensitivity", 100),
-                    smoothing=self.joystick_cfg.get("smoothing", 0),
-                )
-                self.joystick.error.connect(self.handle_worker_error)
-            except Exception as e:
-                print(f"Failed to initialize joystick: {e}")
-        else:
-            print("Joystick disabled due to unavailable port.")
+        self.joystick = self._create_joystick_handler(self.joystick_cfg.get("port"))
 
-        # Initialize CRSFPacketProcessor
-        self.crsf_processor = None
-        if validate_port("CRSF", self.crsf_cfg.get("port")):
-            try:
-                self.crsf_processor = CRSFPacketProcessor(
-                    port=self.crsf_cfg.get("port"),
-                    baudrate=self.crsf_cfg.get("baudrate"),
-                    channels=self._build_control_channels(),
-                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
-                    transmission_enabled=True,
-                    raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
-                )
-                self.crsf_processor.telemetry_ready.connect(
-                    self.handle_telemetry_wrapper
-                )
-                self.crsf_processor.serial_data.connect(self._handle_serial_debug)
-                self.crsf_processor.transmit_debug_update.connect(
-                    self._handle_transmit_debug
-                )
-                self.crsf_processor.parameter_query_update.connect(
-                    self._handle_parameter_query_update
-                )
-                self.crsf_processor.link_diagnostics_update.connect(
-                    self._handle_link_diagnostics_update
-                )
-                self.crsf_processor.error.connect(self.handle_worker_error)
-            except Exception as e:
-                print(f"Failed to initialize CRSF processor: {e}")
-        else:
-            print("CRSF disabled due to unavailable port.")
+        # Initialize CRSFPacketProcessor in a safe, idle state.  Opening a valid
+        # transmitter port must not start RC output until the operator explicitly
+        # presses the Start transmitting packets button.
+        self.crsf_processor = self._create_crsf_processor(
+            self.crsf_cfg.get("port"), transmission_enabled=False
+        )
 
-        # Timer for transmitting data (default from config). Only mark
-        # transmission active when a CRSF processor was actually created; a
-        # disconnected/"Not connected" port should not look like an active link.
+        # Timer for transmitting data (default from config).  A connected CRSF
+        # port is not the same thing as active transmission; the operator must
+        # explicitly start RC output.
         self.transmit_timer = QTimer(self)
         self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
-        transmit_interval = self.crsf_cfg.get("channel_update_interval", 20)
-        self.transmission_active = self.crsf_processor is not None
-        if self.transmission_active:
-            self.transmit_timer.start(transmit_interval)
+        self.transmission_active = False
 
         # Track transmission state and countdown handling for the configuration
         # page's terminate/start button.
@@ -3077,6 +3039,86 @@ class MainWindow(QMainWindow):
             self._apply_fbw_command_limits(channels)
         self._update_desired_fbw_attitude(channels, enabled=True)
 
+
+    def _create_joystick_handler(self, port: str | None):
+        """Create a joystick handler and wire all runtime error reporting."""
+
+        if not validate_port("joystick", port):
+            print("Joystick disabled due to unavailable port.")
+            return None
+
+        try:
+            joystick = JoystickRawHandler(
+                port=port,
+                baudrate=self.joystick_cfg.get("baudrate"),
+                deadzone=self.joystick_cfg.get("deadzone", 0),
+                sensitivity=self.joystick_cfg.get("sensitivity", 100),
+                smoothing=self.joystick_cfg.get("smoothing", 0),
+            )
+            joystick.error.connect(self.handle_worker_error)
+            return joystick
+        except Exception as e:
+            print(f"Failed to initialize joystick: {e}")
+            return None
+
+    def _create_crsf_processor(
+        self, port: str | None, *, transmission_enabled: bool
+    ) -> Optional[CRSFPacketProcessor]:
+        """Create a CRSF worker with safe initial channels and all signals wired."""
+
+        if not validate_port("CRSF", port):
+            print("CRSF disabled due to unavailable port.")
+            return None
+
+        initial_channels = (
+            self._build_control_channels()
+            if transmission_enabled
+            else self._build_safe_control_channels()
+        )
+        try:
+            processor = CRSFPacketProcessor(
+                port=port,
+                baudrate=self.crsf_cfg.get("baudrate"),
+                channels=initial_channels,
+                packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
+                transmission_enabled=transmission_enabled,
+                raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
+            )
+            processor.telemetry_ready.connect(self.handle_telemetry_wrapper)
+            processor.serial_data.connect(self._handle_serial_debug)
+            processor.transmit_debug_update.connect(self._handle_transmit_debug)
+            processor.parameter_query_update.connect(
+                self._handle_parameter_query_update
+            )
+            processor.link_diagnostics_update.connect(
+                self._handle_link_diagnostics_update
+            )
+            processor.safe_shutdown_complete.connect(
+                self._handle_safe_shutdown_complete
+            )
+            processor.error.connect(self.handle_worker_error)
+            return processor
+        except Exception as e:
+            print(f"Failed to initialize CRSF processor: {e}")
+            return None
+
+    def _build_safe_control_channels(self) -> list[int]:
+        """Return a neutral, throttle-cut, disarmed channel frame."""
+
+        channels = [CRSF_CHANNEL_CENTER] * 16
+        channels[0] = CRSF_CHANNEL_CENTER
+        channels[1] = CRSF_CHANNEL_CENTER
+        channels[2] = CRSF_CHANNEL_MIN
+        channels[3] = CRSF_CHANNEL_CENTER
+        channels[self.elrs_arm_channel] = CRSF_CHANNEL_MIN
+        channels[self.control_mode_channel] = 400
+        channels[self.throttle_mode_channel] = 400
+        return channels
+
+    def _handle_safe_shutdown_complete(self, success: bool) -> None:
+        if not success:
+            logging.warning("Safe CRSF shutdown frames were not written successfully")
+
     @staticmethod
     def _map_axis_to_crsf(value: float) -> int:
         """Map a normalized control value (``-1`` to ``1``) to CRSF range."""
@@ -3126,8 +3168,9 @@ class MainWindow(QMainWindow):
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
 
-        # Keep ELRS AUX1/CH5 high so the link remains in its armed state.
-        # Manual/Fly-By-Wire is carried separately on AUX2/CH6.
+        # Only active operator-started transmission drives ELRS AUX1/CH5 high.
+        # Idle startup and shutdown frames use _build_safe_control_channels(),
+        # which keeps this channel low/disarmed.
         channels[self.elrs_arm_channel] = CRSF_CHANNEL_MAX
 
         # Control mode channel: send low for Manual, high for Fly-By-Wire.
@@ -4210,6 +4253,43 @@ class MainWindow(QMainWindow):
             self._apply_transmission_button_style("active")
             self.transmission_control_button.setText("Terminate transmission")
 
+
+    def _send_safe_shutdown_frames(self) -> bool:
+        """Flush neutral/throttle-cut/disarmed frames before stopping TX."""
+
+        processor = getattr(self, "crsf_processor", None)
+        if processor is None:
+            return False
+
+        loop = QEventLoop(self)
+        result = {"completed": False, "success": False}
+
+        def finish(success: bool) -> None:
+            result["completed"] = True
+            result["success"] = bool(success)
+            loop.quit()
+
+        processor.safe_shutdown_complete.connect(finish)
+        timeout = QTimer(self)
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(loop.quit)
+        try:
+            processor.safe_shutdown_update.emit(
+                self._build_safe_control_channels(), self._safe_shutdown_frame_count
+            )
+            timeout.start(self._safe_shutdown_timeout_ms)
+            loop.exec()
+        finally:
+            timeout.stop()
+            try:
+                processor.safe_shutdown_complete.disconnect(finish)
+            except Exception:
+                pass
+
+        if not result["completed"]:
+            logging.warning("Timed out waiting for safe CRSF shutdown frames")
+        return result["completed"] and result["success"]
+
     def _terminate_transmission(self) -> None:
         """Stop packet transmission and update button state."""
 
@@ -4218,6 +4298,7 @@ class MainWindow(QMainWindow):
 
         self.transmit_timer.stop()
         if self.crsf_processor:
+            self._send_safe_shutdown_frames()
             self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
         self._transmission_pressed_while_inactive = False
@@ -4335,17 +4416,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self.joystick = None
-        if validate_port("joystick", port):
-            try:
-                self.joystick = JoystickRawHandler(
-                    port=port,
-                    baudrate=self.joystick_cfg.get("baudrate"),
-                    deadzone=self.joystick_cfg.get("deadzone", 0),
-                    sensitivity=self.joystick_cfg.get("sensitivity", 100),
-                    smoothing=self.joystick_cfg.get("smoothing", 0),
-                )
-            except Exception as e:
-                print(f"Failed to initialize joystick: {e}")
+        self.joystick = self._create_joystick_handler(port)
         self.update_connection_status(self.control_status, self.joystick is not None)
         save_config(self.config)
 
@@ -4395,32 +4466,13 @@ class MainWindow(QMainWindow):
                 pass
             self.crsf_processor = None
             self._link_diagnostics_active = False
-        if validate_port("CRSF", port):
-            try:
-                self.crsf_processor = CRSFPacketProcessor(
-                    port=port,
-                    baudrate=self.crsf_cfg.get("baudrate"),
-                    channels=self._build_control_channels(),
-                    packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
-                    transmission_enabled=was_transmitting,
-                    raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
-                )
-                self.crsf_processor.telemetry_ready.connect(
-                    self.handle_telemetry_wrapper
-                )
-                self.crsf_processor.serial_data.connect(self._handle_serial_debug)
-                self.crsf_processor.transmit_debug_update.connect(
-                    self._handle_transmit_debug
-                )
-                self.crsf_processor.parameter_query_update.connect(
-                    self._handle_parameter_query_update
-                )
-                self.crsf_processor.link_diagnostics_update.connect(
-                    self._handle_link_diagnostics_update
-                )
-                self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
-            except Exception as e:
-                print(f"Failed to initialize CRSF processor: {e}")
+        self.crsf_processor = self._create_crsf_processor(
+            port, transmission_enabled=was_transmitting
+        )
+        if self.crsf_processor:
+            self._set_crsf_raw_serial_debug(
+                self._debug_monitoring and self._debug_serial_all
+            )
 
         self.transmission_active = bool(self.crsf_processor and was_transmitting)
         if self.transmission_active:
