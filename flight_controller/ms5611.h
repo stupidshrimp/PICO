@@ -17,8 +17,10 @@ public:
   /**
    * Initialize the sensor by performing a reset and reading the PROM.
    * (Call this after initializing the I2C bus.)
+   * @return true when the PROM was read and validated, false on I2C timeout
+   *         or invalid calibration data.
    */
-  void begin();
+  bool begin();
 
   /**
    * Reset the sensor.
@@ -26,9 +28,10 @@ public:
   void reset();
 
   /**
-   * Read the calibration coefficients from PROM.
+   * Read and validate the calibration coefficients from PROM.
+   * @return true when all PROM words were read and the CRC/coefficients are valid.
    */
-  void readPROM();
+  bool readPROM();
   
   /**
    * Set the sea level pressure used for altitude calculations.
@@ -172,6 +175,19 @@ private:
    * @return true when 3 bytes were read before the timeout, false otherwise.
    */
   bool readRegister24(uint8_t reg, uint32_t& value);
+
+  /**
+   * Read a 16-bit PROM register with the same bounded I2C wait used by ADC reads.
+   * @param reg PROM register address to read.
+   * @param value Receives the 16-bit PROM word when the read succeeds.
+   * @return true when 2 bytes were read before the timeout, false otherwise.
+   */
+  bool readPromWord(uint8_t reg, uint16_t& value);
+
+  /**
+   * Validate the MS5611 PROM CRC nibble.
+   */
+  bool validatePromCrc(const uint16_t prom[8]) const;
 };
 
 #endif // MS5611_H

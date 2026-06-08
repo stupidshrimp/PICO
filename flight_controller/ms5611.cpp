@@ -9,9 +9,9 @@ MS5611::MS5611(TwoWire* i2c, uint8_t address)
   // Note: The sensor will be reset and PROM read when begin() is called.
 }
 
-void MS5611::begin() {
+bool MS5611::begin() {
   reset();
-  readPROM();
+  return readPROM();
 }
 
 void MS5611::reset() {
@@ -21,19 +21,28 @@ void MS5611::reset() {
   delay(100);         // Wait for reset to complete
 }
 
-void MS5611::readPROM() {
-  for (uint8_t i = 0; i < 6; i++) {
-    uint8_t reg = 0xA2 + (i * 2);
-    _i2c->beginTransmission(_address);
-    _i2c->write(reg);
-    _i2c->endTransmission();
-    delay(10);
-    _i2c->requestFrom(_address, (uint8_t)2);
-    while (_i2c->available() < 2) { }
-    uint8_t msb = _i2c->read();
-    uint8_t lsb = _i2c->read();
-    fc[i] = (msb << 8) | lsb;
+bool MS5611::readPROM() {
+  uint16_t prom[8] = {0};
+
+  for (uint8_t i = 0; i < 8; i++) {
+    const uint8_t reg = 0xA0 + (i * 2);
+    if (!readPromWord(reg, prom[i])) {
+      return false;
+    }
   }
+
+  if (!validatePromCrc(prom)) {
+    return false;
+  }
+
+  for (uint8_t i = 0; i < 6; i++) {
+    fc[i] = prom[i + 1];
+    if (fc[i] == 0) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 void MS5611::setOversampling(const String& osr) {
@@ -233,6 +242,61 @@ float MS5611::calibrateRelativeAltitude(uint16_t duration, float interval) {
 
 float MS5611::getAltitude(float pressure, float sea_level_pressure) {
   return 44330.0 * (1 - pow((pressure / sea_level_pressure), 0.1903));
+}
+
+
+bool MS5611::readPromWord(uint8_t reg, uint16_t& value) {
+  _i2c->beginTransmission(_address);
+  _i2c->write(reg);
+  if (_i2c->endTransmission() != 0) {
+    value = 0;
+    return false;
+  }
+
+  _i2c->requestFrom(_address, (uint8_t)2);
+  const uint32_t startUs = micros();
+  while (_i2c->available() < 2) {
+    if ((uint32_t)(micros() - startUs) >= MS5611_I2C_READ_TIMEOUT_US) {
+      while (_i2c->available() > 0) {
+        (void)_i2c->read();
+      }
+      value = 0;
+      return false;
+    }
+  }
+
+  value = ((uint16_t)_i2c->read() << 8) | (uint16_t)_i2c->read();
+  return true;
+}
+
+bool MS5611::validatePromCrc(const uint16_t prom[8]) const {
+  uint16_t promCopy[8];
+  for (uint8_t i = 0; i < 8; i++) {
+    promCopy[i] = prom[i];
+  }
+
+  const uint8_t expectedCrc = promCopy[7] & 0x0F;
+  promCopy[7] &= 0xFF00;
+
+  uint16_t remainder = 0;
+  for (uint8_t byteIndex = 0; byteIndex < 16; byteIndex++) {
+    if (byteIndex & 1) {
+      remainder ^= promCopy[byteIndex >> 1] & 0x00FF;
+    } else {
+      remainder ^= promCopy[byteIndex >> 1] >> 8;
+    }
+
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      if (remainder & 0x8000) {
+        remainder = (remainder << 1) ^ 0x3000;
+      } else {
+        remainder <<= 1;
+      }
+    }
+  }
+
+  const uint8_t calculatedCrc = (remainder >> 12) & 0x0F;
+  return calculatedCrc == expectedCrc;
 }
 
 uint32_t MS5611::readRegister24(uint8_t reg) {

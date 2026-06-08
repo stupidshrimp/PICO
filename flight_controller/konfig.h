@@ -54,6 +54,18 @@
 #define SYSTEM_IMPLEMENTATION                       (SYSTEM_IMPLEMENTATION_EMBEDDED_ARDUINO)
 
 
+/* Flight-build diagnostics
+ *
+ * Keep verbose control-loop serial diagnostics off by default for flight builds
+ * so USB/Serial formatting cannot add periodic timing jitter. Define this as 1
+ * in a local build flag or bench-test configuration when investigating RC,
+ * servo, or telemetry timing.
+ */
+#ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
+#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 0
+#endif
+
+
 
 /* ASSERT is evaluated locally (without function call) to lower the computation cost */
 void SPEW_THE_ERROR(char const * str);

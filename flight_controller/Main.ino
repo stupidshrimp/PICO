@@ -213,7 +213,7 @@ uint16_t rcServoHoldStartPitchUs = 1500;
 uint16_t rcServoHoldStartYawUs = 1500;
 
 #ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
-#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 1
+#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 0
 #endif
 
 struct ControlDebugCounters {
@@ -1022,7 +1022,11 @@ void setup() {
   I2C_Alternate.setClock(400000);
 
   // ----- Calibrate Barometer -----
-  barometer.begin();
+  if (!barometer.begin()) {
+    Serial.println("MS5611 initialization unsuccessful");
+    Serial.println("Check barometer wiring or try cycling power");
+    haltStartupWithNeutralServos();
+  }
   // Keep conversion latency low so the 60 Hz barometer cache does not starve
   // the 125 Hz IMU/EKF loop. LOW_POWER uses shorter conversion delays than
   // HIGH_RES at the cost of some pressure resolution.
