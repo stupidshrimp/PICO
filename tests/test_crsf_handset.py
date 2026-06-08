@@ -479,3 +479,74 @@ def test_read_single_parameter_assembles_chunked_text_selection():
     assert entry["selected"] == "1:2"
     assert entry["options"][-2:] == ["1:2", "Race"]
     assert entry["chunks_remaining"] == 0
+
+
+def test_golden_fc_to_gs_attitude_frame_decodes_contract_values():
+    # FC telemetryWriteAttitude(roll=123 ddeg, pitch=45 ddeg, yaw=900 ddeg)
+    # is serialized by CRSF as pitch, roll, yaw signed BE radians*10000.
+    frame = bytes.fromhex("c8081efcef08633d5c83")
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(frame)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+    processor._parameter_query_active = False
+
+    processor.read_serial_data()
+
+    assert processor.telemetry_ready.emitted
+    packet_type, pitch, roll, yaw = processor.telemetry_ready.emitted[0]
+    assert packet_type == "attitude"
+    assert pitch == pytest.approx(4.497, abs=0.01)
+    assert roll == pytest.approx(12.301, abs=0.01)
+    assert yaw == pytest.approx(89.999, abs=0.01)
+
+
+def test_golden_fc_to_gs_gps_frame_decodes_contract_values():
+    # GPS payload: 37.7749, -122.4194, speed raw 724, course 123.45 deg,
+    # altitude 100 m (+1000 m CRSF offset), 10 satellites.
+    frame = bytes.fromhex("c811021683fe08b708483002d43039044c0a89")
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(frame)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+    processor._parameter_query_active = False
+
+    processor.read_serial_data()
+
+    assert processor.telemetry_ready.emitted == [
+        (
+            "gps",
+            pytest.approx(37.7749),
+            pytest.approx(-122.4194),
+            pytest.approx(328.084),
+            pytest.approx(44.987, abs=0.001),
+            pytest.approx(123.45),
+            10,
+        )
+    ]
+
+
+def test_golden_gs_to_fc_channel_packet_matches_contract_bytes():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [
+        CRSF_CHANNEL_MIN,      # CH1 roll min
+        CRSF_CHANNEL_CENTER,   # CH2 pitch center
+        CRSF_CHANNEL_MAX,      # CH3 throttle / target max
+        400,                   # CH4 yaw low test value
+        CRSF_CHANNEL_MAX,      # CH5 ELRS arm keepalive high
+        1700,                  # CH6 Fly-By-Wire high
+        400,                   # CH7 Manual throttle low
+        *([CRSF_CHANNEL_CENTER] * 9),
+    ]
+
+    packet = bytes(processor.create_packet())
+
+    assert packet.hex() == "c81816ac00dfc42133715243067ce0031ff8c0073ef0810f7c03"

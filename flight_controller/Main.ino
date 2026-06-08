@@ -207,6 +207,10 @@ uint32_t lastRcPacketUs = 0;
 uint32_t lastCrsfByteUs = 0;
 bool rcReceiverFailsafeActive = true;
 bool rcFailsafeActive = true;
+bool rcServoHoldBlendActive = false;
+uint16_t rcServoHoldStartRollUs = 1500;
+uint16_t rcServoHoldStartPitchUs = 1500;
+uint16_t rcServoHoldStartYawUs = 1500;
 
 #ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
 #define FC_CONTROL_DEBUG_SERIAL_OUTPUT 1
@@ -597,6 +601,24 @@ bool crsfBytesActive(uint32_t nowUs) {
 
 bool rcInputWithinServoHold(uint32_t nowUs) {
   return rcInputAgeUs(nowUs) <= RC_SERVO_HOLD_TIMEOUT_US && crsfBytesActive(nowUs);
+}
+
+uint16_t blendServoTowardNeutral(uint16_t startUs, uint32_t nowUs) {
+  const uint32_t rcAgeUs = rcInputAgeUs(nowUs);
+  const uint32_t holdBlendDurationUs = RC_SERVO_HOLD_TIMEOUT_US - RC_FAILSAFE_TIMEOUT_US;
+  if (holdBlendDurationUs == 0 || rcAgeUs >= RC_SERVO_HOLD_TIMEOUT_US) {
+    return SERVO_CENTER_US;
+  }
+
+  const uint32_t blendAgeUs =
+      rcAgeUs > RC_FAILSAFE_TIMEOUT_US ? rcAgeUs - RC_FAILSAFE_TIMEOUT_US : 0;
+  const float progress = constrain(
+      static_cast<float>(blendAgeUs) / static_cast<float>(holdBlendDurationUs),
+      0.0f,
+      1.0f);
+  const float commandUs = static_cast<float>(startUs) +
+      (static_cast<float>(SERVO_CENTER_US) - static_cast<float>(startUs)) * progress;
+  return static_cast<uint16_t>(roundf(commandUs));
 }
 
 bool airspeedInputFresh(uint32_t nowUs) {
@@ -1201,6 +1223,7 @@ void loop() {
       setThrottleMode(THROTTLE_MODE_MANUAL);
     } else {
       rcFailsafeActive = false;
+      rcServoHoldBlendActive = false;
     }
 
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
@@ -1215,10 +1238,17 @@ void loop() {
 
     if (!rcFresh) {
       if (rcServoHold) {
-        rollCommandUs = lastRollCommandUs;
-        pitchCommandUs = lastPitchCommandUs;
-        yawCommandUs = lastYawCommandUs;
+        if (!rcServoHoldBlendActive) {
+          rcServoHoldStartRollUs = lastRollCommandUs;
+          rcServoHoldStartPitchUs = lastPitchCommandUs;
+          rcServoHoldStartYawUs = lastYawCommandUs;
+          rcServoHoldBlendActive = true;
+        }
+        rollCommandUs = blendServoTowardNeutral(rcServoHoldStartRollUs, servoUpdateUs);
+        pitchCommandUs = blendServoTowardNeutral(rcServoHoldStartPitchUs, servoUpdateUs);
+        yawCommandUs = blendServoTowardNeutral(rcServoHoldStartYawUs, servoUpdateUs);
       } else {
+        rcServoHoldBlendActive = false;
         rollCommandUs = SERVO_CENTER_US;
         pitchCommandUs = SERVO_CENTER_US;
         yawCommandUs = SERVO_CENTER_US;

@@ -2794,7 +2794,7 @@ class MainWindow(QMainWindow):
                 self.last_airspeed_packet_time = None
             else:
                 self.last_airspeed_packet_time = (
-                    now if gps_has_fix and math.isfinite(speed_value) else None
+                    now if math.isfinite(speed_value) else None
                 )
             self.telemetry_state["latitude"] = lat_value if lat_value is not None else lat
             self.telemetry_state["longitude"] = lon_value if lon_value is not None else lon
