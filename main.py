@@ -631,16 +631,19 @@ class MainWindow(QMainWindow):
         else:
             print("CRSF disabled due to unavailable port.")
 
-        # Timer for transmitting data (default from config)
+        # Timer for transmitting data (default from config). Only mark
+        # transmission active when a CRSF processor was actually created; a
+        # disconnected/"Not connected" port should not look like an active link.
         self.transmit_timer = QTimer(self)
         self.transmit_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.transmit_timer.timeout.connect(self.transmit_data)
         transmit_interval = self.crsf_cfg.get("channel_update_interval", 20)
-        self.transmit_timer.start(transmit_interval)
+        self.transmission_active = self.crsf_processor is not None
+        if self.transmission_active:
+            self.transmit_timer.start(transmit_interval)
 
         # Track transmission state and countdown handling for the configuration
         # page's terminate/start button.
-        self.transmission_active = True
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
         self._transmission_hold_timer = QTimer(self)
@@ -715,9 +718,13 @@ class MainWindow(QMainWindow):
         # packets only update the cached values above; the GUI is refreshed by
         # this timer regardless of packet arrival rate.
         self.label_update_timer = QTimer(self)
+        self.label_update_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.label_update_timer.timeout.connect(self.update_labels)
 
-        self.label_update_timer.start(0)
+        # Bound UI/OSD refresh work to about 30 Hz instead of running whenever
+        # the event loop is idle, which keeps video, map, audio, and serial
+        # processing responsive under load.
+        self.label_update_timer.start(33)
 
         self._gps_map_timer = QTimer(self)
         self._gps_map_timer.setInterval(1000)
@@ -3250,8 +3257,12 @@ class MainWindow(QMainWindow):
         )
         self.transmission_control_button.setMinimumHeight(44)
         self.transmission_control_button.setSizePolicy(button_policy)
-        self._apply_transmission_button_style("active")
-        self.transmission_control_button.setText("Terminate transmission")
+        if self.transmission_active:
+            self._apply_transmission_button_style("active")
+            self.transmission_control_button.setText("Terminate transmission")
+        else:
+            self._apply_transmission_button_style("inactive")
+            self.transmission_control_button.setText("Start transmitting packets")
         layout.addWidget(self.transmission_control_button)
         layout.addSpacing(12)
 
@@ -3768,13 +3779,18 @@ class MainWindow(QMainWindow):
             ),
         )
 
+        crsf_connected = self.crsf_processor is not None
         self._add_preflight_check(
             rows,
             "pass" if self.transmission_active else "fail",
             (
                 "CRSF channel transmission is active."
                 if self.transmission_active
-                else "CRSF channel transmission is terminated."
+                else (
+                    "CRSF transmitter is not connected."
+                    if not crsf_connected
+                    else "CRSF channel transmission is terminated."
+                )
             ),
         )
 
@@ -4142,6 +4158,19 @@ class MainWindow(QMainWindow):
         if self.transmission_active:
             return
 
+        if not self.crsf_processor:
+            self.transmission_active = False
+            self._transmission_pressed_while_inactive = False
+            self._apply_transmission_button_style("inactive")
+            self.transmission_control_button.setText("Start transmitting packets")
+            self._update_parameter_query_button_state()
+            QMessageBox.warning(
+                self,
+                "CRSF transmitter disconnected",
+                "Connect a CRSF transmitter before starting packet transmission.",
+            )
+            return
+
         channels = self._build_control_channels()
         interval = self.crsf_cfg.get("channel_update_interval", 20)
         if self.crsf_processor:
@@ -4243,6 +4272,7 @@ class MainWindow(QMainWindow):
     def on_elrs_port_selected(self, port: str):
         """Handle selection of ELRS transmitter port."""
         self.crsf_cfg["port"] = port
+        was_transmitting = self.transmission_active
         if self.crsf_processor:
             try:
                 thread = self.crsf_processor._thread
@@ -4262,7 +4292,7 @@ class MainWindow(QMainWindow):
                     baudrate=self.crsf_cfg.get("baudrate"),
                     channels=self._build_control_channels(),
                     packet_interval_ms=self.crsf_cfg.get("packet_interval", 4),
-                    transmission_enabled=self.transmission_active,
+                    transmission_enabled=was_transmitting,
                     raw_serial_debug_enabled=self._debug_monitoring and self._debug_serial_all,
                 )
                 self.crsf_processor.telemetry_ready.connect(
@@ -4281,6 +4311,19 @@ class MainWindow(QMainWindow):
                 self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
+
+        self.transmission_active = bool(self.crsf_processor and was_transmitting)
+        if self.transmission_active:
+            self.transmit_timer.start(self.crsf_cfg.get("channel_update_interval", 20))
+            if hasattr(self, "transmission_control_button"):
+                self._apply_transmission_button_style("active")
+                self.transmission_control_button.setText("Terminate transmission")
+        else:
+            self.transmit_timer.stop()
+            if hasattr(self, "transmission_control_button"):
+                self._apply_transmission_button_style("inactive")
+                self.transmission_control_button.setText("Start transmitting packets")
+
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()

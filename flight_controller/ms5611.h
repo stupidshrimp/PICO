@@ -74,9 +74,16 @@ public:
 
   /**
    * Read the 24-bit ADC result after a conversion has completed.
-   * @return 24-bit ADC result.
+   * @return 24-bit ADC result, or 0 when the I2C read times out.
    */
   uint32_t readAdc();
+
+  /**
+   * Read the 24-bit ADC result after a conversion has completed.
+   * @param value Receives the ADC value when the read succeeds.
+   * @return true when 3 bytes were read before the timeout, false otherwise.
+   */
+  bool readAdc(uint32_t& value);
 
   /**
    * Convert a raw pressure reading to mbar (without additional compensation).
@@ -154,9 +161,17 @@ private:
 
   /**
    * Read a 24-bit value from the ADC (register 0x00).
-   * @return 24-bit result.
+   * @return 24-bit result, or 0 when the I2C read times out.
    */
   uint32_t readRegister24(uint8_t reg);
+
+  /**
+   * Read a 24-bit value from the ADC (register 0x00).
+   * @param reg Register address to read.
+   * @param value Receives the ADC value when the read succeeds.
+   * @return true when 3 bytes were read before the timeout, false otherwise.
+   */
+  bool readRegister24(uint8_t reg, uint32_t& value);
 };
 
 #endif // MS5611_H

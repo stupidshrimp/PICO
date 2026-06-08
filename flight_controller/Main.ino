@@ -314,7 +314,8 @@ const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MOD
 
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
 const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
-const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 100000UL;
+const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 1000000UL;
+const float AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S = 50.0f;
 
 const uint16_t SERVO_MIN_US = 1000;
 const uint16_t SERVO_MAX_US = 2000;
@@ -815,7 +816,13 @@ void updateGpsCache() {
 }
 
 void applyBarometerPressure(float baroPressure) {
+  if (!isfinite(baroPressure) || baroPressure <= 0.0f) {
+    return;
+  }
   const float altitudeMeters = barometer.getAltitude(baroPressure, barometer.getSeaLevelPressure());
+  if (!isfinite(altitudeMeters)) {
+    return;
+  }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
 }
@@ -858,9 +865,12 @@ void serviceBarometerCache() {
 
     case BAROMETER_WAIT_PRESSURE:
       if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
-        barometerRawPressure = barometer.readAdc();
-        if (barometerTemperatureValid) {
-          applyBarometerPressure(barometer.calculatePressure(barometerRawPressure, barometerRawTemperature));
+        uint32_t rawPressure = 0;
+        if (barometer.readAdc(rawPressure)) {
+          barometerRawPressure = rawPressure;
+          if (barometerTemperatureValid) {
+            applyBarometerPressure(barometer.calculatePressure(barometerRawPressure, barometerRawTemperature));
+          }
         }
         barometerReadState = BAROMETER_IDLE;
         barometerDidWork = true;
@@ -869,9 +879,12 @@ void serviceBarometerCache() {
 
     case BAROMETER_WAIT_TEMPERATURE:
       if ((uint32_t)(nowUs - barometerConversionStartUs) >= conversionWaitUs) {
-        barometerRawTemperature = barometer.readAdc();
-        lastBarometerTemperatureUs = micros();
-        barometerTemperatureValid = true;
+        uint32_t rawTemperature = 0;
+        if (barometer.readAdc(rawTemperature)) {
+          barometerRawTemperature = rawTemperature;
+          lastBarometerTemperatureUs = micros();
+          barometerTemperatureValid = true;
+        }
         barometerReadState = BAROMETER_IDLE;
         barometerDidWork = true;
       }
@@ -1289,7 +1302,9 @@ void loop() {
       latestAutoThrottleTargetMph = mapRcToAutoThrottleTargetMph(rcThrottleRaw);
       if (!airspeedInputFresh(servoUpdateUs)) {
         throttlePid.reset();
-        autoThrottlePercent = 0.0f;
+        autoThrottlePercent = max(
+            0.0f,
+            autoThrottlePercent - (AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S * controlDt));
       } else {
         float throttleAdjustment = throttlePid.update(
             latestAutoThrottleTargetMph, latestAirspeedMph, controlDt) * controlDt;
