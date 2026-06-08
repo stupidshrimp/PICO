@@ -17,8 +17,10 @@ public:
         bool (*bNonlinearUpdateX)(Matrix&, const Matrix&, const Matrix&),
         bool (*bNonlinearUpdateY)(Matrix&, const Matrix&, const Matrix&), 
         bool (*bCalcJacobianF)(Matrix&, const Matrix&, const Matrix&),
-        bool (*bCalcJacobianH)(Matrix&, const Matrix&, const Matrix&));
+        bool (*bCalcJacobianH)(Matrix&, const Matrix&, const Matrix&),
+        bool (*bNormalizeState)(Matrix&) = nullptr);
     void vReset(const Matrix& XInit, const Matrix& P, const Matrix& Q, const Matrix& R);
+    void vSetMeasurementNoise(const Matrix& R);
     bool bUpdate(const Matrix& Y, const Matrix& U);
     const Matrix GetX()   const { return X_Est; }
     const Matrix GetY()   const { return Y_Est; }
@@ -30,6 +32,7 @@ protected:
     bool (*bNonlinearUpdateY) (Matrix& Y_Est, const Matrix& X, const Matrix& U);
     bool (*bCalcJacobianF) (Matrix& F, const Matrix& X, const Matrix& U);
     bool (*bCalcJacobianH) (Matrix& H, const Matrix& X, const Matrix& U);
+    bool (*bNormalizeState) (Matrix& X);
 
 private:
     Matrix X_Est{SS_X_LEN, 1};

@@ -131,6 +131,8 @@
 #define MATRIX_H
 
 #include "konfig.h"
+#include <string.h>
+#include <stdio.h>
 
 #if (SYSTEM_IMPLEMENTATION == SYSTEM_IMPLEMENTATION_PC)
     #include <iostream>
@@ -874,6 +876,32 @@ inline Matrix Matrix::Invers(void) const {
     
     /* Gauss Elimination... */
     for (int16_t _j = 0; _j < (_temp.i16row)-1; _j++) {
+        int16_t _pivotRow = _j;
+        float_prec _pivotAbs = fabs(_temp(_j,_j));
+        for (int16_t _candidate = _j + 1; _candidate < _temp.i16row; _candidate++) {
+            float_prec _candidateAbs = fabs(_temp(_candidate,_j));
+            if (_candidateAbs > _pivotAbs) {
+                _pivotAbs = _candidateAbs;
+                _pivotRow = _candidate;
+            }
+        }
+        if (_pivotAbs < float_prec(float_prec_ZERO)) {
+            /* Matrix is non-invertible */
+            _outp.vSetMatrixInvalid();
+            return _outp;
+        }
+        if (_pivotRow != _j) {
+            for (int16_t _k = 0; _k < _temp.i16col; _k++) {
+                float_prec _swapTemp = _temp(_j,_k);
+                _temp(_j,_k) = _temp(_pivotRow,_k);
+                _temp(_pivotRow,_k) = _swapTemp;
+
+                _swapTemp = _outp(_j,_k);
+                _outp(_j,_k) = _outp(_pivotRow,_k);
+                _outp(_pivotRow,_k) = _swapTemp;
+            }
+        }
+
         for (int16_t _i = _j+1; _i < _temp.i16row; _i++) {
             if (fabs(_temp(_j,_j)) < float_prec(float_prec_ZERO)) {
                 /* Matrix is non-invertible */

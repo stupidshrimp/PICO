@@ -14,7 +14,7 @@
 
 
 /* State Space dimension */
-#define SS_X_LEN    (4)
+#define SS_X_LEN    (7)
 #define SS_Z_LEN    (6)
 #define SS_U_LEN    (3)
 #define SS_DT_MILIS (8)                             /* 8 ms */
@@ -22,7 +22,7 @@
 
 
 /* Change this size based on the biggest matrix you will use */
-#define MATRIX_MAXIMUM_SIZE     (6)
+#define MATRIX_MAXIMUM_SIZE     (7)
 
 /* Define this to enable matrix bound checking */
 #define MATRIX_USE_BOUNDS_CHECKING
