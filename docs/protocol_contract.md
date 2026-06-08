@@ -43,7 +43,7 @@ PWM `1000..2000 us` only after receiving the CRSF packet.
 | CRSF byte activity timeout | `250000 us` | Servo hold is allowed only while recent raw bytes indicate the receiver is still talking |
 | Control-mode high threshold | `1550` | CH6 values at or above this threshold select Fly-By-Wire |
 | Throttle-mode high threshold | `1550` | CH7 values at or above this threshold select Auto Throttle |
-| Auto-throttle airspeed freshness timeout | `100000 us` | FC throttle PID is reset when pitot/airspeed data is stale, independent of GPS lock |
+| Auto-throttle airspeed freshness timeout | `100000 us` (100 ms) | FC throttle PID is reset when pitot/airspeed data is stale, independent of GPS lock |
 
 ## FC → GS telemetry units
 

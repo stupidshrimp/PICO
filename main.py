@@ -2826,10 +2826,10 @@ class MainWindow(QMainWindow):
             self.gps_lon = lon_value if lon_value is not None else lon
             self.current_altitude = alt
             self.current_airspeed = speed
-            if gps_has_fix:
-                self._update_sink_rate_from_altitude(self._safe_float(alt), now)
-            else:
-                self._update_sink_rate_from_altitude(None, now)
+            # Barometric altitude is carried in the GPS telemetry frame even when
+            # latitude/longitude report no GPS fix, so keep sink-rate and alarm
+            # logic tied to altitude freshness rather than GPS lock state.
+            self._update_sink_rate_from_altitude(self._safe_float(alt), now)
             try:
                 speed_value = float(speed)
             except (TypeError, ValueError):
