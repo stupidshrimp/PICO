@@ -41,31 +41,56 @@ HardwareSerial Serial6(PC7, PC6);
 
 // ----- IMU & EKF Variables -----
 #define IMU_ACC_Z0  (1)
-float_prec IMU_MAG_B0_data[3] = { cos(0), sin(0), 0.0 };
+#ifndef FC_MAG_DECLINATION_RAD
+#define FC_MAG_DECLINATION_RAD (0.0f)
+#endif
+#ifndef FC_MAG_INCLINATION_RAD
+#define FC_MAG_INCLINATION_RAD (0.0f)
+#endif
+float_prec IMU_MAG_B0_data[3] = { cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD), cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD), sin(FC_MAG_INCLINATION_RAD) };
 Matrix IMU_MAG_B0(3, 1, IMU_MAG_B0_data);
 float_prec HARD_IRON_BIAS_data[3] = { 8.832973, 7.243323, 23.95714 };
 Matrix HARD_IRON_BIAS(3, 1, HARD_IRON_BIAS_data);
+float_prec SOFT_IRON_MATRIX_data[9] = {
+  1.0, 0.0, 0.0,
+  0.0, 1.0, 0.0,
+  0.0, 0.0, 1.0
+};
+Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 
 // EKF initialization constants and matrices (values defined in konfig.h)
-#define P_INIT      (10.)
-#define Q_INIT      (1e-6)
-#define R_INIT_ACC  (0.0015/10.)
-#define R_INIT_MAG  (0.0015/10.)
+#define P_INIT_QUAT      (10.)
+#define P_INIT_GYRO_BIAS (0.02)
+#define Q_INIT_QUAT      (1e-6)
+#define Q_INIT_GYRO_BIAS (1e-8)
+#define R_INIT_ACC       (0.0015/10.)
+#define R_INIT_MAG       (0.0015/10.)
+#define R_REJECTED       (1.0e3)
+#define GRAVITY_NOMINAL_MSS (9.80665f)
+#define ACCEL_NORM_GATE_FRACTION (0.35f)
+#define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
+uint8_t ekfConsecutiveFailures = 0;
 float_prec EKF_PINIT_data[SS_X_LEN*SS_X_LEN] = {
-  P_INIT, 0, 0, 0,
-  0, P_INIT, 0, 0,
-  0, 0, P_INIT, 0,
-  0, 0, 0, P_INIT
+  P_INIT_QUAT, 0, 0, 0, 0, 0, 0,
+  0, P_INIT_QUAT, 0, 0, 0, 0, 0,
+  0, 0, P_INIT_QUAT, 0, 0, 0, 0,
+  0, 0, 0, P_INIT_QUAT, 0, 0, 0,
+  0, 0, 0, 0, P_INIT_GYRO_BIAS, 0, 0,
+  0, 0, 0, 0, 0, P_INIT_GYRO_BIAS, 0,
+  0, 0, 0, 0, 0, 0, P_INIT_GYRO_BIAS
 };
 Matrix EKF_PINIT(SS_X_LEN, SS_X_LEN, EKF_PINIT_data);
 float_prec EKF_QINIT_data[SS_X_LEN*SS_X_LEN] = {
-  Q_INIT, 0, 0, 0,
-  0, Q_INIT, 0, 0,
-  0, 0, Q_INIT, 0,
-  0, 0, 0, Q_INIT
+  Q_INIT_QUAT, 0, 0, 0, 0, 0, 0,
+  0, Q_INIT_QUAT, 0, 0, 0, 0, 0,
+  0, 0, Q_INIT_QUAT, 0, 0, 0, 0,
+  0, 0, 0, Q_INIT_QUAT, 0, 0, 0,
+  0, 0, 0, 0, Q_INIT_GYRO_BIAS, 0, 0,
+  0, 0, 0, 0, 0, Q_INIT_GYRO_BIAS, 0,
+  0, 0, 0, 0, 0, 0, Q_INIT_GYRO_BIAS
 };
 Matrix EKF_QINIT(SS_X_LEN, SS_X_LEN, EKF_QINIT_data);
 float_prec EKF_RINIT_data[SS_Z_LEN*SS_Z_LEN] = {
@@ -77,12 +102,15 @@ float_prec EKF_RINIT_data[SS_Z_LEN*SS_Z_LEN] = {
   0, 0, 0, 0, 0, R_INIT_MAG
 };
 Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
+float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
+Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
 
 // Nonlinear update and Jacobian functions (assumed implemented)
 bool Main_bUpdateNonlinearX(Matrix& X_Next, const Matrix& X, const Matrix& U);
 bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U);
 bool Main_bCalcJacobianF(Matrix& F, const Matrix& X, const Matrix& U);
 bool Main_bCalcJacobianH(Matrix& H, const Matrix& X, const Matrix& U);
+bool Main_bNormalizeState(Matrix& X);
 
 // EKF state variables
 Matrix quaternionData(SS_X_LEN, 1);
@@ -90,7 +118,7 @@ Matrix Y(SS_Z_LEN, 1);
 Matrix U(SS_U_LEN, 1);
 EKF EKF_IMU(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT,
             Main_bUpdateNonlinearX, Main_bUpdateNonlinearY,
-            Main_bCalcJacobianF, Main_bCalcJacobianH);
+            Main_bCalcJacobianF, Main_bCalcJacobianH, Main_bNormalizeState);
 
 // ----- Auxiliary Variables -----
 elapsedMicros timerEKF;
@@ -252,6 +280,26 @@ struct ControlDebugCounters {
 
 ControlDebugCounters controlDebugCounters = {0};
 elapsedMillis controlDebugPrintTimer;
+
+void setEkfMeasurementNoise(float_prec accVariance, float_prec magVariance) {
+  EKF_RACTIVE.vSetToZero();
+  EKF_RACTIVE[0][0] = accVariance;
+  EKF_RACTIVE[1][1] = accVariance;
+  EKF_RACTIVE[2][2] = accVariance;
+  EKF_RACTIVE[3][3] = magVariance;
+  EKF_RACTIVE[4][4] = magVariance;
+  EKF_RACTIVE[5][5] = magVariance;
+}
+
+float clampFloat(float value, float minValue, float maxValue) {
+  if (value < minValue) {
+    return minValue;
+  }
+  if (value > maxValue) {
+    return maxValue;
+  }
+  return value;
+}
 
 void resetControlDebugCounters() {
   controlDebugCounters.rcPackets = 0;
@@ -1146,39 +1194,69 @@ void loop() {
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
     Y[0][0] = Ax; Y[1][0] = Ay; Y[2][0] = Az;
     Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
-    
-    // Compensate for magnetometer hard-iron bias
-    Y[3][0] -= HARD_IRON_BIAS[0][0];
-    Y[4][0] -= HARD_IRON_BIAS[1][0];
-    Y[5][0] -= HARD_IRON_BIAS[2][0];
-    
-    // Normalize accelerometer vector, guard against near-zero norms
+
+    setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+    Matrix predictedY(SS_Z_LEN, 1);
+    Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
+
+    // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
+    float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
+    float magBiasY = Y[4][0] - HARD_IRON_BIAS[1][0];
+    float magBiasZ = Y[5][0] - HARD_IRON_BIAS[2][0];
+    Y[3][0] = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
+    Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
+    Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+
+    // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
     float normG = sqrt(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    if (normG > NORM_EPSILON) {
+    bool accelRejected = (normG <= NORM_EPSILON) ||
+                         (fabs(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
+    if (!accelRejected) {
       Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-    } else {
-      // Serial.println("Warning: Accelerometer norm below threshold; using default vector");
-      Y[0][0] = 0.0f; Y[1][0] = 0.0f; Y[2][0] = 1.0f;
     }
-    // Normalize magnetometer vector, guard against near-zero norms
+    if (accelRejected) {
+      Y[0][0] = predictedY[0][0];
+      Y[1][0] = predictedY[1][0];
+      Y[2][0] = predictedY[2][0];
+      EKF_RACTIVE[0][0] = R_REJECTED;
+      EKF_RACTIVE[1][1] = R_REJECTED;
+      EKF_RACTIVE[2][2] = R_REJECTED;
+    }
+
+    // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
     float normM = sqrt(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    if (normM > NORM_EPSILON) {
+    bool magRejected = (normM <= NORM_EPSILON);
+    if (!magRejected) {
       Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-    } else {
-      // Serial.println("Warning: Magnetometer norm below threshold; using default vector");
-      Y[3][0] = IMU_MAG_B0[0][0];
-      Y[4][0] = IMU_MAG_B0[1][0];
-      Y[5][0] = IMU_MAG_B0[2][0];
     }
-    
+    if (magRejected) {
+      Y[3][0] = predictedY[3][0];
+      Y[4][0] = predictedY[4][0];
+      Y[5][0] = predictedY[5][0];
+      EKF_RACTIVE[3][3] = R_REJECTED;
+      EKF_RACTIVE[4][4] = R_REJECTED;
+      EKF_RACTIVE[5][5] = R_REJECTED;
+    }
+
     // Update the EKF and measure computation time
     gEkfRuntimeDt = static_cast<float_prec>(controlDt);
+    Matrix ekfPreviousX = EKF_IMU.GetX();
+    Matrix ekfPreviousP = EKF_IMU.GetP();
+    EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
     u64compuTime = micros();
     if (!EKF_IMU.bUpdate(Y, U)) {
-      quaternionData.vSetToZero();
-      quaternionData[0][0] = 1.0;
-      EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+      ++ekfConsecutiveFailures;
+      if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
+        quaternionData.vSetToZero();
+        quaternionData[0][0] = 1.0;
+        EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+        ekfConsecutiveFailures = 0;
+      } else {
+        EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
+      }
       // Serial.println("Whoop ");
+    } else {
+      ekfConsecutiveFailures = 0;
     }
 #if FC_TIMING_INSTRUMENTATION
     recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
@@ -1187,6 +1265,7 @@ void loop() {
     
     // Convert quaternion to Euler angles
     quaternionData = EKF_IMU.GetX();
+    Main_bNormalizeState(quaternionData);
     float q0 = quaternionData[0][0];
     float q1 = quaternionData[1][0];
     float q2 = quaternionData[2][0];
@@ -1194,7 +1273,8 @@ void loop() {
     
     // Invert roll sign so right rolls are negative and left rolls are positive
     float roll  = -atan2(2.0*(q0*q1 + q2*q3), 1.0 - 2.0*(q1*q1 + q2*q2)) * (180.0 / M_PI);
-    float pitch = asin(2.0*(q0*q2 - q3*q1)) * (180.0 / M_PI);
+    float pitchArg = clampFloat(2.0*(q0*q2 - q3*q1), -1.0f, 1.0f);
+    float pitch = asin(pitchArg) * (180.0 / M_PI);
     float yaw   = atan2(2.0*(q0*q3 + q1*q2), 1.0 - 2.0*(q2*q2 + q3*q3)) * (180.0 / M_PI);
     // Previously applied calibration offsets have been removed so that
     // raw EKF-derived roll and pitch values are reported directly.
@@ -1426,82 +1506,64 @@ void loop() {
 
 
 
+bool Main_bNormalizeState(Matrix& X)
+{
+    float_prec quatNorm = sqrt(X[0][0]*X[0][0] + X[1][0]*X[1][0] + X[2][0]*X[2][0] + X[3][0]*X[3][0]);
+    if (quatNorm < float_prec(float_prec_ZERO)) {
+        return false;
+    }
+    X[0][0] /= quatNorm;
+    X[1][0] /= quatNorm;
+    X[2][0] /= quatNorm;
+    X[3][0] /= quatNorm;
+    return true;
+}
+
 bool Main_bUpdateNonlinearX(Matrix& X_Next, const Matrix& X, const Matrix& U)
 {
-    /* Insert the nonlinear update transformation here
-     *          x(k+1) = f[x(k), u(k)]
-     *
-     * The quaternion update function:
-     *  q0_dot = 1/2. * (  0   - p*q1 - q*q2 - r*q3)
-     *  q1_dot = 1/2. * ( p*q0 +   0  + r*q2 - q*q3)
-     *  q2_dot = 1/2. * ( q*q0 - r*q1 +  0   + p*q3)
-     *  q3_dot = 1/2. * ( r*q0 + q*q1 - p*q2 +  0  )
-     * 
-     * Euler method for integration:
-     *  q0 = q0 + q0_dot * dT;
-     *  q1 = q1 + q1_dot * dT;
-     *  q2 = q2 + q2_dot * dT;
-     *  q3 = q3 + q3_dot * dT;
+    /* State is [quaternion, gyro_bias]. Bias-corrected gyro rates drive
+     * quaternion integration; bias is modeled as a random walk and kept
+     * constant in the deterministic prediction.
      */
-    float_prec q0, q1, q2, q3;
-    float_prec p, q, r;
-    
-    q0 = X[0][0];
-    q1 = X[1][0];
-    q2 = X[2][0];
-    q3 = X[3][0];
-    
-    p = U[0][0];
-    q = U[1][0];
-    r = U[2][0];
-    
+    float_prec q0 = X[0][0];
+    float_prec q1 = X[1][0];
+    float_prec q2 = X[2][0];
+    float_prec q3 = X[3][0];
+    float_prec bp = X[4][0];
+    float_prec bq = X[5][0];
+    float_prec br = X[6][0];
+
+    float_prec p = U[0][0] - bp;
+    float_prec q = U[1][0] - bq;
+    float_prec r = U[2][0] - br;
+
     X_Next[0][0] = (0.5 * (+0.00 -p*q1 -q*q2 -r*q3))*gEkfRuntimeDt + q0;
     X_Next[1][0] = (0.5 * (+p*q0 +0.00 +r*q2 -q*q3))*gEkfRuntimeDt + q1;
     X_Next[2][0] = (0.5 * (+q*q0 -r*q1 +0.00 +p*q3))*gEkfRuntimeDt + q2;
     X_Next[3][0] = (0.5 * (+r*q0 +q*q1 -p*q2 +0.00))*gEkfRuntimeDt + q3;
-    
-    
-    /* ======= Additional ad-hoc quaternion normalization to make sure the quaternion is a unit vector (i.e. ||q|| = 1) ======= */
-    if (!X_Next.bNormVector()) {
-        /* System error, return false so we can reset the UKF */
-        return false;
-    }
-    
-    return true;
+    X_Next[4][0] = bp;
+    X_Next[5][0] = bq;
+    X_Next[6][0] = br;
+
+    return Main_bNormalizeState(X_Next);
 }
 
 bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U)
 {
-    /* Insert the nonlinear measurement transformation here
-     *          y(k)   = h[x(k), u(k)]
-     *
-     * The measurement output is the gravitational and magnetic projection to the body:
-     *     DCM     = [(+(q0**2)+(q1**2)-(q2**2)-(q3**2)),                    2*(q1*q2+q0*q3),                    2*(q1*q3-q0*q2)]
-     *               [                   2*(q1*q2-q0*q3), (+(q0**2)-(q1**2)+(q2**2)-(q3**2)),                    2*(q2*q3+q0*q1)]
-     *               [                   2*(q1*q3+q0*q2),                    2*(q2*q3-q0*q1), (+(q0**2)-(q1**2)-(q2**2)+(q3**2))]
-     * 
-     *  G_proj_sens = DCM * [0 0 1]             --> Gravitational projection to the accelerometer sensor
-     *  M_proj_sens = DCM * [Mx My Mz]          --> (Earth) magnetic projection to the magnetometer sensor
-     */
-    float_prec q0, q1, q2, q3;
-    float_prec q0_2, q1_2, q2_2, q3_2;
+    float_prec q0 = X[0][0];
+    float_prec q1 = X[1][0];
+    float_prec q2 = X[2][0];
+    float_prec q3 = X[3][0];
 
-    q0 = X[0][0];
-    q1 = X[1][0];
-    q2 = X[2][0];
-    q3 = X[3][0];
+    float_prec q0_2 = q0 * q0;
+    float_prec q1_2 = q1 * q1;
+    float_prec q2_2 = q2 * q2;
+    float_prec q3_2 = q3 * q3;
 
-    q0_2 = q0 * q0;
-    q1_2 = q1 * q1;
-    q2_2 = q2 * q2;
-    q3_2 = q3 * q3;
-    
     Y[0][0] = (2*q1*q3 -2*q0*q2) * IMU_ACC_Z0;
-
     Y[1][0] = (2*q2*q3 +2*q0*q1) * IMU_ACC_Z0;
-
     Y[2][0] = (+(q0_2) -(q1_2) -(q2_2) +(q3_2)) * IMU_ACC_Z0;
-    
+
     Y[3][0] = (+(q0_2)+(q1_2)-(q2_2)-(q3_2)) * IMU_MAG_B0[0][0]
              +(2*(q1*q2+q0*q3)) * IMU_MAG_B0[1][0]
              +(2*(q1*q3-q0*q2)) * IMU_MAG_B0[2][0];
@@ -1513,23 +1575,21 @@ bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U)
     Y[5][0] = (2*(q1*q3+q0*q2)) * IMU_MAG_B0[0][0]
              +(2*(q2*q3-q0*q1)) * IMU_MAG_B0[1][0]
              +(+(q0_2)-(q1_2)-(q2_2)+(q3_2)) * IMU_MAG_B0[2][0];
-    
+
     return true;
 }
 
 bool Main_bCalcJacobianF(Matrix& F, const Matrix& X, const Matrix& U)
 {
-    /* In Main_bUpdateNonlinearX():
-     *  q0 = q0 + q0_dot * dT;
-     *  q1 = q1 + q1_dot * dT;
-     *  q2 = q2 + q2_dot * dT;
-     *  q3 = q3 + q3_dot * dT;
-     */
-    float_prec p, q, r;
+    float_prec q0 = X[0][0];
+    float_prec q1 = X[1][0];
+    float_prec q2 = X[2][0];
+    float_prec q3 = X[3][0];
+    float_prec p = U[0][0] - X[4][0];
+    float_prec q = U[1][0] - X[5][0];
+    float_prec r = U[2][0] - X[6][0];
 
-    p = U[0][0];
-    q = U[1][0];
-    r = U[2][0];
+    F.vSetToZero();
 
     F[0][0] =  1.000;
     F[1][0] =  0.5*p * gEkfRuntimeDt;
@@ -1550,62 +1610,68 @@ bool Main_bCalcJacobianF(Matrix& F, const Matrix& X, const Matrix& U)
     F[1][3] = -0.5*q * gEkfRuntimeDt;
     F[2][3] =  0.5*p * gEkfRuntimeDt;
     F[3][3] =  1.000;
-    
+
+    F[0][4] =  0.5*q1 * gEkfRuntimeDt;
+    F[1][4] = -0.5*q0 * gEkfRuntimeDt;
+    F[2][4] = -0.5*q3 * gEkfRuntimeDt;
+    F[3][4] =  0.5*q2 * gEkfRuntimeDt;
+
+    F[0][5] =  0.5*q2 * gEkfRuntimeDt;
+    F[1][5] =  0.5*q3 * gEkfRuntimeDt;
+    F[2][5] = -0.5*q0 * gEkfRuntimeDt;
+    F[3][5] = -0.5*q1 * gEkfRuntimeDt;
+
+    F[0][6] =  0.5*q3 * gEkfRuntimeDt;
+    F[1][6] = -0.5*q2 * gEkfRuntimeDt;
+    F[2][6] =  0.5*q1 * gEkfRuntimeDt;
+    F[3][6] = -0.5*q0 * gEkfRuntimeDt;
+
+    F[4][4] = 1.000;
+    F[5][5] = 1.000;
+    F[6][6] = 1.000;
+
     return true;
 }
 
 bool Main_bCalcJacobianH(Matrix& H, const Matrix& X, const Matrix& U)
 {
-    /* In Main_bUpdateNonlinearY():
-     * 
-     * The measurement output is the gravitational and magnetic projection to the body:
-     *     DCM     = [(+(q0**2)+(q1**2)-(q2**2)-(q3**2)),                    2*(q1*q2+q0*q3),                    2*(q1*q3-q0*q2)]
-     *               [                   2*(q1*q2-q0*q3), (+(q0**2)-(q1**2)+(q2**2)-(q3**2)),                    2*(q2*q3+q0*q1)]
-     *               [                   2*(q1*q3+q0*q2),                    2*(q2*q3-q0*q1), (+(q0**2)-(q1**2)-(q2**2)+(q3**2))]
-     * 
-     *  G_proj_sens = DCM * [0 0 -g]            --> Gravitational projection to the accelerometer sensor
-     *  M_proj_sens = DCM * [Mx My Mz]          --> (Earth) magnetic projection to the magnetometer sensor
-     */
-    float_prec q0, q1, q2, q3;
+    float_prec q0 = X[0][0];
+    float_prec q1 = X[1][0];
+    float_prec q2 = X[2][0];
+    float_prec q3 = X[3][0];
 
-    q0 = X[0][0];
-    q1 = X[1][0];
-    q2 = X[2][0];
-    q3 = X[3][0];
-    
+    H.vSetToZero();
+
     H[0][0] = -2*q2 * IMU_ACC_Z0;
     H[1][0] = +2*q1 * IMU_ACC_Z0;
     H[2][0] = +2*q0 * IMU_ACC_Z0;
     H[3][0] =  2*q0*IMU_MAG_B0[0][0] + 2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
     H[4][0] = -2*q3*IMU_MAG_B0[0][0] + 2*q0*IMU_MAG_B0[1][0] + 2*q1*IMU_MAG_B0[2][0];
     H[5][0] =  2*q2*IMU_MAG_B0[0][0] - 2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
-    
+
     H[0][1] = +2*q3 * IMU_ACC_Z0;
     H[1][1] = +2*q0 * IMU_ACC_Z0;
     H[2][1] = -2*q1 * IMU_ACC_Z0;
     H[3][1] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
     H[4][1] =  2*q2*IMU_MAG_B0[0][0]-2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
     H[5][1] =  2*q3*IMU_MAG_B0[0][0]-2*q0*IMU_MAG_B0[1][0] - 2*q1*IMU_MAG_B0[2][0];
-    
+
     H[0][2] = -2*q0 * IMU_ACC_Z0;
     H[1][2] = +2*q3 * IMU_ACC_Z0;
     H[2][2] = -2*q2 * IMU_ACC_Z0;
     H[3][2] = -2*q2*IMU_MAG_B0[0][0]+2*q1*IMU_MAG_B0[1][0] - 2*q0*IMU_MAG_B0[2][0];
     H[4][2] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
     H[5][2] =  2*q0*IMU_MAG_B0[0][0]+2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
-    
+
     H[0][3] = +2*q1 * IMU_ACC_Z0;
     H[1][3] = +2*q2 * IMU_ACC_Z0;
     H[2][3] = +2*q3 * IMU_ACC_Z0;
     H[3][3] = -2*q3*IMU_MAG_B0[0][0]+2*q0*IMU_MAG_B0[1][0] + 2*q1*IMU_MAG_B0[2][0];
     H[4][3] = -2*q0*IMU_MAG_B0[0][0]-2*q3*IMU_MAG_B0[1][0] + 2*q2*IMU_MAG_B0[2][0];
     H[5][3] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
-    
+
     return true;
 }
-
-
-
 
 
 void SPEW_THE_ERROR(char const * str)
