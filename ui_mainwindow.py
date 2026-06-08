@@ -3,7 +3,7 @@
 ################################################################################
 ## Form generated from reading UI file 'main.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.9.2
+## Created by: Qt User Interface Compiler version 6.11.1
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -1293,7 +1293,7 @@ class Ui_MainWindow(object):
         font4 = QFont()
         font4.setFamilies([u"Segoe UI"])
         __qtablewidgetitem4 = QTableWidgetItem()
-        __qtablewidgetitem4.setFont(font4);
+        __qtablewidgetitem4.setFont(font4)
         self.tableWidget.setVerticalHeaderItem(0, __qtablewidgetitem4)
         __qtablewidgetitem5 = QTableWidgetItem()
         self.tableWidget.setVerticalHeaderItem(1, __qtablewidgetitem5)
@@ -1723,6 +1723,12 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_14.addWidget(self.telemetryWarningLabel)
 
+        self.chk_alarm_master = QCheckBox(self.topMenus)
+        self.chk_alarm_master.setObjectName(u"chk_alarm_master")
+        self.chk_alarm_master.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_alarm_master)
+
         self.chk_alarm_airspeed = QCheckBox(self.topMenus)
         self.chk_alarm_airspeed.setObjectName(u"chk_alarm_airspeed")
         self.chk_alarm_airspeed.setChecked(True)
@@ -1740,6 +1746,12 @@ class Ui_MainWindow(object):
         self.chk_alarm_bank.setChecked(True)
 
         self.verticalLayout_14.addWidget(self.chk_alarm_bank)
+
+        self.chk_alarm_sink_rate = QCheckBox(self.topMenus)
+        self.chk_alarm_sink_rate.setObjectName(u"chk_alarm_sink_rate")
+        self.chk_alarm_sink_rate.setChecked(True)
+
+        self.verticalLayout_14.addWidget(self.chk_alarm_sink_rate)
 
 
         self.verticalLayout_13.addWidget(self.topMenus, 0, Qt.AlignmentFlag.AlignTop)
@@ -1883,56 +1895,56 @@ class Ui_MainWindow(object):
         self.commandLinkButton.setText(QCoreApplication.translate("MainWindow", u"Link Button", None))
         self.commandLinkButton.setDescription(QCoreApplication.translate("MainWindow", u"Link description", None))
         ___qtablewidgetitem = self.tableWidget.horizontalHeaderItem(0)
-        ___qtablewidgetitem.setText(QCoreApplication.translate("MainWindow", u"0", None));
+        ___qtablewidgetitem.setText(QCoreApplication.translate("MainWindow", u"0", None))
         ___qtablewidgetitem1 = self.tableWidget.horizontalHeaderItem(1)
-        ___qtablewidgetitem1.setText(QCoreApplication.translate("MainWindow", u"1", None));
+        ___qtablewidgetitem1.setText(QCoreApplication.translate("MainWindow", u"1", None))
         ___qtablewidgetitem2 = self.tableWidget.horizontalHeaderItem(2)
-        ___qtablewidgetitem2.setText(QCoreApplication.translate("MainWindow", u"2", None));
+        ___qtablewidgetitem2.setText(QCoreApplication.translate("MainWindow", u"2", None))
         ___qtablewidgetitem3 = self.tableWidget.horizontalHeaderItem(3)
-        ___qtablewidgetitem3.setText(QCoreApplication.translate("MainWindow", u"3", None));
+        ___qtablewidgetitem3.setText(QCoreApplication.translate("MainWindow", u"3", None))
         ___qtablewidgetitem4 = self.tableWidget.verticalHeaderItem(0)
-        ___qtablewidgetitem4.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem4.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem5 = self.tableWidget.verticalHeaderItem(1)
-        ___qtablewidgetitem5.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem5.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem6 = self.tableWidget.verticalHeaderItem(2)
-        ___qtablewidgetitem6.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem6.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem7 = self.tableWidget.verticalHeaderItem(3)
-        ___qtablewidgetitem7.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem7.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem8 = self.tableWidget.verticalHeaderItem(4)
-        ___qtablewidgetitem8.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem8.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem9 = self.tableWidget.verticalHeaderItem(5)
-        ___qtablewidgetitem9.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem9.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem10 = self.tableWidget.verticalHeaderItem(6)
-        ___qtablewidgetitem10.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem10.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem11 = self.tableWidget.verticalHeaderItem(7)
-        ___qtablewidgetitem11.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem11.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem12 = self.tableWidget.verticalHeaderItem(8)
-        ___qtablewidgetitem12.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem12.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem13 = self.tableWidget.verticalHeaderItem(9)
-        ___qtablewidgetitem13.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem13.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem14 = self.tableWidget.verticalHeaderItem(10)
-        ___qtablewidgetitem14.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem14.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem15 = self.tableWidget.verticalHeaderItem(11)
-        ___qtablewidgetitem15.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem15.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem16 = self.tableWidget.verticalHeaderItem(12)
-        ___qtablewidgetitem16.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem16.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem17 = self.tableWidget.verticalHeaderItem(13)
-        ___qtablewidgetitem17.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem17.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem18 = self.tableWidget.verticalHeaderItem(14)
-        ___qtablewidgetitem18.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem18.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
         ___qtablewidgetitem19 = self.tableWidget.verticalHeaderItem(15)
-        ___qtablewidgetitem19.setText(QCoreApplication.translate("MainWindow", u"New Row", None));
+        ___qtablewidgetitem19.setText(QCoreApplication.translate("MainWindow", u"New Row", None))
 
         __sortingEnabled = self.tableWidget.isSortingEnabled()
         self.tableWidget.setSortingEnabled(False)
         ___qtablewidgetitem20 = self.tableWidget.item(0, 0)
-        ___qtablewidgetitem20.setText(QCoreApplication.translate("MainWindow", u"Test", None));
+        ___qtablewidgetitem20.setText(QCoreApplication.translate("MainWindow", u"Test", None))
         ___qtablewidgetitem21 = self.tableWidget.item(0, 1)
-        ___qtablewidgetitem21.setText(QCoreApplication.translate("MainWindow", u"Text", None));
+        ___qtablewidgetitem21.setText(QCoreApplication.translate("MainWindow", u"Text", None))
         ___qtablewidgetitem22 = self.tableWidget.item(0, 2)
-        ___qtablewidgetitem22.setText(QCoreApplication.translate("MainWindow", u"Cell", None));
+        ___qtablewidgetitem22.setText(QCoreApplication.translate("MainWindow", u"Cell", None))
         ___qtablewidgetitem23 = self.tableWidget.item(0, 3)
-        ___qtablewidgetitem23.setText(QCoreApplication.translate("MainWindow", u"Line", None));
+        ___qtablewidgetitem23.setText(QCoreApplication.translate("MainWindow", u"Line", None))
         self.tableWidget.setSortingEnabled(__sortingEnabled)
 
         self.VideoLabel.setText("")
@@ -1956,9 +1968,11 @@ class Ui_MainWindow(object):
         self.attitudeSmoothingValue.setText(QCoreApplication.translate("MainWindow", u"20%", None))
         self.chk_compass.setText(QCoreApplication.translate("MainWindow", u"Compass OSD", None))
         self.telemetryWarningLabel.setText(QCoreApplication.translate("MainWindow", u"Telemetry Warning System", None))
+        self.chk_alarm_master.setText(QCoreApplication.translate("MainWindow", u"Warning Alarms Enabled", None))
         self.chk_alarm_airspeed.setText(QCoreApplication.translate("MainWindow", u"Air Speed Alarm", None))
         self.chk_alarm_altitude.setText(QCoreApplication.translate("MainWindow", u"Altitude Alarm", None))
         self.chk_alarm_bank.setText(QCoreApplication.translate("MainWindow", u"Bank Angle Alarm", None))
+        self.chk_alarm_sink_rate.setText(QCoreApplication.translate("MainWindow", u"Sink Rate Alarm", None))
         self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"frick you", None))
         self.version.setText(QCoreApplication.translate("MainWindow", u"v1.0", None))
     # retranslateUi

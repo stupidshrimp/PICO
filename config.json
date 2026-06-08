@@ -27,6 +27,7 @@
         "altitude_alarm_airspeed": 20,
         "altitude_alarm_altitude": 17,
         "roll_angle": 45,
+        "warning_alarms_enabled": true,
         "stall_alarm_enabled": true,
         "altitude_alarm_enabled": true,
         "bank_angle_alarm_enabled": true,

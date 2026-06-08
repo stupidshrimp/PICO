@@ -90,7 +90,8 @@ DEFAULT_CONFIG = {
         "roll_angle": 45,
         # Trigger when descent rate exceeds sink_rate_threshold_fps
         "sink_rate_threshold_fps": 10.0,
-        # Enable/disable individual telemetry alarms
+        # Enable/disable all telemetry alarms or individual alarm groups
+        "warning_alarms_enabled": True,
         "stall_alarm_enabled": True,
         "altitude_alarm_enabled": True,
         "bank_angle_alarm_enabled": True,

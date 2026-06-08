@@ -370,8 +370,8 @@ class MainWindow(QMainWindow):
         self.ui.btn_new.setText("Command")
         self.ui.btn_widgets.setText("Configuration")
 
-        # Add Pre-flight checklist tab
-        self.preflight_page = PreFlightChecklistPage(self)
+        # Pre-flight checklist is temporarily hidden from the sidebar.
+        self.preflight_page = None
 
         # Add Data tab and associated graphs
         self.data_page = DataPage(self)
@@ -435,6 +435,7 @@ class MainWindow(QMainWindow):
         self.update_throttle_mode_label()
         self.vtx_cfg = self.config.setdefault("vtx", {})
         self.warning_cfg = self.config.setdefault("warnings", {})
+        self.warning_cfg.setdefault("warning_alarms_enabled", True)
         self.warning_cfg.setdefault("stall_alarm_enabled", True)
         self.warning_cfg.setdefault("altitude_alarm_enabled", True)
         self.warning_cfg.setdefault("bank_angle_alarm_enabled", True)
@@ -464,6 +465,11 @@ class MainWindow(QMainWindow):
 
         if hasattr(self.ui, "telemetryWarningLabel"):
             self.ui.telemetryWarningLabel.setContentsMargins(0, 12, 0, 0)
+        if hasattr(self.ui, "chk_alarm_master"):
+            self.ui.chk_alarm_master.setChecked(
+                self.warning_cfg.get("warning_alarms_enabled", True)
+            )
+            self.ui.chk_alarm_master.toggled.connect(self.on_warning_alarms_toggled)
         if hasattr(self.ui, "chk_alarm_airspeed"):
             self.ui.chk_alarm_airspeed.setChecked(
                 self.warning_cfg.get("stall_alarm_enabled", True)
@@ -481,6 +487,13 @@ class MainWindow(QMainWindow):
                 self.warning_cfg.get("bank_angle_alarm_enabled", True)
             )
             self.ui.chk_alarm_bank.toggled.connect(self.on_bank_alarm_toggled)
+        if hasattr(self.ui, "chk_alarm_sink_rate"):
+            self.ui.chk_alarm_sink_rate.setChecked(
+                self.warning_cfg.get("sink_rate_alarm_enabled", True)
+            )
+            self.ui.chk_alarm_sink_rate.toggled.connect(
+                self.on_sink_rate_alarm_toggled
+            )
 
         # Track last worker error to prevent dialog spam
         self._last_error_message = None
@@ -782,7 +795,8 @@ class MainWindow(QMainWindow):
         widgets.btn_home.clicked.connect(self.buttonClick)
         widgets.btn_widgets.clicked.connect(self.buttonClick)
         widgets.btn_new.clicked.connect(self.buttonClick)
-        widgets.btn_preflight.clicked.connect(self.buttonClick)
+        if hasattr(widgets, "btn_preflight"):
+            widgets.btn_preflight.hide()
         widgets.btn_data.clicked.connect(self.buttonClick)
         widgets.btn_sorties.clicked.connect(self.buttonClick)
         widgets.btn_debug.clicked.connect(self.buttonClick)
@@ -2056,7 +2070,7 @@ class MainWindow(QMainWindow):
             return
 
         self.update_trim_labels()
-        self.play_sound_once(sound_name)
+        self.play_sound_once(sound_name, volume=0.5)
 
     def _trim_level_to_channel_offset(self, level: int) -> int:
         """Convert a signed trim level into a CRSF channel offset."""
@@ -2320,7 +2334,7 @@ class MainWindow(QMainWindow):
         player.play()
         self.sound_players[cache_key] = (player, output)
 
-    def play_sound_once(self, name: str):
+    def play_sound_once(self, name: str, volume: float = 1.0):
         """Play a sound on a throwaway player so repeated cues can overlap."""
 
         if self._is_sound_muted(name):
@@ -2338,7 +2352,7 @@ class MainWindow(QMainWindow):
         player, output = QMediaPlayer(), QAudioOutput()
         player.setAudioOutput(output)
         player.setSource(QUrl.fromLocalFile(file_path))
-        output.setVolume(1.0)
+        output.setVolume(max(0.0, min(1.0, float(volume))))
 
         players = getattr(self, "_overlapping_sound_players", None)
         if players is None:
@@ -2488,6 +2502,10 @@ class MainWindow(QMainWindow):
         """Evaluate telemetry values against configured thresholds and play alarms."""
         if now is None:
             now = time.monotonic()
+
+        if not self.warning_cfg.get("warning_alarms_enabled", True):
+            self._clear_warning_alarm_state()
+            return
 
         airspeed = self._safe_float(self.current_airspeed)
         altitude = self._safe_float(self.current_altitude)
@@ -3654,6 +3672,22 @@ class MainWindow(QMainWindow):
         roll_row.addWidget(self.roll_angle_value)
         warn_layout.addLayout(roll_row)
 
+        warn_layout.addWidget(QLabel("Sink Rate Alarm"))
+        sink_rate_row = QHBoxLayout()
+        sink_rate_row.addWidget(QLabel("Descent rate >"))
+        self.sink_rate_threshold_spin = QDoubleSpinBox()
+        self.sink_rate_threshold_spin.setRange(0.0, 200.0)
+        self.sink_rate_threshold_spin.setDecimals(1)
+        self.sink_rate_threshold_spin.setSingleStep(0.5)
+        self.sink_rate_threshold_spin.setValue(
+            self._safe_float(
+                self.warning_cfg.get("sink_rate_threshold_fps", 10.0), 10.0
+            )
+        )
+        self.sink_rate_threshold_spin.setSuffix(" ft/s")
+        sink_rate_row.addWidget(self.sink_rate_threshold_spin)
+        warn_layout.addLayout(sink_rate_row)
+
         # Set default selections
         self.control_port_combo.setCurrentText(
             self.joystick_cfg.get("port", "Not connected")
@@ -3693,6 +3727,9 @@ class MainWindow(QMainWindow):
         self.alt_alarm_alt_slider.valueChanged.connect(self.on_alt_alarm_alt_changed)
         self.alt_alarm_speed_slider.valueChanged.connect(self.on_alt_alarm_speed_changed)
         self.roll_angle_slider.valueChanged.connect(self.on_roll_angle_changed)
+        self.sink_rate_threshold_spin.valueChanged.connect(
+            self.on_sink_rate_threshold_changed
+        )
         self.battery_type_combo.currentTextChanged.connect(
             self.on_battery_type_changed
         )
@@ -4469,9 +4506,56 @@ class MainWindow(QMainWindow):
         self.roll_angle_value.setText(str(value))
         save_config(self.config)
 
+    def on_sink_rate_threshold_changed(self, value: float):
+        self.warning_cfg["sink_rate_threshold_fps"] = float(value)
+        save_config(self.config)
+
     def on_battery_type_changed(self, selection: str):
         self.aircraft_cfg["battery_cells"] = selection
         self._update_battery_full_voltage()
+        save_config(self.config)
+
+    def _stop_warning_alarm_audio(self):
+        alarm_sounds = (
+            "whoopalarm",
+            "airspeedlowarning",
+            "beepalarm",
+            "altitudewarning",
+            "pullupwarning",
+            "downupalarm",
+            "bankanglewarning",
+            "sinkalarm",
+            "sinkratewarning",
+        )
+        self._mute_sounds(alarm_sounds, 1.0)
+        for sound_name in alarm_sounds:
+            player_output = self.sound_players.pop(sound_name, None)
+            if not player_output:
+                continue
+            player, output = player_output
+            try:
+                player.stop()
+            except Exception:
+                pass
+            player.deleteLater()
+            output.deleteLater()
+
+    def _clear_warning_alarm_state(self, stop_audio: bool = True):
+        self.stall_alarm_start_time = None
+        self.altitude_alarm_start_time = None
+        self.roll_alarm_start_time = None
+        self.sink_rate_alarm_start_time = None
+        self.stall_alarm_playing = False
+        self.altitude_alarm_playing = False
+        self.roll_alarm_playing = False
+        self.sink_rate_alarm_playing = False
+        if stop_audio:
+            self._stop_warning_alarm_audio()
+
+    def on_warning_alarms_toggled(self, checked: bool):
+        self.warning_cfg["warning_alarms_enabled"] = checked
+        if not checked:
+            self._clear_warning_alarm_state()
         save_config(self.config)
 
     def on_stall_alarm_toggled(self, checked: bool):
@@ -4493,6 +4577,13 @@ class MainWindow(QMainWindow):
         if not checked:
             self.roll_alarm_start_time = None
             self.roll_alarm_playing = False
+        save_config(self.config)
+
+    def on_sink_rate_alarm_toggled(self, checked: bool):
+        self.warning_cfg["sink_rate_alarm_enabled"] = checked
+        if not checked:
+            self.sink_rate_alarm_start_time = None
+            self.sink_rate_alarm_playing = False
         save_config(self.config)
 
     def start_blinking(self, label: QLabel):

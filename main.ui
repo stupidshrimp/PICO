@@ -3486,6 +3486,16 @@ background-repeat: no-repeat;</string>
                          </widget>
                         </item>
                         <item>
+                         <widget class="QCheckBox" name="chk_alarm_master">
+                          <property name="text">
+                           <string>Warning Alarms Enabled</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
                          <widget class="QCheckBox" name="chk_alarm_airspeed">
                           <property name="text">
                            <string>Air Speed Alarm</string>
@@ -3509,6 +3519,16 @@ background-repeat: no-repeat;</string>
                          <widget class="QCheckBox" name="chk_alarm_bank">
                           <property name="text">
                            <string>Bank Angle Alarm</string>
+                          </property>
+                          <property name="checked">
+                           <bool>true</bool>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QCheckBox" name="chk_alarm_sink_rate">
+                          <property name="text">
+                           <string>Sink Rate Alarm</string>
                           </property>
                           <property name="checked">
                            <bool>true</bool>
