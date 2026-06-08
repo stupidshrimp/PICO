@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QScrollArea,
+    QStyle,
 )
 from PySide6.QtCore import (
     Qt,
@@ -3988,6 +3989,25 @@ class MainWindow(QMainWindow):
         )
         return f"<b>{summary}</b><ul>{items}</ul>"
 
+    def _set_message_box_icon_without_alert(
+        self, message_box: QMessageBox, icon: QMessageBox.Icon
+    ) -> None:
+        """Show a standard QMessageBox icon without triggering native alert sounds."""
+
+        pixmap_by_icon = {
+            QMessageBox.Icon.Information: (
+                QStyle.StandardPixmap.SP_MessageBoxInformation
+            ),
+            QMessageBox.Icon.Warning: QStyle.StandardPixmap.SP_MessageBoxWarning,
+            QMessageBox.Icon.Critical: QStyle.StandardPixmap.SP_MessageBoxCritical,
+        }
+        standard_pixmap = pixmap_by_icon.get(icon)
+        if standard_pixmap is None:
+            message_box.setIcon(QMessageBox.Icon.NoIcon)
+            return
+
+        message_box.setIconPixmap(QApplication.style().standardPixmap(standard_pixmap))
+
     def _show_preflight_verification(self) -> None:
         """Run the pre-flight verification and display the result."""
 
@@ -4014,10 +4034,14 @@ class MainWindow(QMainWindow):
         message_box.setWindowTitle("Pre-flight verification")
         message_box.setTextFormat(Qt.TextFormat.RichText)
         message_box.setText(report)
-        message_box.setIcon(
+        if overall == "fail":
+            self.play_sound("errorsound.mp3")
+
+        self._set_message_box_icon_without_alert(
+            message_box,
             QMessageBox.Icon.Information
             if overall == "pass"
-            else QMessageBox.Icon.Warning
+            else QMessageBox.Icon.Warning,
         )
         message_box.exec()
 
@@ -4179,11 +4203,16 @@ class MainWindow(QMainWindow):
             self._apply_transmission_button_style("inactive")
             self.transmission_control_button.setText("Start transmitting packets")
             self._update_parameter_query_button_state()
-            QMessageBox.warning(
-                self,
-                "CRSF transmitter disconnected",
-                "Connect a CRSF transmitter before starting packet transmission.",
+            self.play_sound("errorsound.mp3")
+            message_box = QMessageBox(self)
+            message_box.setWindowTitle("CRSF transmitter disconnected")
+            message_box.setText(
+                "Connect a CRSF transmitter before starting packet transmission."
             )
+            self._set_message_box_icon_without_alert(
+                message_box, QMessageBox.Icon.Warning
+            )
+            message_box.exec()
             return
 
         channels = self._build_control_channels()
