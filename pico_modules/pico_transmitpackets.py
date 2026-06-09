@@ -756,9 +756,10 @@ class CRSFPacketProcessor(QObject):
                     self._decode_link_statistics_payload(payload)
                     continue
 
-                # Treat any other recognised telemetry envelopes the same way
-                # regardless of whether they arrived as standalone frames or as
-                # piggybacked payload bytes from a link-stats packet.
+                # Decode recognised CRSF telemetry frames by their top-level
+                # frame type. ExpressLRS reassembles OTA telemetry chunks before
+                # forwarding them over CRSF, so 0x14 link-stat frames do not
+                # contain nested GPS/attitude CRSF payloads on this serial link.
                 if not self._decode_payload(packet_type, payload):
                     # Unknown packet type encountered
                     self._diag_rx_unknown_payloads += 1
@@ -771,11 +772,17 @@ class CRSFPacketProcessor(QObject):
 
 
     def _decode_link_statistics_payload(self, payload: bytes | memoryview) -> None:
-        """Decode link statistics and forward any embedded telemetry."""
+        """Decode a fixed-size CRSF link-statistics payload."""
 
         if len(payload) < 10:
             logger.warning("Link statistics payload too short: %d", len(payload))
             return
+
+        if len(payload) > 10:
+            logger.debug(
+                "Ignoring %d unexpected trailing bytes in CRSF link statistics frame",
+                len(payload) - 10,
+            )
 
         stats_view = memoryview(payload)
         stats_bytes = stats_view[:10]
@@ -797,11 +804,6 @@ class CRSFPacketProcessor(QObject):
             logger.exception("Failed to parse link statistics packet")
             return
 
-        remaining = stats_view[10:]
-        piggyback_count = 0
-        if remaining:
-            piggyback_count = self._count_piggyback_packets(remaining)
-
         self.telemetry_ready.emit(
             (
                 "link_stats",
@@ -811,53 +813,8 @@ class CRSFPacketProcessor(QObject):
                 snr,
                 downlink_lq,
                 downlink_snr,
-                piggyback_count,
             )
         )
-
-        # Any remaining bytes are piggybacked telemetry that should be decoded
-        # as if they arrived in a dedicated telemetry frame.
-        if remaining:
-            self._decode_telemetry_stream(remaining.tobytes())
-
-    def _count_piggyback_packets(self, payload: memoryview) -> int:
-        """Return the number of recognised telemetry packets in ``payload``."""
-
-        index = 0
-        length = len(payload)
-        count = 0
-        while index < length:
-            packet_type = payload[index]
-            index += 1
-            consumed = self._decode_payload(packet_type, payload[index:], emit=False)
-            if not consumed:
-                break
-            index += consumed
-            count += 1
-        return count
-
-
-    def _decode_telemetry_stream(self, payload: bytes) -> None:
-        """Decode one or more telemetry packets from ``payload``.
-
-        Telemetry data piggybacked inside link-stat frames is laid out as a
-        sequence of ``(packet_type, packet_payload)`` pairs.  Each payload has
-        a fixed size for the packet types we understand, allowing the decoder to
-        walk the stream and emit the embedded telemetry events.
-        """
-
-        index = 0
-        payload_len = len(payload)
-        while index < payload_len:
-            packet_type = payload[index]
-            index += 1
-            consumed = self._decode_payload(packet_type, payload[index:])
-            if not consumed:
-                logger.debug(
-                    "Piggyback telemetry type 0x%02X could not be parsed", packet_type
-                )
-                return
-            index += consumed
 
 
     def _decode_payload(
@@ -975,8 +932,8 @@ class CRSFPacketProcessor(QObject):
             start = 0
 
             # Extended frames prepend destination and origin addresses to the
-            # payload.  Piggybacked telemetry omits these two bytes, so consume
-            # them only when present.
+            # payload. Internal unit tests may pass only the compact payload, so
+            # consume the address bytes only when present.
             if len(view) >= payload_size + 2:
                 dest = int(view[0])
                 orig = int(view[1])

@@ -100,7 +100,7 @@ def test_raw_serial_debug_flag_can_be_toggled():
     processor.set_raw_serial_debug_enabled(False)
     assert processor._raw_serial_debug_enabled is False
 
-def test_decode_handset_piggyback_payload():
+def test_decode_compact_handset_payload():
     subtype = 0x10
     rate = 2000
     offset = 50
