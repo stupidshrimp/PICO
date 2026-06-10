@@ -996,6 +996,9 @@ void maybePrintControlDebugStats() {
   const uint32_t nowUs = micros();
   const uint32_t currentRcAgeUs = lastRcPacketUs == 0 ? 0 : static_cast<uint32_t>(nowUs - lastRcPacketUs);
   const uint32_t maxRcAgeUs = max(controlDebugCounters.maxRcAgeUs, currentRcAgeUs);
+  const int16_t telemetryPitchDdeg = static_cast<int16_t>(-latestAttitudePitch);
+  const float telemetryLatitude = static_cast<float>(latestLatitude);
+  const float telemetryLongitude = static_cast<float>(latestLongitude);
 
   Serial.print("FCDBG ");
   Serial.print("rc_hz="); Serial.print(controlDebugCounters.rcPackets * scale, 1);
@@ -1003,6 +1006,27 @@ void maybePrintControlDebugStats() {
   Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
   Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
   Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
+  // Report the telemetry values as they are represented on the CRSF uplink.
+  // Attitude pitch is sign-inverted by the CRSF telemetry encoder, latitude and
+  // longitude are rounded to float by telemetryWriteGPS(), and fractional
+  // altitude/speed centimeters are preserved so FCDBG can be compared directly
+  // with the values transmitted to the RX module.
+  Serial.print(" tlm_roll_ddeg="); Serial.print(latestAttitudeRoll);
+  Serial.print(" tlm_pitch_ddeg="); Serial.print(telemetryPitchDdeg);
+  Serial.print(" tlm_yaw_ddeg="); Serial.print(latestAttitudeYaw);
+  Serial.print(" tlm_roll_deg="); Serial.print(latestAttitudeRoll / 10.0f, 1);
+  Serial.print(" tlm_pitch_deg="); Serial.print(telemetryPitchDdeg / 10.0f, 1);
+  Serial.print(" tlm_yaw_deg="); Serial.print(latestAttitudeYaw / 10.0f, 1);
+  Serial.print(" tlm_lat="); Serial.print(telemetryLatitude, 7);
+  Serial.print(" tlm_lon="); Serial.print(telemetryLongitude, 7);
+  Serial.print(" tlm_alt_cm="); Serial.print(sensorAltitudeCm, 2);
+  Serial.print(" tlm_alt_ft="); Serial.print(latestAltitudeFeet, 1);
+  Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 2);
+  Serial.print(" tlm_speed_mph="); Serial.print(latestAirspeedMph, 1);
+  Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
+  Serial.print(" tlm_sats="); Serial.print(satsInUse);
+  Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
+  Serial.print(" tlm_gps_fix="); Serial.print(gps.has_valid_fix ? 1 : 0);
   Serial.print(" tlm_uart_hz="); Serial.print(controlDebugCounters.crsfTelemetryUartFrames * scale, 1);
   Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryAttitudeUartFrames * scale, 1);
   Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryGpsUartFrames * scale, 1);
