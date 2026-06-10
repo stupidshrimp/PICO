@@ -13,6 +13,15 @@
 
 #include <Wire.h>
 #include <elapsedMillis.h>
+
+// Arduino IDE sketch-local debug toggles must be defined before including
+// konfig.h because konfig.h supplies guarded defaults. Keep this bench-build
+// value enabled so FCDBG lines are emitted to the USB Serial Monitor. Set this
+// to 0 before flight if the extra serial formatting jitter is not acceptable.
+#ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
+#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 1
+#endif
+
 #include "konfig.h"
 #include "matrix.h"
 #include "ekf.h"
@@ -239,10 +248,6 @@ bool rcServoHoldBlendActive = false;
 uint16_t rcServoHoldStartRollUs = 1500;
 uint16_t rcServoHoldStartPitchUs = 1500;
 uint16_t rcServoHoldStartYawUs = 1500;
-
-#ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
-#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 0
-#endif
 
 struct ControlDebugCounters {
   uint32_t rcPackets;
@@ -1079,6 +1084,11 @@ void setup() {
   while (!Serial && (millis() - serialStart < 3000)) {
     delay(10);
   }
+#if FC_CONTROL_DEBUG_SERIAL_OUTPUT
+  Serial.println("FCDBG serial output enabled; emitting control stats once per second.");
+#else
+  Serial.println("FCDBG serial output disabled; define FC_CONTROL_DEBUG_SERIAL_OUTPUT before konfig.h to enable.");
+#endif
 
   // ----- Initialize Servo Outputs -----
   initializeServoOutputs();
