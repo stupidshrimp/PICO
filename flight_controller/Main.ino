@@ -831,6 +831,16 @@ void serviceCrsfLink() {
 // Instantiate the GPS object on Serial6
 M8N gps(Serial6);
 
+constexpr uint32_t GPS_BAUD_CANDIDATES[] = {9600UL, 38400UL, 57600UL, 115200UL, 4800UL};
+constexpr uint8_t GPS_BAUD_CANDIDATE_COUNT =
+    sizeof(GPS_BAUD_CANDIDATES) / sizeof(GPS_BAUD_CANDIDATES[0]);
+constexpr uint32_t GPS_BAUD_DETECT_TIMEOUT_MS = 2500UL;
+uint8_t gpsBaudCandidateIndex = 0;
+uint32_t gpsBaudLastSwitchMs = 0;
+uint32_t gpsValidSentencesAtLastBaudCheck = 0;
+uint32_t gpsUbxPvtAtLastBaudCheck = 0;
+bool gpsBaudLocked = false;
+
 // Global variables to store the latest GPS data
 double latestLatitude  = 0;
 double latestLongitude = 0;
@@ -874,11 +884,51 @@ int16_t latestAttitudePitch = 0;
 int16_t latestAttitudeYaw = 0;
 bool attitudeSampleValid = false;
 
+void configureGpsBaud(uint8_t candidateIndex, bool announce) {
+  gpsBaudCandidateIndex = candidateIndex % GPS_BAUD_CANDIDATE_COUNT;
+  const uint32_t baud = GPS_BAUD_CANDIDATES[gpsBaudCandidateIndex];
+  Serial6.end();
+  delay(20);
+  Serial6.begin(baud);
+  gps.resetParser(true);
+  gpsValidSentencesAtLastBaudCheck = 0;
+  gpsUbxPvtAtLastBaudCheck = 0;
+  gpsBaudLastSwitchMs = millis();
+  gpsBaudLocked = false;
+  if (announce) {
+    Serial.print("GPS baud probe: ");
+    Serial.println(baud);
+  }
+}
+
+void serviceGpsBaudAutodetect() {
+  if (gpsBaudLocked) {
+    return;
+  }
+
+  if (gps.valid_sentence_count > gpsValidSentencesAtLastBaudCheck ||
+      gps.ubx_nav_pvt_count > gpsUbxPvtAtLastBaudCheck) {
+    gpsBaudLocked = true;
+    Serial.print("GPS data detected at ");
+    Serial.print(GPS_BAUD_CANDIDATES[gpsBaudCandidateIndex]);
+    Serial.print(" baud via ");
+    Serial.println((gps.ubx_nav_pvt_count > gpsUbxPvtAtLastBaudCheck) ? "UBX" : "NMEA");
+    return;
+  }
+
+  if ((uint32_t)(millis() - gpsBaudLastSwitchMs) < GPS_BAUD_DETECT_TIMEOUT_MS) {
+    return;
+  }
+
+  configureGpsBaud((gpsBaudCandidateIndex + 1) % GPS_BAUD_CANDIDATE_COUNT, true);
+}
+
 void updateGpsCache() {
 #if FC_TIMING_INSTRUMENTATION
   uint32_t timingStartUs = micros();
 #endif
   gps.gatherData();
+  serviceGpsBaudAutodetect();
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingGpsParse, timingStartUs);
 #endif
@@ -1060,6 +1110,14 @@ void maybePrintControlDebugStats() {
   Serial.print(controlDebugCounters.throttleServoWrites * scale, 1);
   Serial.print(" crsf_service_hz="); Serial.print(controlDebugCounters.crsfServiceCalls * scale, 1);
   Serial.print(" loop_hz="); Serial.print(controlDebugCounters.loopIterations * scale, 1);
+  Serial.print(" gps_baud="); Serial.print(GPS_BAUD_CANDIDATES[gpsBaudCandidateIndex]);
+  Serial.print(" gps_lock="); Serial.print(gpsBaudLocked ? 1 : 0);
+  Serial.print(" gps_valid="); Serial.print(gps.valid_sentence_count);
+  Serial.print(" gps_bad="); Serial.print(gps.checksum_error_count);
+  Serial.print(" ubx_pvt="); Serial.print(gps.ubx_nav_pvt_count);
+  Serial.print(" ubx_bad="); Serial.print(gps.ubx_checksum_error_count);
+  Serial.print(" gps_fix="); Serial.print(gps.has_valid_fix ? 1 : 0);
+  Serial.print(" gps_sats="); Serial.print(satsInUse);
   Serial.print(" rc_age_ms="); Serial.print(currentRcAgeUs / 1000.0f, 1);
   Serial.print(" rc_max_age_ms="); Serial.print(maxRcAgeUs / 1000.0f, 1);
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
@@ -1140,9 +1198,12 @@ void setup() {
   }
 
   // ----- Initialize GPS (Serial6) -----
-  Serial6.begin(9600);
+  Serial6.begin(GPS_BAUD_CANDIDATES[gpsBaudCandidateIndex]);
+  gpsBaudLastSwitchMs = millis();
   delay(1000);
-  Serial.println("GPS module initialized on USART6.");
+  Serial.print("GPS module initialized on USART6 at ");
+  Serial.print(GPS_BAUD_CANDIDATES[gpsBaudCandidateIndex]);
+  Serial.println(" baud (auto-detect enabled).");
 
   // Prime slow-sensor caches so the first GPS telemetry frames do not carry
   // default airspeed/altitude values while waiting for their first timers.
