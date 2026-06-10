@@ -68,14 +68,6 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define R_REJECTED       (1.0e3)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
-#define ACCEL_INNOVATION_SOFT_NORM (0.25f)
-#define ACCEL_INNOVATION_FULL_SCALE_NORM (0.70f)
-#define ACCEL_DYNAMIC_R_MAX_SCALE (50.0f)
-#define MAG_FIELD_NORM_MIN_UT (15.0f)
-#define MAG_FIELD_NORM_MAX_UT (80.0f)
-#define MAG_INNOVATION_SOFT_NORM (0.20f)
-#define MAG_INNOVATION_FULL_SCALE_NORM (0.60f)
-#define MAG_DYNAMIC_R_MAX_SCALE (100.0f)
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
@@ -307,29 +299,6 @@ float clampFloat(float value, float minValue, float maxValue) {
     return maxValue;
   }
   return value;
-}
-
-float vector3ResidualNorm(const Matrix& a, const Matrix& b, uint8_t startIndex) {
-  const float dx = a[startIndex][0] - b[startIndex][0];
-  const float dy = a[startIndex + 1][0] - b[startIndex + 1][0];
-  const float dz = a[startIndex + 2][0] - b[startIndex + 2][0];
-  return sqrtf(dx*dx + dy*dy + dz*dz);
-}
-
-float dynamicVarianceScale(float residualNorm, float softNorm, float rejectNorm, float maxScale) {
-  if (residualNorm <= softNorm || rejectNorm <= softNorm) {
-    return 1.0f;
-  }
-  const float normalizedResidual = clampFloat((residualNorm - softNorm) / (rejectNorm - softNorm),
-                                              0.0f,
-                                              1.0f);
-  return 1.0f + (maxScale - 1.0f) * normalizedResidual * normalizedResidual;
-}
-
-void setMeasurementVarianceTriplet(Matrix& R, uint8_t startIndex, float variance) {
-  R[startIndex][startIndex] = variance;
-  R[startIndex + 1][startIndex + 1] = variance;
-  R[startIndex + 2][startIndex + 2] = variance;
 }
 
 void resetControlDebugCounters() {
@@ -1227,14 +1196,8 @@ void loop() {
     Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
 
     setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
-    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
-    Matrix predictedX = EKF_IMU.GetX();
     Matrix predictedY(SS_Z_LEN, 1);
-    if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
-      Main_bUpdateNonlinearY(predictedY, predictedX, U);
-    } else {
-      Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
-    }
+    Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
 
     // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
     float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
@@ -1244,60 +1207,39 @@ void loop() {
     Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
     Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
 
-    // Normalize accelerometer vector. Reject impossible magnitudes, and
-    // progressively de-weight plausible-but-surprising gravity directions so
-    // maneuver acceleration does not yank the attitude estimate.
+    // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
     float normG = sqrt(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    const float accelMagnitudeFraction = fabs(normG - GRAVITY_NOMINAL_MSS) /
-                                         (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION);
-    bool accelRejected = !isfinite(normG) ||
-                         (normG <= NORM_EPSILON) ||
-                         (accelMagnitudeFraction > 1.0f);
-    float accelInnovationNorm = 0.0f;
+    bool accelRejected = (normG <= NORM_EPSILON) ||
+                         (fabs(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
     if (!accelRejected) {
       Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-      accelInnovationNorm = vector3ResidualNorm(Y, predictedY, 0);
-      const float innovationScale = dynamicVarianceScale(accelInnovationNorm,
-                                                         ACCEL_INNOVATION_SOFT_NORM,
-                                                         ACCEL_INNOVATION_FULL_SCALE_NORM,
-                                                         ACCEL_DYNAMIC_R_MAX_SCALE);
-      const float magnitudeScale = 1.0f + (ACCEL_DYNAMIC_R_MAX_SCALE - 1.0f) *
-                                   clampFloat(accelMagnitudeFraction, 0.0f, 1.0f) *
-                                   clampFloat(accelMagnitudeFraction, 0.0f, 1.0f);
-      setMeasurementVarianceTriplet(EKF_RACTIVE, 0, R_INIT_ACC * fmaxf(innovationScale, magnitudeScale));
     }
     if (accelRejected) {
       Y[0][0] = predictedY[0][0];
       Y[1][0] = predictedY[1][0];
       Y[2][0] = predictedY[2][0];
-      setMeasurementVarianceTriplet(EKF_RACTIVE, 0, R_REJECTED);
+      EKF_RACTIVE[0][0] = R_REJECTED;
+      EKF_RACTIVE[1][1] = R_REJECTED;
+      EKF_RACTIVE[2][2] = R_REJECTED;
     }
 
-    // Normalize magnetometer vector. Reject impossible field magnitudes and
-    // dynamically de-weight magnetic innovations before hard rejection by magnitude.
+    // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
     float normM = sqrt(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    bool magRejected = !isfinite(normM) ||
-                       (normM <= NORM_EPSILON) ||
-                       (normM < MAG_FIELD_NORM_MIN_UT) ||
-                       (normM > MAG_FIELD_NORM_MAX_UT);
-    float magInnovationNorm = 0.0f;
+    bool magRejected = (normM <= NORM_EPSILON);
     if (!magRejected) {
       Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-      magInnovationNorm = vector3ResidualNorm(Y, predictedY, 3);
-      const float innovationScale = dynamicVarianceScale(magInnovationNorm,
-                                                         MAG_INNOVATION_SOFT_NORM,
-                                                         MAG_INNOVATION_FULL_SCALE_NORM,
-                                                         MAG_DYNAMIC_R_MAX_SCALE);
-      setMeasurementVarianceTriplet(EKF_RACTIVE, 3, R_INIT_MAG * innovationScale);
     }
     if (magRejected) {
       Y[3][0] = predictedY[3][0];
       Y[4][0] = predictedY[4][0];
       Y[5][0] = predictedY[5][0];
-      setMeasurementVarianceTriplet(EKF_RACTIVE, 3, R_REJECTED);
+      EKF_RACTIVE[3][3] = R_REJECTED;
+      EKF_RACTIVE[4][4] = R_REJECTED;
+      EKF_RACTIVE[5][5] = R_REJECTED;
     }
 
     // Update the EKF and measure computation time
+    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
     Matrix ekfPreviousX = EKF_IMU.GetX();
     Matrix ekfPreviousP = EKF_IMU.GetP();
     EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
