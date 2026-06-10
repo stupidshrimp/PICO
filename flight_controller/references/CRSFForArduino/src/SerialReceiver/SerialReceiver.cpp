@@ -541,6 +541,7 @@ namespace serialReceiverLayer
             {
 #if CRSF_TELEMETRY_ENABLED > 0
                 bool telemetryFrameQueued = false;
+                constexpr uint8_t telemetryFramesPerRcFrame = 2;
 #endif
 
 #if CRSF_LINK_STATISTICS_ENABLED > 0
@@ -548,28 +549,6 @@ namespace serialReceiverLayer
                 if (_linkStatisticsCallback != nullptr)
                 {
                     _linkStatisticsCallback(_linkStatistics);
-                }
-#endif
-
-#if CRSF_TELEMETRY_ENABLED > 0
-                if (telemetry->update())
-                {
-                    telemetry->sendTelemetryData(_uart);
-                    ++_telemetryFramesSent;
-                    _lastTelemetryFrameType = telemetry->getFrameType();
-                    if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_ATTITUDE)
-                    {
-                        ++_telemetryAttitudeFramesSent;
-                    }
-                    else if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_GPS)
-                    {
-                        ++_telemetryGpsFramesSent;
-                    }
-                    else
-                    {
-                        ++_telemetryOtherFramesSent;
-                    }
-                    telemetryFrameQueued = true;
                 }
 #endif
 
@@ -584,6 +563,41 @@ namespace serialReceiverLayer
                 if (rcFrameReceived && _rcChannelsCallback != nullptr)
                 {
                     _rcChannelsCallback(_rcChannels);
+                }
+#endif
+
+#if CRSF_TELEMETRY_ENABLED > 0
+#if CRSF_RC_ENABLED > 0
+                if (rcFrameReceived)
+#endif
+                {
+                    /* Experimental telemetry burst: advance the telemetry
+                     * scheduler twice for each fresh RC channels frame so the
+                     * attitude/GPS pair can be pushed back-to-back. */
+                    for (uint8_t telemetryFrameIndex = 0;
+                         telemetryFrameIndex < telemetryFramesPerRcFrame;
+                         ++telemetryFrameIndex)
+                    {
+                        if (telemetry->update())
+                        {
+                            telemetry->sendTelemetryData(_uart);
+                            ++_telemetryFramesSent;
+                            _lastTelemetryFrameType = telemetry->getFrameType();
+                            if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_ATTITUDE)
+                            {
+                                ++_telemetryAttitudeFramesSent;
+                            }
+                            else if (_lastTelemetryFrameType == crsfProtocol::CRSF_FRAMETYPE_GPS)
+                            {
+                                ++_telemetryGpsFramesSent;
+                            }
+                            else
+                            {
+                                ++_telemetryOtherFramesSent;
+                            }
+                            telemetryFrameQueued = true;
+                        }
+                    }
                 }
 #endif
 #if CRSF_TELEMETRY_ENABLED > 0
