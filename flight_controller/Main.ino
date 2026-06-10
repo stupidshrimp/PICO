@@ -1003,6 +1003,26 @@ void maybePrintControlDebugStats() {
   Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
   Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
   Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
+  // Report the exact telemetry cache values that are handed to the RX module
+  // by telemetryWriteAttitude()/telemetryWriteGPS().  Keep these debug fields
+  // tied to the transmitted payload cache, not to local working variables, so
+  // FCDBG output always mirrors what the ELRS telemetry uplink is sending.
+  Serial.print(" tlm_roll_ddeg="); Serial.print(latestAttitudeRoll);
+  Serial.print(" tlm_pitch_ddeg="); Serial.print(latestAttitudePitch);
+  Serial.print(" tlm_yaw_ddeg="); Serial.print(latestAttitudeYaw);
+  Serial.print(" tlm_roll_deg="); Serial.print(latestAttitudeRoll / 10.0f, 1);
+  Serial.print(" tlm_pitch_deg="); Serial.print(latestAttitudePitch / 10.0f, 1);
+  Serial.print(" tlm_yaw_deg="); Serial.print(latestAttitudeYaw / 10.0f, 1);
+  Serial.print(" tlm_lat="); Serial.print(latestLatitude, 7);
+  Serial.print(" tlm_lon="); Serial.print(latestLongitude, 7);
+  Serial.print(" tlm_alt_cm="); Serial.print(sensorAltitudeCm, 0);
+  Serial.print(" tlm_alt_ft="); Serial.print(latestAltitudeFeet, 1);
+  Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 0);
+  Serial.print(" tlm_speed_mph="); Serial.print(latestAirspeedMph, 1);
+  Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
+  Serial.print(" tlm_sats="); Serial.print(satsInUse);
+  Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
+  Serial.print(" tlm_gps_fix="); Serial.print(gps.has_valid_fix ? 1 : 0);
   Serial.print(" tlm_uart_hz="); Serial.print(controlDebugCounters.crsfTelemetryUartFrames * scale, 1);
   Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryAttitudeUartFrames * scale, 1);
   Serial.print('/'); Serial.print(controlDebugCounters.crsfTelemetryGpsUartFrames * scale, 1);
