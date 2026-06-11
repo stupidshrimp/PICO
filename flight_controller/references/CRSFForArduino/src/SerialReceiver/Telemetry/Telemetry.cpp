@@ -57,7 +57,12 @@ namespace serialReceiverLayer
 
         uint8_t index = 0;
 #if CRSF_TELEMETRY_ENABLED > 0 && CRSF_TELEMETRY_ATTITUDE_ENABLED > 0
-        _telemetryFrameSchedule[index++] = (1 << CRSF_TELEMETRY_FRAME_ATTITUDE_INDEX);
+        // Emit CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO attitude frames for every GPS
+        // frame so attitude dominates the bandwidth-limited ELRS downlink.
+        for (uint8_t i = 0; i < CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO; i++)
+        {
+            _telemetryFrameSchedule[index++] = (1 << CRSF_TELEMETRY_FRAME_ATTITUDE_INDEX);
+        }
 #endif
 
 #if CRSF_TELEMETRY_ENABLED > 0 && CRSF_TELEMETRY_BAROALTITUDE_ENABLED > 0

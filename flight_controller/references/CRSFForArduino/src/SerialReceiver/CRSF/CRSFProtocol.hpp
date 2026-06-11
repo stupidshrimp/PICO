@@ -30,6 +30,13 @@
 #include "../../CFA_Config.hpp"
 #endif
 
+/* Fallback for builds that do not include CFA_Config.hpp (e.g. the defect
+   detector). Real builds get the configured value from CFA_Config.hpp; default
+   to the original even schedule here so the schedule buffer size is well-defined. */
+#ifndef CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO
+#define CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO 1
+#endif
+
 namespace crsfProtocol
 {
     enum rc_channels_e

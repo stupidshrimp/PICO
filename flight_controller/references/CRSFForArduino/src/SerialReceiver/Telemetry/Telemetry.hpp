@@ -30,6 +30,10 @@
 #include "../CRSF/CRSFProtocol.hpp"
 #include "../SerialBuffer/SerialBuffer.hpp"
 
+static_assert(CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO > 0, "CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO must be at least 1.");
+static_assert(CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO <= UINT8_MAX - crsfProtocol::CRSF_TELEMETRY_FRAME_SCHEDULE_MAX,
+              "CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO is too large for the uint8_t telemetry schedule count.");
+
 namespace serialReceiverLayer
 {
     class Telemetry : private genericCrc::GenericCRC, private genericStreamBuffer::SerialBuffer
@@ -54,7 +58,10 @@ namespace serialReceiverLayer
 
       private:
         uint8_t _telemetryFrameScheduleCount;
-        uint8_t _telemetryFrameSchedule[crsfProtocol::CRSF_TELEMETRY_FRAME_SCHEDULE_MAX];
+        // Sized to hold the bandwidth-biased schedule built in begin(): up to
+        // CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO attitude slots plus one slot per
+        // other enabled telemetry frame type.
+        uint8_t _telemetryFrameSchedule[crsfProtocol::CRSF_TELEMETRY_FRAME_SCHEDULE_MAX + CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO];
         crsfProtocol::telemetryData_t _telemetryData;
 
         int16_t _decidegreeToRadians(int16_t decidegrees);

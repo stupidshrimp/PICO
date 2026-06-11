@@ -115,6 +115,22 @@ and assign them to a switch on your controller. */
 
 #define CRSF_TELEMETRY_GPS_ENABLED 1
 
+/* Attitude-to-GPS telemetry scheduling ratio (attitude frames emitted per GPS
+   frame in the round-robin built by Telemetry::begin()).
+
+   The ELRS downlink reassembles each CRSF telemetry frame from small over-the-air
+   chunks and confirms each chunk on an uplink packet, so only a limited number of
+   complete frames per second reach the handset. The receiver also transmits only
+   the freshest queued frame of each type. Because a GPS frame costs ~2x the chunks
+   of an attitude frame and is emitted well below the link's GPS capacity, the
+   *emitted* ratio must be set higher than the desired *received* ratio: at ~72
+   received frames/s, ~25:1 emitted yields roughly 8:1 attitude:GPS as received at
+   the ground station (~22 Hz attitude / ~2.8 Hz GPS on the measured link).
+   Set to 1 for the original even 1:1 schedule; lower values give more GPS. */
+#ifndef CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO
+#define CRSF_TELEMETRY_ATTITUDE_FRAME_RATIO 25
+#endif
+
 #define CRSF_LINK_STATISTICS_ENABLED 0
 
 /* Debug Options
