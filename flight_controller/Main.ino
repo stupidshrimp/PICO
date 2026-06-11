@@ -59,6 +59,25 @@ HardwareSerial Serial6(PC7, PC6);
 #ifndef FC_MAG_INCLINATION_RAD
 #define FC_MAG_INCLINATION_RAD (1.17209583f)   // +67.1561 deg
 #endif
+// Set to 1 for a bench-only magnetometer calibration run. The helper blocks
+// normal flight startup, asks the user to rotate the fully assembled aircraft,
+// then prints hard-iron and diagonal soft-iron constants to the debug serial
+// port for copying into the defaults below.
+#ifndef FC_MAG_CALIBRATION_MODE
+#define FC_MAG_CALIBRATION_MODE 0
+#endif
+#ifndef FC_MAG_CALIBRATION_DURATION_MS
+#define FC_MAG_CALIBRATION_DURATION_MS 60000UL
+#endif
+#ifndef FC_MAG_CALIBRATION_START_DELAY_MS
+#define FC_MAG_CALIBRATION_START_DELAY_MS 10000UL
+#endif
+#ifndef FC_MAG_CALIBRATION_SAMPLE_PERIOD_MS
+#define FC_MAG_CALIBRATION_SAMPLE_PERIOD_MS 20UL
+#endif
+#ifndef FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT
+#define FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT 20.0f
+#endif
 float_prec IMU_MAG_B0_data[3] = {
   cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
   cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD),
@@ -996,6 +1015,151 @@ void resetPeriodicTimers() {
   resetControlDebugCounters();
 }
 
+
+#if FC_MAG_CALIBRATION_MODE
+void printMagCalibrationConstantSet(float hardX, float hardY, float hardZ,
+                                    float softX, float softY, float softZ) {
+  Serial.println("MAGCAL copy these constants into Main.ino after verifying the fit:");
+  Serial.println("float_prec HARD_IRON_BIAS_data[3] = {");
+  Serial.print("  "); Serial.print(hardX, 6); Serial.print("f, ");
+  Serial.print(hardY, 6); Serial.print("f, ");
+  Serial.print(hardZ, 6); Serial.println("f");
+  Serial.println("};");
+  Serial.println("float_prec SOFT_IRON_MATRIX_data[9] = {");
+  Serial.print("  "); Serial.print(softX, 6); Serial.println("f, 0.0f, 0.0f,");
+  Serial.print("  0.0f, "); Serial.print(softY, 6); Serial.println("f, 0.0f,");
+  Serial.print("  0.0f, 0.0f, "); Serial.print(softZ, 6); Serial.println("f");
+  Serial.println("};");
+}
+
+void runMagnetometerCalibrationDebug() {
+  Serial.println();
+  Serial.println("MAGCAL mode is ENABLED. This is a bench-only helper; do not fly with FC_MAG_CALIBRATION_MODE=1.");
+  Serial.println("MAGCAL set FC_MAG_CALIBRATION_MODE to 0 and reflash/reset to skip calibration.");
+  Serial.print("MAGCAL calibration starts in ");
+  Serial.print(FC_MAG_CALIBRATION_START_DELAY_MS / 1000UL);
+  Serial.println(" seconds. Rotate the fully assembled aircraft through every orientation when sampling starts.");
+  Serial.println("MAGCAL If you do not want to rotate/calibrate now, power down or reset before sampling starts.");
+
+  uint32_t countdownStartMs = millis();
+  uint32_t nextCountdownPrintMs = countdownStartMs;
+  while ((uint32_t)(millis() - countdownStartMs) < FC_MAG_CALIBRATION_START_DELAY_MS) {
+    uint32_t nowMs = millis();
+    if ((uint32_t)(nowMs - nextCountdownPrintMs) >= 1000UL) {
+      nextCountdownPrintMs += 1000UL;
+      uint32_t elapsedMs = nowMs - countdownStartMs;
+      uint32_t remainingMs = (elapsedMs >= FC_MAG_CALIBRATION_START_DELAY_MS)
+                               ? 0UL
+                               : (FC_MAG_CALIBRATION_START_DELAY_MS - elapsedMs);
+      Serial.print("MAGCAL starting in ");
+      Serial.print((remainingMs + 999UL) / 1000UL);
+      Serial.println(" s");
+    }
+    delay(10);
+  }
+
+  Serial.println("MAGCAL sampling started. Keep rotating slowly: nose up/down, left/right wing down, inverted, and yaw sweeps.");
+
+  float minX = 0.0f;
+  float minY = 0.0f;
+  float minZ = 0.0f;
+  float maxX = 0.0f;
+  float maxY = 0.0f;
+  float maxZ = 0.0f;
+  bool haveSample = false;
+  uint32_t sampleCount = 0;
+  uint32_t rejectedCount = 0;
+  uint32_t sampleStartMs = millis();
+  uint32_t lastSampleMs = sampleStartMs;
+  uint32_t lastStatusMs = sampleStartMs;
+
+  while ((uint32_t)(millis() - sampleStartMs) < FC_MAG_CALIBRATION_DURATION_MS) {
+    uint32_t nowMs = millis();
+    if ((uint32_t)(nowMs - lastSampleMs) >= FC_MAG_CALIBRATION_SAMPLE_PERIOD_MS) {
+      lastSampleMs = nowMs;
+      if (IMU.readSensor() > 0) {
+        // Use the same aircraft-frame magnetometer axes as the EKF update path.
+        float x = IMU.getMagY_uT();
+        float y = IMU.getMagX_uT();
+        float z = IMU.getMagZ_uT();
+        float norm = sqrt(x*x + y*y + z*z);
+        if (norm > NORM_EPSILON) {
+          if (!haveSample) {
+            minX = maxX = x;
+            minY = maxY = y;
+            minZ = maxZ = z;
+            haveSample = true;
+          } else {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+          }
+          ++sampleCount;
+        } else {
+          ++rejectedCount;
+        }
+      } else {
+        ++rejectedCount;
+      }
+    }
+
+    if ((uint32_t)(nowMs - lastStatusMs) >= 5000UL) {
+      lastStatusMs = nowMs;
+      uint32_t elapsedMs = nowMs - sampleStartMs;
+      uint32_t remainingMs = (elapsedMs >= FC_MAG_CALIBRATION_DURATION_MS)
+                               ? 0UL
+                               : (FC_MAG_CALIBRATION_DURATION_MS - elapsedMs);
+      Serial.print("MAGCAL samples="); Serial.print(sampleCount);
+      Serial.print(" rejected="); Serial.print(rejectedCount);
+      Serial.print(" remaining_s="); Serial.println((remainingMs + 999UL) / 1000UL);
+    }
+    delay(1);
+  }
+
+  Serial.println("MAGCAL sampling complete.");
+  if (!haveSample || sampleCount < 50) {
+    Serial.println("MAGCAL failed: not enough valid magnetometer samples. Check IMU wiring and rerun calibration.");
+    return;
+  }
+
+  float hardX = (maxX + minX) * 0.5f;
+  float hardY = (maxY + minY) * 0.5f;
+  float hardZ = (maxZ + minZ) * 0.5f;
+  float spanX = maxX - minX;
+  float spanY = maxY - minY;
+  float spanZ = maxZ - minZ;
+  float radiusX = spanX * 0.5f;
+  float radiusY = spanY * 0.5f;
+  float radiusZ = spanZ * 0.5f;
+
+  Serial.print("MAGCAL raw_min_uT="); Serial.print(minX, 3); Serial.print(','); Serial.print(minY, 3); Serial.print(','); Serial.println(minZ, 3);
+  Serial.print("MAGCAL raw_max_uT="); Serial.print(maxX, 3); Serial.print(','); Serial.print(maxY, 3); Serial.print(','); Serial.println(maxZ, 3);
+  Serial.print("MAGCAL hard_iron_uT="); Serial.print(hardX, 6); Serial.print(','); Serial.print(hardY, 6); Serial.print(','); Serial.println(hardZ, 6);
+  Serial.print("MAGCAL span_uT="); Serial.print(spanX, 6); Serial.print(','); Serial.print(spanY, 6); Serial.print(','); Serial.println(spanZ, 6);
+  Serial.print("MAGCAL radii_uT="); Serial.print(radiusX, 6); Serial.print(','); Serial.print(radiusY, 6); Serial.print(','); Serial.println(radiusZ, 6);
+
+  if (spanX < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT ||
+      spanY < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT ||
+      spanZ < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT) {
+    Serial.print("MAGCAL failed: each axis must span at least ");
+    Serial.print(FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT, 1);
+    Serial.println(" uT. Rerun and rotate through all orientations.");
+    return;
+  }
+
+  float averageRadius = (radiusX + radiusY + radiusZ) / 3.0f;
+  float softX = averageRadius / radiusX;
+  float softY = averageRadius / radiusY;
+  float softZ = averageRadius / radiusZ;
+  Serial.println("MAGCAL note: this helper computes hard-iron plus diagonal soft-iron from min/max coverage.");
+  Serial.println("MAGCAL note: for off-diagonal soft-iron terms, export raw samples and run a full ellipsoid fit offboard.");
+  printMagCalibrationConstantSet(hardX, hardY, hardZ, softX, softY, softZ);
+}
+#endif
+
 void maybePrintControlDebugStats() {
 #if FC_CONTROL_DEBUG_SERIAL_OUTPUT
   if (controlDebugPrintTimer < 1000) {
@@ -1136,6 +1300,11 @@ void setup() {
     haltStartupWithNeutralServos();
   }
   Serial.println("IMU Calibration complete...");
+#if FC_MAG_CALIBRATION_MODE
+  runMagnetometerCalibrationDebug();
+  Serial.println("MAGCAL complete. Halting startup so calibration mode cannot be used for flight.");
+  haltStartupWithNeutralServos();
+#endif
 
   // ----- Initialize EKF -----
   quaternionData.vSetToZero();
