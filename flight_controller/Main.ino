@@ -50,13 +50,20 @@ HardwareSerial Serial6(PC7, PC6);
 
 // ----- IMU & EKF Variables -----
 #define IMU_ACC_Z0  (1)
+// Default magnetic reference for central Illinois (~40.0 N, 89.0 W),
+// evaluated for 2026-06-11. Override these at build time for a specific
+// flying site; declination is positive east and inclination is positive down.
 #ifndef FC_MAG_DECLINATION_RAD
-#define FC_MAG_DECLINATION_RAD (0.0f)
+#define FC_MAG_DECLINATION_RAD (-0.05640509f)  // -3.2318 deg
 #endif
 #ifndef FC_MAG_INCLINATION_RAD
-#define FC_MAG_INCLINATION_RAD (0.0f)
+#define FC_MAG_INCLINATION_RAD (1.17209583f)   // +67.1561 deg
 #endif
-float_prec IMU_MAG_B0_data[3] = { cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD), cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD), sin(FC_MAG_INCLINATION_RAD) };
+float_prec IMU_MAG_B0_data[3] = {
+  cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
+  cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD),
+  -sin(FC_MAG_INCLINATION_RAD)  // Convert geomagnetic down-positive inclination to EKF +Z-up/specific-force convention.
+};
 Matrix IMU_MAG_B0(3, 1, IMU_MAG_B0_data);
 float_prec HARD_IRON_BIAS_data[3] = { 8.832973, 7.243323, 23.95714 };
 Matrix HARD_IRON_BIAS(3, 1, HARD_IRON_BIAS_data);
