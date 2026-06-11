@@ -7,14 +7,22 @@
  * are truly zero, missing, or waiting on a fix.
  *
  * Board wiring used by the main flight-controller sketch:
- *   - GPS RX into board pin PC7 / USART6 RX
- *   - GPS TX from board pin PC6 / USART6 TX
+ *   - GPS TX into board pin PC7 / USART6 RX
+ *   - GPS RX from board pin PC6 / USART6 TX
  *   - GPS baud: 9600
  *   - USB terminal baud: 115200
  *
  * Open the Arduino Serial Monitor/terminal at 115200 baud after upload. If wiring and baud are correct you
  * should see RAW lines immediately, even before a GPS fix. FIX, SATS, LAT, and LON will only become meaningful
  * once the module has a valid sky view and starts reporting active GGA/RMC data.
+ *
+ * Extra diagnostics in this sketch:
+ *   - Prints whether board PC7/USART6 RX is sitting HIGH or LOW before the UART is started. A healthy idle UART
+ *     line is normally HIGH; a stuck LOW line can point to a short, swapped wiring, or an unpowered module.
+ *   - Sends periodic u-blox/NMEA polls ("PING") so the module has a reason to answer even if automatic NMEA
+ *     output is disabled. Any byte received after a ping proves that PC7 is seeing signal from the GPS TX pin.
+ *   - Prints short HEX samples for non-NMEA/binary traffic so you can tell the difference between no signal,
+ *     baud mismatch/noise, and a real UBX response.
  ************************************************************************************************************/
 
 #include <Arduino.h>
@@ -31,18 +39,197 @@ static constexpr size_t NMEA_BUFFER_SIZE = 121;
 static constexpr size_t NMEA_MAX_FIELDS = 20;
 static constexpr uint32_t STATUS_PERIOD_MS = 1000;
 static constexpr uint32_t NO_DATA_WARNING_MS = 3000;
+static constexpr uint32_t PING_PERIOD_MS = 5000;
+static constexpr uint32_t POST_PING_WINDOW_MS = 1500;
+static constexpr size_t HEX_SAMPLE_BYTES = 16;
+static constexpr uint8_t UBX_SYNC_1 = 0xB5;
+static constexpr uint8_t UBX_SYNC_2 = 0x62;
+static constexpr uint16_t UBX_MAX_PAYLOAD_LENGTH = 512;
 
 char nmeaBuffer[NMEA_BUFFER_SIZE];
 size_t nmeaBufferIndex = 0;
 bool nmeaDiscarding = false;
+bool nmeaReceiving = false;
 
 uint32_t gpsByteCount = 0;
 uint32_t nmeaSentenceCount = 0;
 uint32_t validChecksumCount = 0;
 uint32_t checksumFailCount = 0;
 uint32_t overLengthSentenceCount = 0;
+uint32_t binaryByteCount = 0;
+uint32_t ubxFrameCount = 0;
+uint32_t ubxChecksumFailCount = 0;
+uint32_t monVerResponseCount = 0;
+uint32_t pingCount = 0;
+uint32_t bytesAtLastPing = 0;
+uint32_t lastPingMillis = 0;
 uint32_t lastByteMillis = 0;
 uint32_t lastStatusMillis = 0;
+uint8_t hexSample[HEX_SAMPLE_BYTES];
+size_t hexSampleCount = 0;
+
+enum class UbxParseState {
+  Sync1,
+  Sync2,
+  Class,
+  Id,
+  Length1,
+  Length2,
+  Payload,
+  ChecksumA,
+  ChecksumB
+};
+
+UbxParseState ubxState = UbxParseState::Sync1;
+uint8_t ubxClass = 0;
+uint8_t ubxId = 0;
+uint16_t ubxPayloadLength = 0;
+uint16_t ubxPayloadIndex = 0;
+uint8_t ubxChecksumA = 0;
+uint8_t ubxChecksumB = 0;
+uint8_t ubxReceivedChecksumA = 0;
+
+void addUbxChecksumByte(uint8_t value) {
+  ubxChecksumA = static_cast<uint8_t>(ubxChecksumA + value);
+  ubxChecksumB = static_cast<uint8_t>(ubxChecksumB + ubxChecksumA);
+}
+
+void resetUbxParser() {
+  ubxState = UbxParseState::Sync1;
+  ubxClass = 0;
+  ubxId = 0;
+  ubxPayloadLength = 0;
+  ubxPayloadIndex = 0;
+  ubxChecksumA = 0;
+  ubxChecksumB = 0;
+  ubxReceivedChecksumA = 0;
+}
+
+void updateUbxParser(uint8_t value) {
+  switch (ubxState) {
+    case UbxParseState::Sync1:
+      ubxState = (value == UBX_SYNC_1) ? UbxParseState::Sync2 : UbxParseState::Sync1;
+      break;
+    case UbxParseState::Sync2:
+      if (value == UBX_SYNC_2) {
+        ubxState = UbxParseState::Class;
+        ubxChecksumA = 0;
+        ubxChecksumB = 0;
+      } else {
+        ubxState = (value == UBX_SYNC_1) ? UbxParseState::Sync2 : UbxParseState::Sync1;
+      }
+      break;
+    case UbxParseState::Class:
+      ubxClass = value;
+      addUbxChecksumByte(value);
+      ubxState = UbxParseState::Id;
+      break;
+    case UbxParseState::Id:
+      ubxId = value;
+      addUbxChecksumByte(value);
+      ubxState = UbxParseState::Length1;
+      break;
+    case UbxParseState::Length1:
+      ubxPayloadLength = value;
+      addUbxChecksumByte(value);
+      ubxState = UbxParseState::Length2;
+      break;
+    case UbxParseState::Length2:
+      ubxPayloadLength |= static_cast<uint16_t>(value) << 8;
+      addUbxChecksumByte(value);
+      ubxPayloadIndex = 0;
+      if (ubxPayloadLength > UBX_MAX_PAYLOAD_LENGTH) {
+        ++ubxChecksumFailCount;
+        resetUbxParser();
+      } else {
+        ubxState = (ubxPayloadLength == 0) ? UbxParseState::ChecksumA : UbxParseState::Payload;
+      }
+      break;
+    case UbxParseState::Payload:
+      addUbxChecksumByte(value);
+      ++ubxPayloadIndex;
+      if (ubxPayloadIndex >= ubxPayloadLength) {
+        ubxState = UbxParseState::ChecksumA;
+      }
+      break;
+    case UbxParseState::ChecksumA:
+      ubxReceivedChecksumA = value;
+      ubxState = UbxParseState::ChecksumB;
+      break;
+    case UbxParseState::ChecksumB:
+      if (ubxReceivedChecksumA == ubxChecksumA && value == ubxChecksumB) {
+        ++ubxFrameCount;
+        Serial.print(F("UBX: class=0x"));
+        if (ubxClass < 0x10) {
+          Serial.print('0');
+        }
+        Serial.print(ubxClass, HEX);
+        Serial.print(F(" id=0x"));
+        if (ubxId < 0x10) {
+          Serial.print('0');
+        }
+        Serial.print(ubxId, HEX);
+        Serial.print(F(" payload_len="));
+        Serial.println(ubxPayloadLength);
+        if (ubxClass == 0x0A && ubxId == 0x04) {
+          ++monVerResponseCount;
+          Serial.println(F("PING RESULT: M8N answered UBX-MON-VER poll on this UART."));
+        }
+      } else {
+        ++ubxChecksumFailCount;
+      }
+      resetUbxParser();
+      break;
+  }
+}
+
+void printHexSample(const char *reason) {
+  if (hexSampleCount == 0) {
+    return;
+  }
+
+  Serial.print(F("SIGNAL "));
+  Serial.print(reason);
+  Serial.print(F(": "));
+  for (size_t i = 0; i < hexSampleCount; ++i) {
+    if (hexSample[i] < 0x10) {
+      Serial.print('0');
+    }
+    Serial.print(hexSample[i], HEX);
+    Serial.print(' ');
+  }
+  Serial.print(F(" |ascii| "));
+  for (size_t i = 0; i < hexSampleCount; ++i) {
+    const char c = static_cast<char>(hexSample[i]);
+    Serial.print((c >= 32 && c <= 126) ? c : '.');
+  }
+  Serial.println();
+  hexSampleCount = 0;
+}
+
+void recordHexSample(uint8_t value) {
+  if (hexSampleCount < HEX_SAMPLE_BYTES) {
+    hexSample[hexSampleCount++] = value;
+  }
+  if (hexSampleCount >= HEX_SAMPLE_BYTES) {
+    printHexSample("non-NMEA bytes");
+  }
+}
+
+void sendGpsPing() {
+  static const uint8_t ubxMonVerPoll[] = {0xB5, 0x62, 0x0A, 0x04, 0x00, 0x00, 0x0E, 0x34};
+  static const char nmeaPubxPositionPoll[] = "$PUBX,00*33\r\n";
+
+  Serial6.write(ubxMonVerPoll, sizeof(ubxMonVerPoll));
+  Serial6.print(nmeaPubxPositionPoll);
+  Serial6.flush();
+
+  ++pingCount;
+  bytesAtLastPing = gpsByteCount;
+  lastPingMillis = millis();
+  Serial.print(F("PING: sent UBX-MON-VER poll and PUBX position poll #"));
+  Serial.println(pingCount);
+}
 
 bool validateAndStripChecksum(char *sentence) {
   if (sentence == nullptr || sentence[0] != '$') {
@@ -213,11 +400,25 @@ void printStatusHeartbeat() {
   Serial.print(checksumFailCount);
   Serial.print(F(" overlength="));
   Serial.print(overLengthSentenceCount);
+  Serial.print(F(" binary_bytes="));
+  Serial.print(binaryByteCount);
+  Serial.print(F(" ubx_ok="));
+  Serial.print(ubxFrameCount);
+  Serial.print(F(" ubx_fail="));
+  Serial.print(ubxChecksumFailCount);
+  Serial.print(F(" mon_ver_answers="));
+  Serial.print(monVerResponseCount);
   Serial.print(F(" ms_since_last_byte="));
   Serial.println(now - lastByteMillis);
 
+  if (lastPingMillis != 0 && now - lastPingMillis >= POST_PING_WINDOW_MS && now - lastPingMillis < POST_PING_WINDOW_MS + STATUS_PERIOD_MS) {
+    Serial.print(F("PING RESULT: bytes_after_last_ping="));
+    Serial.print(gpsByteCount - bytesAtLastPing);
+    Serial.println((gpsByteCount > bytesAtLastPing) ? F(" (RX pin saw activity)") : F(" (no reply/activity seen)"));
+  }
+
   if (gpsByteCount == 0 || now - lastByteMillis > NO_DATA_WARNING_MS) {
-    Serial.println(F("WARNING: no recent GPS bytes. Check M8N power, ground, TX/RX crossing, USART6 pins, and 9600 baud."));
+    Serial.println(F("WARNING: no recent GPS bytes. Check M8N power, ground, GPS TX -> board PC7/USART6 RX, GPS RX <- board PC6/USART6 TX, and 9600 baud."));
   }
 }
 
@@ -227,6 +428,9 @@ void setup() {
     delay(10);
   }
 
+  pinMode(PC7, INPUT);
+  const int rxIdleLevel = digitalRead(PC7);
+
   Serial6.begin(GPS_BAUD);
   lastByteMillis = millis();
 
@@ -234,21 +438,41 @@ void setup() {
   Serial.println(F("M8N GPS Terminal Reader started"));
   Serial.println(F("USB terminal: 115200 baud"));
   Serial.println(F("GPS UART: USART6 / Serial6 at 9600 baud"));
-  Serial.println(F("Waiting for raw NMEA data..."));
+  Serial.print(F("PC7/USART6 RX idle level before UART start: "));
+  Serial.println(rxIdleLevel == HIGH ? F("HIGH (normal UART idle if GPS TX is connected/powered)") : F("LOW (possible short, swapped wire, or unpowered GPS)"));
+  Serial.println(F("Waiting for raw NMEA data; also sending a ping every 5 seconds..."));
+  sendGpsPing();
 }
 
 void loop() {
   while (Serial6.available() > 0) {
-    const char c = static_cast<char>(Serial6.read());
+    const int rawByte = Serial6.read();
+    if (rawByte < 0) {
+      continue;
+    }
+    const uint8_t value = static_cast<uint8_t>(rawByte);
+    const char c = static_cast<char>(value);
     ++gpsByteCount;
     lastByteMillis = millis();
+    updateUbxParser(value);
+
+    if (c == '$') {
+      printHexSample("before NMEA sentence");
+      nmeaBufferIndex = 0;
+      nmeaDiscarding = false;
+      nmeaReceiving = true;
+    } else if (!nmeaReceiving && c != '\r' && c != '\n') {
+      ++binaryByteCount;
+      recordHexSample(value);
+      continue;
+    }
 
     if (c == '\r') {
       continue;
     }
 
     if (c == '\n') {
-      if (!nmeaDiscarding) {
+      if (nmeaReceiving && !nmeaDiscarding) {
         nmeaBuffer[nmeaBufferIndex] = '\0';
         if (nmeaBufferIndex > 0) {
           parseAndPrintSentence(nmeaBuffer);
@@ -257,10 +481,11 @@ void loop() {
       nmeaBufferIndex = 0;
       nmeaBuffer[0] = '\0';
       nmeaDiscarding = false;
+      nmeaReceiving = false;
       continue;
     }
 
-    if (!nmeaDiscarding) {
+    if (nmeaReceiving && !nmeaDiscarding) {
       if (nmeaBufferIndex < NMEA_BUFFER_SIZE - 1) {
         nmeaBuffer[nmeaBufferIndex++] = c;
       } else {
@@ -268,8 +493,15 @@ void loop() {
         nmeaBufferIndex = 0;
         nmeaBuffer[0] = '\0';
         nmeaDiscarding = true;
+        nmeaReceiving = false;
       }
     }
+  }
+
+  const uint32_t now = millis();
+  if (now - lastPingMillis >= PING_PERIOD_MS) {
+    printHexSample("before ping");
+    sendGpsPing();
   }
 
   printStatusHeartbeat();
