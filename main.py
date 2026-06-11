@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
     JOYSTICK_AILERON_TRIM_RIGHT_BUTTON = 0
     TRIM_STEP_NORMALIZED = 0.02
     TRIM_MAX_LEVEL = 25
+    TRIM_SOUND_VOLUME = 0.25
     SINK_RATE_STALE_TIMEOUT_S = 0.5
     SINK_RATE_WINDOW_S = 1.5
     SINK_RATE_MIN_WINDOW_S = 0.75
@@ -2072,7 +2073,7 @@ class MainWindow(QMainWindow):
             return
 
         self.update_trim_labels()
-        self.play_sound_once(sound_name, volume=0.5)
+        self.play_sound_once(sound_name, volume=self.TRIM_SOUND_VOLUME)
 
     def _trim_level_to_channel_offset(self, level: int) -> int:
         """Convert a signed trim level into a CRSF channel offset."""
