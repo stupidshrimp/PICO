@@ -34,6 +34,8 @@
 #include "control_mode.h"
 #include <CRSFforArduino.hpp>
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Define additional hardware serial ports if the core does not provide them.
 // These mappings correspond to the STM32F405 feather board where
@@ -77,6 +79,25 @@ HardwareSerial Serial6(PC7, PC6);
 #endif
 #ifndef FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT
 #define FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT 20.0f
+#endif
+
+// Set to 1 for a bench-only GPS wiring/parser diagnostic run. This helper
+// blocks normal flight startup after USART6 is initialized, pings the M8N,
+// echoes raw GPS traffic, and prints parsed latitude/longitude from GGA/RMC.
+#ifndef FC_GPS_DIAGNOSTIC_MODE
+#define FC_GPS_DIAGNOSTIC_MODE 0
+#endif
+#ifndef FC_GPS_DIAGNOSTIC_BAUD
+#define FC_GPS_DIAGNOSTIC_BAUD 9600UL
+#endif
+#ifndef FC_GPS_DIAGNOSTIC_PING_PERIOD_MS
+#define FC_GPS_DIAGNOSTIC_PING_PERIOD_MS 5000UL
+#endif
+#ifndef FC_GPS_DIAGNOSTIC_STATUS_PERIOD_MS
+#define FC_GPS_DIAGNOSTIC_STATUS_PERIOD_MS 1000UL
+#endif
+#ifndef FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS
+#define FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS 3000UL
 #endif
 float_prec IMU_MAG_B0_data[3] = {
   cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
@@ -1162,6 +1183,245 @@ void runMagnetometerCalibrationDebug() {
 }
 #endif
 
+
+#if FC_GPS_DIAGNOSTIC_MODE
+constexpr size_t GPS_DIAG_NMEA_BUFFER_SIZE = 121;
+constexpr size_t GPS_DIAG_MAX_FIELDS = 20;
+constexpr uint32_t GPS_DIAG_POST_PING_WINDOW_MS = 1500UL;
+
+char gpsDiagNmeaBuffer[GPS_DIAG_NMEA_BUFFER_SIZE];
+size_t gpsDiagNmeaBufferIndex = 0;
+bool gpsDiagReceivingNmea = false;
+bool gpsDiagDiscardingNmea = false;
+uint32_t gpsDiagByteCount = 0;
+uint32_t gpsDiagSentenceCount = 0;
+uint32_t gpsDiagChecksumOkCount = 0;
+uint32_t gpsDiagChecksumFailCount = 0;
+uint32_t gpsDiagOverlengthCount = 0;
+uint32_t gpsDiagPingCount = 0;
+uint32_t gpsDiagBytesAtLastPing = 0;
+uint32_t gpsDiagLastPingMs = 0;
+uint32_t gpsDiagLastByteMs = 0;
+uint32_t gpsDiagLastStatusMs = 0;
+
+double gpsDiagConvertNmeaCoordinate(const char *rawValue, char direction) {
+  if (rawValue == nullptr || rawValue[0] == '\0') {
+    return 0.0;
+  }
+
+  const int degreeDigits = (direction == 'N' || direction == 'S') ? 2 :
+                           (direction == 'E' || direction == 'W') ? 3 : 0;
+  if (degreeDigits == 0 || strlen(rawValue) < static_cast<size_t>(degreeDigits)) {
+    return 0.0;
+  }
+
+  char degreeBuffer[4] = {0};
+  memcpy(degreeBuffer, rawValue, degreeDigits);
+  double decimal = static_cast<double>(atoi(degreeBuffer)) + (atof(rawValue + degreeDigits) / 60.0);
+  if (direction == 'S' || direction == 'W') {
+    decimal = -decimal;
+  }
+  return decimal;
+}
+
+bool gpsDiagValidateAndStripChecksum(char *sentence) {
+  if (sentence == nullptr || sentence[0] != '$') {
+    return false;
+  }
+
+  char *checksumMarker = strchr(sentence, '*');
+  if (checksumMarker == nullptr || checksumMarker[1] == '\0' || checksumMarker[2] == '\0') {
+    return false;
+  }
+
+  uint8_t calculated = 0;
+  for (char *cursor = sentence + 1; cursor < checksumMarker; ++cursor) {
+    calculated ^= static_cast<uint8_t>(*cursor);
+  }
+
+  char checksumText[3] = {checksumMarker[1], checksumMarker[2], '\0'};
+  char *end = nullptr;
+  const unsigned long expected = strtoul(checksumText, &end, 16);
+  if (end == checksumText || *end != '\0' || expected > 0xFFUL) {
+    return false;
+  }
+
+  if (calculated != static_cast<uint8_t>(expected)) {
+    return false;
+  }
+
+  *checksumMarker = '\0';
+  return true;
+}
+
+size_t gpsDiagSplitFields(char *sentence, char *fields[], size_t maxFields) {
+  size_t fieldCount = 0;
+  char *fieldStart = sentence;
+  while (fieldCount < maxFields) {
+    fields[fieldCount++] = fieldStart;
+    char *comma = strchr(fieldStart, ',');
+    if (comma == nullptr) {
+      break;
+    }
+    *comma = '\0';
+    fieldStart = comma + 1;
+  }
+  return fieldCount;
+}
+
+void gpsDiagPrintParsedSentence(char *sentence) {
+  Serial.print("GPSDIAG RAW: ");
+  Serial.println(sentence);
+  ++gpsDiagSentenceCount;
+
+  if (!gpsDiagValidateAndStripChecksum(sentence)) {
+    ++gpsDiagChecksumFailCount;
+    Serial.println("GPSDIAG PARSED: checksum failed/missing; check baud, noise, or wiring.");
+    return;
+  }
+
+  ++gpsDiagChecksumOkCount;
+  char *fields[GPS_DIAG_MAX_FIELDS] = {nullptr};
+  const size_t fieldCount = gpsDiagSplitFields(sentence, fields, GPS_DIAG_MAX_FIELDS);
+
+  if ((strncmp(fields[0], "$GNGGA", 6) == 0 || strncmp(fields[0], "$GPGGA", 6) == 0) && fieldCount > 9) {
+    const double parsedLat = gpsDiagConvertNmeaCoordinate(fields[2], fields[3][0]);
+    const double parsedLon = gpsDiagConvertNmeaCoordinate(fields[4], fields[5][0]);
+    Serial.print("GPSDIAG GGA: fix="); Serial.print(atoi(fields[6]));
+    Serial.print(" sats="); Serial.print(atoi(fields[7]));
+    Serial.print(" lat="); Serial.print(parsedLat, 8);
+    Serial.print(" lon="); Serial.print(parsedLon, 8);
+    Serial.print(" alt_m="); Serial.println(strtod(fields[9], nullptr), 2);
+  } else if ((strncmp(fields[0], "$GNRMC", 6) == 0 || strncmp(fields[0], "$GPRMC", 6) == 0) && fieldCount > 9) {
+    const double parsedLat = gpsDiagConvertNmeaCoordinate(fields[3], fields[4][0]);
+    const double parsedLon = gpsDiagConvertNmeaCoordinate(fields[5], fields[6][0]);
+    Serial.print("GPSDIAG RMC: status="); Serial.print(fields[2]);
+    Serial.print(" lat="); Serial.print(parsedLat, 8);
+    Serial.print(" lon="); Serial.print(parsedLon, 8);
+    Serial.print(" speed_knots="); Serial.print(fields[7]);
+    Serial.print(" course_deg="); Serial.println(fields[8]);
+  } else {
+    Serial.print("GPSDIAG PARSED: valid ");
+    Serial.print(fields[0]);
+    Serial.println(" sentence");
+  }
+}
+
+void gpsDiagSendPing() {
+  static const uint8_t ubxMonVerPoll[] = {0xB5, 0x62, 0x0A, 0x04, 0x00, 0x00, 0x0E, 0x34};
+  static const char nmeaPubxPositionPoll[] = "$PUBX,00*33\r\n";
+  Serial6.write(ubxMonVerPoll, sizeof(ubxMonVerPoll));
+  Serial6.print(nmeaPubxPositionPoll);
+  Serial6.flush();
+
+  ++gpsDiagPingCount;
+  gpsDiagBytesAtLastPing = gpsDiagByteCount;
+  gpsDiagLastPingMs = millis();
+  Serial.print("GPSDIAG PING: sent UBX-MON-VER and PUBX position poll #");
+  Serial.println(gpsDiagPingCount);
+}
+
+void gpsDiagPrintStatus() {
+  const uint32_t nowMs = millis();
+  if ((uint32_t)(nowMs - gpsDiagLastStatusMs) < FC_GPS_DIAGNOSTIC_STATUS_PERIOD_MS) {
+    return;
+  }
+  gpsDiagLastStatusMs = nowMs;
+
+  Serial.print("GPSDIAG STATUS: bytes="); Serial.print(gpsDiagByteCount);
+  Serial.print(" sentences="); Serial.print(gpsDiagSentenceCount);
+  Serial.print(" checksum_ok="); Serial.print(gpsDiagChecksumOkCount);
+  Serial.print(" checksum_fail="); Serial.print(gpsDiagChecksumFailCount);
+  Serial.print(" overlength="); Serial.print(gpsDiagOverlengthCount);
+  Serial.print(" ms_since_last_byte="); Serial.println(nowMs - gpsDiagLastByteMs);
+
+  if (gpsDiagLastPingMs != 0 &&
+      (uint32_t)(nowMs - gpsDiagLastPingMs) >= GPS_DIAG_POST_PING_WINDOW_MS &&
+      (uint32_t)(nowMs - gpsDiagLastPingMs) < GPS_DIAG_POST_PING_WINDOW_MS + FC_GPS_DIAGNOSTIC_STATUS_PERIOD_MS) {
+    Serial.print("GPSDIAG PING RESULT: bytes_after_last_ping=");
+    Serial.print(gpsDiagByteCount - gpsDiagBytesAtLastPing);
+    Serial.println((gpsDiagByteCount > gpsDiagBytesAtLastPing) ? " (PC7 RX saw activity)" : " (no reply/activity seen)");
+  }
+
+  if (gpsDiagByteCount == 0 || (uint32_t)(nowMs - gpsDiagLastByteMs) > FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS) {
+    Serial.println("GPSDIAG WARNING: no recent GPS bytes. Check M8N power, ground, GPS TX -> PC7/USART6 RX, GPS RX <- PC6/USART6 TX, and baud.");
+  }
+}
+
+void runGpsDiagnosticDebug() {
+  Serial.println();
+  Serial.println("GPSDIAG mode is ENABLED. This is a bench-only helper; do not fly with FC_GPS_DIAGNOSTIC_MODE=1.");
+  Serial.println("GPSDIAG set FC_GPS_DIAGNOSTIC_MODE to 0 and reflash/reset to skip GPS diagnostics.");
+  Serial.println("GPSDIAG wiring: GPS TX -> board PC7/USART6 RX, GPS RX <- board PC6/USART6 TX, common ground, GPS powered.");
+  pinMode(PC7, INPUT);
+  const int rxIdleLevel = digitalRead(PC7);
+  Serial.print("GPSDIAG PC7/USART6 RX idle level before UART start: ");
+  Serial.println(rxIdleLevel == HIGH ? "HIGH (normal UART idle if GPS TX is connected/powered)" : "LOW (possible short, swapped wire, or unpowered GPS)");
+
+  Serial6.begin(FC_GPS_DIAGNOSTIC_BAUD);
+  gpsDiagLastByteMs = millis();
+  gpsDiagLastStatusMs = millis();
+  gpsDiagSendPing();
+
+  while (true) {
+    while (Serial6.available() > 0) {
+      const int rawByte = Serial6.read();
+      if (rawByte < 0) {
+        continue;
+      }
+      const char c = static_cast<char>(rawByte & 0xFF);
+      ++gpsDiagByteCount;
+      gpsDiagLastByteMs = millis();
+
+      if (c == '$') {
+        gpsDiagNmeaBufferIndex = 0;
+        gpsDiagReceivingNmea = true;
+        gpsDiagDiscardingNmea = false;
+      } else if (!gpsDiagReceivingNmea) {
+        continue;
+      }
+
+      if (c == '\r') {
+        continue;
+      }
+
+      if (c == '\n') {
+        if (!gpsDiagDiscardingNmea) {
+          gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex] = '\0';
+          if (gpsDiagNmeaBufferIndex > 0) {
+            gpsDiagPrintParsedSentence(gpsDiagNmeaBuffer);
+          }
+        }
+        gpsDiagNmeaBufferIndex = 0;
+        gpsDiagNmeaBuffer[0] = '\0';
+        gpsDiagReceivingNmea = false;
+        gpsDiagDiscardingNmea = false;
+        continue;
+      }
+
+      if (!gpsDiagDiscardingNmea) {
+        if (gpsDiagNmeaBufferIndex < GPS_DIAG_NMEA_BUFFER_SIZE - 1) {
+          gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex++] = c;
+        } else {
+          ++gpsDiagOverlengthCount;
+          gpsDiagNmeaBufferIndex = 0;
+          gpsDiagNmeaBuffer[0] = '\0';
+          gpsDiagReceivingNmea = false;
+          gpsDiagDiscardingNmea = true;
+        }
+      }
+    }
+
+    const uint32_t nowMs = millis();
+    if ((uint32_t)(nowMs - gpsDiagLastPingMs) >= FC_GPS_DIAGNOSTIC_PING_PERIOD_MS) {
+      gpsDiagSendPing();
+    }
+    gpsDiagPrintStatus();
+    delay(1);
+  }
+}
+#endif
+
 void maybePrintControlDebugStats() {
 #if FC_CONTROL_DEBUG_SERIAL_OUTPUT
   if (controlDebugPrintTimer < 1000) {
@@ -1197,6 +1457,10 @@ void maybePrintControlDebugStats() {
   Serial.print(" tlm_yaw_deg="); Serial.print(latestAttitudeYaw / 10.0f, 1);
   Serial.print(" tlm_lat="); Serial.print(telemetryLatitude, 7);
   Serial.print(" tlm_lon="); Serial.print(telemetryLongitude, 7);
+  Serial.print(" gps_raw_lat="); Serial.print(gps.latitude, 8);
+  Serial.print(" gps_raw_lon="); Serial.print(gps.longitude, 8);
+  Serial.print(" gps_raw_fix_quality="); Serial.print(gps.fix_quality);
+  Serial.print(" gps_raw_sats="); Serial.print(gps.satellites_in_use);
   Serial.print(" tlm_alt_cm="); Serial.print(sensorAltitudeCm, 2);
   Serial.print(" tlm_alt_ft="); Serial.print(latestAltitudeFeet, 1);
   Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 2);
@@ -1261,6 +1525,11 @@ void setup() {
   Serial.println("FCDBG serial output enabled; emitting control stats once per second.");
 #else
   Serial.println("FCDBG serial output disabled; define FC_CONTROL_DEBUG_SERIAL_OUTPUT before konfig.h to enable.");
+#endif
+
+  // Run GPSDIAG before any non-GPS sensor startup can halt the bench test.
+#if FC_GPS_DIAGNOSTIC_MODE
+  runGpsDiagnosticDebug();
 #endif
 
   // ----- Initialize Servo Outputs -----
