@@ -84,12 +84,14 @@ float_prec IMU_MAG_B0_data[3] = {
   -sin(FC_MAG_INCLINATION_RAD)  // Convert geomagnetic down-positive inclination to EKF +Z-up/specific-force convention.
 };
 Matrix IMU_MAG_B0(3, 1, IMU_MAG_B0_data);
-float_prec HARD_IRON_BIAS_data[3] = { 8.832973, 7.243323, 23.95714 };
+float_prec HARD_IRON_BIAS_data[3] = {
+  -33.941257f, -10.753434f, -2.073374f
+};
 Matrix HARD_IRON_BIAS(3, 1, HARD_IRON_BIAS_data);
 float_prec SOFT_IRON_MATRIX_data[9] = {
-  1.0, 0.0, 0.0,
-  0.0, 1.0, 0.0,
-  0.0, 0.0, 1.0
+  0.803654f, 0.0f, 0.0f,
+  0.0f, 0.953951f, 0.0f,
+  0.0f, 0.0f, 1.413603f
 };
 Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 
