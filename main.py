@@ -2516,12 +2516,12 @@ class MainWindow(QMainWindow):
             self._clear_warning_alarm_state()
             return
 
-        # Gate envelope alarms on telemetry freshness.  ``current_airspeed`` and
-        # ``current_altitude`` are cached from the last GPS frame and never
-        # cleared, so without this a frozen value would keep the stall/altitude
-        # alarms evaluating stale data after the link drops.  (Sink-rate is
-        # already freshness-gated via ``_sink_rate_value_fresh``; roll comes from
-        # attitude telemetry and is evaluated independently below.)
+        # Gate envelope alarms on telemetry freshness.  ``current_airspeed``,
+        # ``current_altitude`` and ``telemetry_roll`` are cached from the last
+        # GPS/attitude frame and never cleared, so without this a frozen value
+        # would keep the stall/altitude/bank alarms evaluating stale data after
+        # the link drops.  (Sink-rate is already freshness-gated via
+        # ``_sink_rate_value_fresh``.)
         fresh_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
         altitude = (
             self._safe_float(self.current_altitude)
@@ -2533,7 +2533,11 @@ class MainWindow(QMainWindow):
             if self._airspeed_value_fresh(now, fresh_timeout)
             else None
         )
-        roll = self._safe_float(self.telemetry_roll)
+        roll = (
+            self._safe_float(self.telemetry_roll)
+            if self._is_packet_fresh("attitude", fresh_timeout)
+            else None
+        )
         sink_rate = (
             self._safe_float(self.current_sink_rate_fps)
             if self._sink_rate_value_fresh(now)
