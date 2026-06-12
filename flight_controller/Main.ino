@@ -322,6 +322,7 @@ struct ControlDebugCounters {
   uint32_t servoLoopStale;
   uint32_t servoLoopHold;
   uint32_t airspeedInvalidReads;
+  uint32_t imuInvalidReads;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -380,6 +381,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.servoLoopStale = 0;
   controlDebugCounters.servoLoopHold = 0;
   controlDebugCounters.airspeedInvalidReads = 0;
+  controlDebugCounters.imuInvalidReads = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -1488,6 +1490,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 2);
   Serial.print(" tlm_speed_mph="); Serial.print(latestAirspeedMph, 1);
   Serial.print(" airspeed_invalid_hz="); Serial.print(controlDebugCounters.airspeedInvalidReads * scale, 1);
+  Serial.print(" imu_invalid_hz="); Serial.print(controlDebugCounters.imuInvalidReads * scale, 1);
   Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
   Serial.print(" tlm_sats="); Serial.print(satsInUse);
   Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
@@ -1681,8 +1684,22 @@ void loop() {
     }
     lastControlUpdateUs = controlUpdateUs;
     
-    // Read sensor data from the IMU
-    IMU.readSensor();
+    // Read sensor data from the IMU.  On I2C failures the driver retains the
+    // previous sample, so never feed the EKF or FBW loop with a failed read.
+    if (IMU.readSensor() <= 0) {
+      ++controlDebugCounters.imuInvalidReads;
+      attitudeSampleValid = false;
+      rollPid.reset();
+      pitchPid.reset();
+      throttlePid.reset();
+      rollAngleFilter.reset();
+      pitchAngleFilter.reset();
+      setControlMode(CONTROL_MODE_MANUAL);
+      setThrottleMode(THROTTLE_MODE_MANUAL);
+      centerAllServos();
+      serviceCrsfLink();
+      return;
+    }
     // Swap X/Y axes to align IMU frame with aircraft frame
     float Ax = IMU.getAccelY_mss();
     float Ay = IMU.getAccelX_mss();

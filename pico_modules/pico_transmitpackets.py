@@ -281,7 +281,11 @@ class CRSFPacketProcessor(QObject):
         """Log serial port errors, ignoring harmless NoError signals."""
         if err == QSerialPort.SerialPortError.NoError:
             return
-        logger.error("Serial error: %s (%s)", err, self.serial.errorString())
+        error_string = self.serial.errorString() if self.serial else "serial port unavailable"
+        logger.error("Serial error: %s (%s)", err, error_string)
+        if err == QSerialPort.SerialPortError.ResourceError:
+            self.error.emit(f"Serial connection error: {error_string}")
+            self._close_serial_port(stop_pacer=False)
 
     @Slot(result=bool)
     def is_connected(self):
@@ -549,6 +553,8 @@ class CRSFPacketProcessor(QObject):
             "_tx_send_attempts",
             "_tx_sent_packets",
             "_tx_write_errors",
+            "_tx_total_sent_packets",
+            "_tx_total_write_errors",
             "_tx_bytes_written",
             "_tx_last_bytes_to_write",
         ):
@@ -585,6 +591,8 @@ class CRSFPacketProcessor(QObject):
             "bytes_per_s": self._tx_bytes_written / elapsed if elapsed > 0 else 0.0,
             "coalesced_ticks": self._tx_pacer_coalesced,
             "write_errors": self._tx_write_errors,
+            "total_sent_packets": self._tx_total_sent_packets,
+            "total_write_errors": self._tx_total_write_errors,
             "last_interval_ms": self._tx_last_interval_ms,
             "bytes_to_write": self._tx_last_bytes_to_write,
             "enabled": self._tx_enabled,
@@ -628,13 +636,17 @@ class CRSFPacketProcessor(QObject):
                 bytes_written = self.serial.write(bytes(packet))
                 if bytes_written == -1:
                     self._tx_write_errors += 1
+                    self._tx_total_write_errors += 1
                     self._diag_tx_errors += 1
-                    raise IOError(self.serial.errorString())
+                    error_string = self.serial.errorString()
+                    self._close_serial_port(stop_pacer=False)
+                    raise IOError(error_string)
                 now_perf = time.perf_counter()
                 if self._tx_debug_last_write_perf is not None:
                     self._tx_last_interval_ms = (now_perf - self._tx_debug_last_write_perf) * 1000.0
                 self._tx_debug_last_write_perf = now_perf
                 self._tx_sent_packets += 1
+                self._tx_total_sent_packets += 1
                 self._tx_bytes_written += max(0, int(bytes_written))
                 self._diag_tx_sent += 1
                 self._diag_tx_bytes += max(0, int(bytes_written))
@@ -1267,11 +1279,11 @@ class CRSFPacketProcessor(QObject):
                 pass
             self._parameter_query_active = False
 
-    @Slot()
-    def close_serial(self):
-        """Close the serial port in the worker thread."""
+    def _close_serial_port(self, *, stop_pacer: bool) -> None:
+        """Close and forget the current serial port, optionally stopping TX pacing."""
+
         try:
-            if self._tx_pacer:
+            if stop_pacer and self._tx_pacer:
                 self._tx_pacer.stop()
             if self.serial:
                 try:
@@ -1282,6 +1294,11 @@ class CRSFPacketProcessor(QObject):
                     self.serial.close()
         finally:
             self.serial = None
+
+    @Slot()
+    def close_serial(self):
+        """Close the serial port in the worker thread."""
+        self._close_serial_port(stop_pacer=True)
 
     def __del__(self):  # pragma: no cover - defensive finaliser
         try:

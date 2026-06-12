@@ -79,7 +79,7 @@ class JoystickRawHandler(QObject):
     def __init__(self, port, baudrate=9600, deadzone=0, sensitivity=100, smoothing=0):
         super().__init__()
         try:
-            self.serial_connection = serial.Serial(port, baudrate=baudrate, timeout=1)
+            self.serial_connection = serial.Serial(port, baudrate=baudrate, timeout=0.05)
             print(f"Connected to joystick on {port} at {baudrate} baud.")
         except serial.SerialException as e:  # pragma: no cover - serial init
             raise RuntimeError(f"Failed to connect to joystick on {port}: {e}")
@@ -129,10 +129,10 @@ class JoystickRawHandler(QObject):
     def close(self):
         """Stop background reading and close the serial connection."""
         self._stop.set()
-        if self.reading_thread.isRunning():
-            self.reading_thread.wait()
         if self.serial_connection.is_open:
             self.serial_connection.close()
+        if self.reading_thread.isRunning():
+            self.reading_thread.wait(250)
 
     # ------------------------------------------------------------------
     # Data processing

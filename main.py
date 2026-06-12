@@ -661,6 +661,15 @@ class MainWindow(QMainWindow):
         # page's terminate/start button.
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
+
+        self._config_save_timer = QTimer(self)
+        self._config_save_timer.setSingleShot(True)
+        self._config_save_timer.setInterval(250)
+        self._config_save_timer.timeout.connect(self._flush_config_save)
+
+        self._last_crsf_tx_stats = None
+        self._last_crsf_tx_stats_time = None
+
         self._transmission_hold_timer = QTimer(self)
         self._transmission_hold_timer.setInterval(50)
         self._transmission_hold_timer.timeout.connect(
@@ -1531,6 +1540,7 @@ class MainWindow(QMainWindow):
         self._update_sortie_button_availability()
         self._update_rate_labels()
         now = time.monotonic()
+        self._invalidate_stale_flight_metrics(now)
         self._update_airborne_state(now)
         # Check for any telemetry-based warnings
         self.check_warnings(now)
@@ -1645,6 +1655,21 @@ class MainWindow(QMainWindow):
             speed = 20.0
         return max(0.0, min(self.auto_throttle_speed_channel_max_mph, speed))
 
+    def _schedule_config_save(self) -> None:
+        """Debounce config writes so GUI valueChanged bursts do not block the UI."""
+
+        timer = getattr(self, "_config_save_timer", None)
+        if timer is None:
+            save_config(self.config)
+            return
+        timer.start()
+
+    @Slot()
+    def _flush_config_save(self) -> None:
+        """Persist pending configuration changes on the GUI thread."""
+
+        save_config(self.config)
+
     def set_auto_throttle_target_speed(self, speed_mph: float) -> None:
         """Persist the configured target speed sent on CH3 in Auto Throttle."""
 
@@ -1656,7 +1681,7 @@ class MainWindow(QMainWindow):
             self.auto_throttle_target_spin.blockSignals(False)
         self.update_throttle_mode_label()
         self._update_throttle_indicator()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def _throttle_indicator_value(self) -> float:
         """Return the value shown by the throttle bar in the current mode."""
@@ -1710,6 +1735,26 @@ class MainWindow(QMainWindow):
         if self.last_airspeed_packet_time is None:
             return False
         return (now - self.last_airspeed_packet_time) <= max(0.0, timeout)
+
+    def _flight_metrics_fresh(self, now: float, timeout: Optional[float] = None) -> bool:
+        """Return whether altitude and airspeed are based on recent telemetry."""
+
+        if timeout is None:
+            timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        return self._is_packet_fresh("gps", timeout) and self._airspeed_value_fresh(now, timeout)
+
+    def _invalidate_stale_flight_metrics(self, now: float) -> None:
+        """Clear cached altitude/airspeed when their source telemetry goes stale."""
+
+        if self._flight_metrics_fresh(now):
+            return
+
+        self.current_altitude = None
+        self.current_airspeed = None
+        self.telemetry_state["altitude_ft"] = None
+        self.telemetry_state["airspeed_mph"] = None
+        self.last_airspeed_packet_time = None
+        self._reset_sink_rate_estimate()
 
     def _reset_sink_rate_estimate(self) -> None:
         """Clear cached sink-rate state so stale samples cannot trigger alarms."""
@@ -1809,12 +1854,12 @@ class MainWindow(QMainWindow):
             now = time.monotonic()
 
         gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
-        if (
-            not self._is_packet_fresh("gps", gps_timeout)
-            or not self._airspeed_value_fresh(now, gps_timeout)
-        ):
+        if not self._flight_metrics_fresh(now, gps_timeout):
             self._airborne_takeoff_start_time = None
             self._airborne_landing_start_time = None
+            if self.airborne_state != "grounded":
+                self.airborne_state = "grounded"
+                self._update_airborne_indicator()
             return
 
         airspeed = self._safe_float(self.current_airspeed)
@@ -2518,7 +2563,11 @@ class MainWindow(QMainWindow):
             if self._sink_rate_value_fresh(now)
             else None
         )
-        if airspeed is None or altitude is None:
+        if airspeed is None or altitude is None or not self._flight_metrics_fresh(now):
+            self.stall_alarm_start_time = None
+            self.stall_alarm_playing = False
+            self.altitude_alarm_start_time = None
+            self.altitude_alarm_playing = False
             return
 
         airborne_warnings_armed = (
@@ -2649,6 +2698,10 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _handle_transmit_debug(self, stats) -> None:
         """Forward CRSF worker transmit-rate diagnostics to the Debug tab."""
+
+        if isinstance(stats, dict):
+            self._last_crsf_tx_stats = dict(stats)
+            self._last_crsf_tx_stats_time = time.monotonic()
 
         if not self._debug_monitoring:
             return
@@ -3793,6 +3846,22 @@ class MainWindow(QMainWindow):
 
         rows.append((severity, message))
 
+    def _crsf_tx_recently_flowing(self, max_age_s: float = 2.0) -> bool:
+        """Return whether the CRSF worker recently reported successful serial writes."""
+
+        stats_time = self._last_crsf_tx_stats_time
+        stats = self._last_crsf_tx_stats
+        if stats_time is None or not isinstance(stats, dict):
+            return False
+        if time.monotonic() - stats_time > max_age_s:
+            return False
+        return (
+            bool(stats.get("enabled"))
+            and bool(stats.get("connected"))
+            and float(stats.get("serial_write_hz") or 0.0) > 0.0
+            and int(stats.get("write_errors") or 0) == 0
+        )
+
     def _run_preflight_verification(self) -> tuple[str, list[tuple[str, str]]]:
         """Evaluate telemetry, signal, port, and local safety readiness."""
 
@@ -3835,16 +3904,17 @@ class MainWindow(QMainWindow):
         )
 
         crsf_connected = self.crsf_processor is not None
+        crsf_tx_flowing = self._crsf_tx_recently_flowing()
         self._add_preflight_check(
             rows,
-            "pass" if self.transmission_active else "fail",
+            "pass" if crsf_tx_flowing else "fail",
             (
-                "CRSF channel transmission is active."
-                if self.transmission_active
+                "CRSF channel transmission has recent successful serial writes."
+                if crsf_tx_flowing
                 else (
                     "CRSF transmitter is not connected."
                     if not crsf_connected
-                    else "CRSF channel transmission is terminated."
+                    else "CRSF channel transmission has no recent successful serial writes."
                 )
             ),
         )
@@ -4331,8 +4401,13 @@ class MainWindow(QMainWindow):
         """Handle selection of control system port."""
         self.joystick_cfg["port"] = port
         if self.joystick:
+            old_joystick = self.joystick
             try:
-                self.joystick.close()
+                old_joystick.error.disconnect(self.handle_worker_error)
+            except Exception:
+                pass
+            try:
+                old_joystick.close()
             except Exception:
                 pass
             self.joystick = None
@@ -4345,21 +4420,22 @@ class MainWindow(QMainWindow):
                     sensitivity=self.joystick_cfg.get("sensitivity", 100),
                     smoothing=self.joystick_cfg.get("smoothing", 0),
                 )
+                self.joystick.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         self.update_connection_status(self.control_status, self.joystick is not None)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_map_enabled_toggled(self, checked: bool):
         self.map_cfg["enabled"] = bool(checked)
         self._update_map_enabled_state()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_map_follow_toggled(self, checked: bool):
         self.map_cfg["follow"] = bool(checked)
         self._gps_follow_enabled = bool(checked)
         self._sync_follow_state_to_map()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_map_zoom_changed(self, value: int):
         try:
@@ -4370,7 +4446,7 @@ class MainWindow(QMainWindow):
         self.map_cfg["zoom"] = zoom
         if not self._gps_first_fix_sent:
             self._apply_initial_map_view()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_map_center_changed(self):
         lat = float(self.map_lat_spin.value())
@@ -4378,7 +4454,7 @@ class MainWindow(QMainWindow):
         self.map_cfg["center"] = [lat, lon]
         if not self._gps_first_fix_sent:
             self._apply_initial_map_view()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_elrs_port_selected(self, port: str):
         """Handle selection of ELRS transmitter port."""
@@ -4438,7 +4514,7 @@ class MainWindow(QMainWindow):
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_packet_rate_changed(self, *_):
         rate_hz = self.packet_rate_combo.currentData()
@@ -4447,7 +4523,7 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.packet_interval_update.emit(interval)
         self.update_pico_rate_label()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def update_pico_rate_label(self):
         interval = self.crsf_cfg.get("packet_interval", 4)
@@ -4462,27 +4538,27 @@ class MainWindow(QMainWindow):
         self.deadzone_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_deadzone(value)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_sensitivity_changed(self, value: int):
         self.joystick_cfg["sensitivity"] = value
         self.sensitivity_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_sensitivity(value)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_yaw_sensitivity_changed(self, value: int):
         self.joystick_cfg["yaw_sensitivity"] = value
         self.yaw_sensitivity_value_label.setText(str(value))
         self.yaw_sensitivity = int(value)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_smoothing_changed(self, value: int):
         self.joystick_cfg["smoothing"] = value
         self.smoothing_value_label.setText(str(value))
         if self.joystick:
             self.joystick.set_smoothing(value)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_fbw_roll_limit_changed(self, value: float):
         self.fbw_max_roll_angle_deg = self._validated_fbw_limit(
@@ -4494,7 +4570,7 @@ class MainWindow(QMainWindow):
         self._update_desired_fbw_attitude(
             getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
         )
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_fbw_pitch_limit_changed(self, value: float):
         self.fbw_max_pitch_angle_deg = self._validated_fbw_limit(
@@ -4506,7 +4582,7 @@ class MainWindow(QMainWindow):
         self._update_desired_fbw_attitude(
             getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16)
         )
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_auto_throttle_target_changed(self, value: float):
         self.set_auto_throttle_target_speed(value)
@@ -4522,57 +4598,57 @@ class MainWindow(QMainWindow):
             self.ui.attitudeSmoothingValue.setText(f"{percent}%")
         if hasattr(self, "rollpitch_osd"):
             self.rollpitch_osd.set_smoothing(percent / 100.0)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_airborne_takeoff_alt_changed(self, value: float):
         self.airborne_cfg["takeoff_altitude_ft"] = float(value)
         self._airborne_takeoff_start_time = None
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_airborne_landed_speed_changed(self, value: float):
         self.airborne_cfg["landed_airspeed_mph"] = float(value)
         self._airborne_landing_start_time = None
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_airborne_landed_alt_changed(self, value: float):
         self.airborne_cfg["landed_altitude_ft"] = float(value)
         self._airborne_landing_start_time = None
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_stall_speed_changed(self, value: int):
         self.warning_cfg["stall_airspeed"] = value
         self.stall_speed_value.setText(str(value))
         self._airborne_takeoff_start_time = None
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_stall_alt_changed(self, value: int):
         self.warning_cfg["stall_altitude"] = value
         self.stall_alt_value.setText(str(value))
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_alt_alarm_alt_changed(self, value: int):
         self.warning_cfg["altitude_alarm_altitude"] = value
         self.alt_alarm_alt_value.setText(str(value))
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_alt_alarm_speed_changed(self, value: int):
         self.warning_cfg["altitude_alarm_airspeed"] = value
         self.alt_alarm_speed_value.setText(str(value))
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_roll_angle_changed(self, value: int):
         self.warning_cfg["roll_angle"] = value
         self.roll_angle_value.setText(str(value))
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_sink_rate_threshold_changed(self, value: float):
         self.warning_cfg["sink_rate_threshold_fps"] = float(value)
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_battery_type_changed(self, selection: str):
         self.aircraft_cfg["battery_cells"] = selection
         self._update_battery_full_voltage()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def _stop_warning_alarm_audio(self):
         alarm_sounds = (
@@ -4615,35 +4691,35 @@ class MainWindow(QMainWindow):
         self.warning_cfg["warning_alarms_enabled"] = checked
         if not checked:
             self._clear_warning_alarm_state()
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_stall_alarm_toggled(self, checked: bool):
         self.warning_cfg["stall_alarm_enabled"] = checked
         if not checked:
             self.stall_alarm_start_time = None
             self.stall_alarm_playing = False
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_altitude_alarm_toggled(self, checked: bool):
         self.warning_cfg["altitude_alarm_enabled"] = checked
         if not checked:
             self.altitude_alarm_start_time = None
             self.altitude_alarm_playing = False
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_bank_alarm_toggled(self, checked: bool):
         self.warning_cfg["bank_angle_alarm_enabled"] = checked
         if not checked:
             self.roll_alarm_start_time = None
             self.roll_alarm_playing = False
-        save_config(self.config)
+        self._schedule_config_save()
 
     def on_sink_rate_alarm_toggled(self, checked: bool):
         self.warning_cfg["sink_rate_alarm_enabled"] = checked
         if not checked:
             self.sink_rate_alarm_start_time = None
             self.sink_rate_alarm_playing = False
-        save_config(self.config)
+        self._schedule_config_save()
 
     def start_blinking(self, label: QLabel):
         timer = QTimer(self)
@@ -5075,6 +5151,10 @@ class MainWindow(QMainWindow):
 
     def cleanup(self):
         """Clean up peripheral resources if they exist."""
+        config_timer = getattr(self, "_config_save_timer", None)
+        if config_timer is not None and config_timer.isActive():
+            config_timer.stop()
+            self._flush_config_save()
         self.stop_sortie_recording()
         self.stop_debug_monitoring()
         if self.joystick:
