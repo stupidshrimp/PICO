@@ -13,6 +13,7 @@
 
 #include <Wire.h>
 #include <elapsedMillis.h>
+#include <IWatchdog.h>
 
 // Arduino IDE sketch-local debug toggles must be defined before including
 // konfig.h because konfig.h supplies guarded defaults. Keep this bench-build
@@ -219,6 +220,21 @@ char cmd;
 #endif
 
 constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
+// Independent hardware watchdog (IWDG) timeout. The main loop services many
+// tasks per attitude period (8 ms) and the longest blocking call is now bounded
+// by the 25 ms I2C timeout, so 100 ms leaves ample margin against false resets
+// while still recovering quickly if the loop ever hangs (wedged bus, math
+// assert, etc.). The IWDG runs off the independent LSI clock, so it fires even
+// if the main clock or loop is stuck.
+//
+// This is kept flat (not tied to FC_CONTROL_DEBUG_SERIAL_OUTPUT) so the tight
+// flight-safe window is the default for every build -- the default Arduino
+// sketch forces the debug macro to 1, so coupling the timeout to it would
+// silently relax the watchdog for ordinary builds. The once-per-second FCDBG
+// diagnostic line is the only long blocking write, and loop() reloads the
+// watchdog immediately before emitting it, so a normal (host-reading) print
+// starts with a full 100 ms window and cannot trip the IWDG.
+constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
@@ -1584,6 +1600,20 @@ void setup() {
   // ----- Initialize I2C -----
   I2C_Alternate.begin();
   I2C_Alternate.setClock(400000);
+  // Bound every blocking I2C transaction (IMU/barometer/airspeed all share this
+  // bus) so a stuck SDA/SCL line cannot block readSensor() in the 125 Hz loop
+  // forever and freeze the control surfaces.
+  //
+  // The Arduino Wire timeout API (setWireTimeout) is only present on cores that
+  // advertise WIRE_HAS_TIMEOUT -- e.g. the AVR core. The STM32duino TwoWire used
+  // for flight builds does NOT expose it (its HAL bounds each transfer with its
+  // own internal timeout instead), so the call is guarded to keep the firmware
+  // compiling on both. On STM32duino the HAL timeout plus the hardware watchdog
+  // below provide the wedged-bus protection; where the Arduino API is available
+  // we additionally release the peripheral on timeout (reset_with_timeout=true).
+#if defined(WIRE_HAS_TIMEOUT)
+  I2C_Alternate.setWireTimeout(25000 /* us */, true /* reset_with_timeout */);
+#endif
 
   // ----- Calibrate Barometer -----
   if (!barometer.begin()) {
@@ -1654,12 +1684,25 @@ void setup() {
   signalCalibrationComplete();
 
   resetPeriodicTimers();
+
+  // Start the hardware watchdog only after all blocking startup work and
+  // halt-on-failure sensor checks have completed. Starting it here preserves
+  // the existing "halt with neutral servos" behavior for startup sensor faults
+  // (those paths intentionally never reach this line) while protecting the
+  // flight loop: if any iteration stalls longer than WATCHDOG_TIMEOUT_US the
+  // board resets instead of holding stale servo commands indefinitely.
+  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
+
   Serial.println("CRSF Telemetry Ready");
 }
 
 
 void loop() {
   ++controlDebugCounters.loopIterations;
+  // Kick the watchdog once per iteration. Placed at the top so a hang anywhere
+  // in the body (wedged I2C, CRSF service, EKF math) lets the IWDG expire and
+  // reset the board rather than freezing the control surfaces.
+  IWatchdog.reload();
 #if FC_TIMING_INSTRUMENTATION
   uint32_t loopStartUs = micros();
 #endif
@@ -2028,6 +2071,11 @@ void loop() {
   }
 
   serviceCrsfLink();
+  // The once-per-second FCDBG line is long; a backpressured USB serial write
+  // can take much longer than a control iteration. Reload right before it so the
+  // print always starts with a full watchdog window and normal diagnostic
+  // logging cannot trigger a false reset. (No-op cost when logging is disabled.)
+  IWatchdog.reload();
   maybePrintControlDebugStats();
 
 #if FC_TIMING_INSTRUMENTATION

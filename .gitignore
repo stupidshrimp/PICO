@@ -22,6 +22,10 @@ build/
 dist/
 *.spec
 
+# Logs
+debug.log
+*.log
+
 # OS
 .DS_Store
 Thumbs.db
