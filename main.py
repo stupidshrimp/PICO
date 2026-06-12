@@ -3295,6 +3295,20 @@ class MainWindow(QMainWindow):
                 f"≈ {1000.0 / interval:.0f} Hz"
             )
 
+    def _safe_channel_update_interval(self, default: int = 8) -> int:
+        """Return the GS poll interval in ms, clamped to the spin box range.
+
+        Guards against a malformed ``channel_update_interval`` (null or a
+        non-numeric string) so building the Configuration page cannot raise
+        before the user has a chance to fix their config.
+        """
+        value = self._safe_float(
+            self.crsf_cfg.get("channel_update_interval"), default
+        )
+        if value is None:
+            value = default
+        return int(max(1, min(100, value)))
+
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
         self.ui.configuration_page = QWidget()
@@ -3507,18 +3521,15 @@ class MainWindow(QMainWindow):
                 "stick input feeding each transmitted frame."
             )
         )
+        poll_interval = self._safe_channel_update_interval()
         self.channel_update_interval_spin = QSpinBox()
         self.channel_update_interval_spin.setRange(1, 100)
         self.channel_update_interval_spin.setSuffix(" ms")
-        self.channel_update_interval_spin.setValue(
-            int(self.crsf_cfg.get("channel_update_interval", 8))
-        )
+        self.channel_update_interval_spin.setValue(poll_interval)
         poll_row.addWidget(self.channel_update_interval_spin)
         self.channel_update_interval_value = QLabel()
         poll_row.addWidget(self.channel_update_interval_value)
-        self._update_channel_poll_label(
-            int(self.crsf_cfg.get("channel_update_interval", 8))
-        )
+        self._update_channel_poll_label(poll_interval)
         rf_layout.addLayout(poll_row)
 
         stale_row = QHBoxLayout()
