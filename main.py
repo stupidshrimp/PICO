@@ -1425,7 +1425,7 @@ class MainWindow(QMainWindow):
             try:
                 self.sortie_file.flush()
             except OSError:
-                logging.debug("Failed to flush sortie file on stop", exc_info=True)
+                logging.error("Failed to flush sortie file on stop", exc_info=True)
             self.sortie_file.close()
 
         self.sortie_file = None
@@ -1517,7 +1517,7 @@ class MainWindow(QMainWindow):
             try:
                 self.joystick.close()
             except Exception:  # noqa: BLE001 - best effort cleanup
-                logging.debug(
+                logging.error(
                     "Failed to close joystick after worker error", exc_info=True
                 )
             self.joystick = None
@@ -4384,7 +4384,7 @@ class MainWindow(QMainWindow):
             try:
                 self.joystick.close()
             except Exception:
-                logging.debug("Failed to close joystick on reselect", exc_info=True)
+                logging.error("Failed to close joystick on reselect", exc_info=True)
             self.joystick = None
         if validate_port("joystick", port):
             try:
@@ -4447,7 +4447,7 @@ class MainWindow(QMainWindow):
                 thread.quit()
                 thread.wait()
             except Exception:
-                logging.debug(
+                logging.error(
                     "Failed to stop CRSF worker on reselect", exc_info=True
                 )
             self.crsf_processor = None
