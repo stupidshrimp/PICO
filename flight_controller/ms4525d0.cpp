@@ -1,6 +1,10 @@
 #include "ms4525d0.h"
 #include <math.h>
 
+namespace {
+constexpr uint32_t MS4525D0_I2C_READ_TIMEOUT_US = 2000UL;
+}
+
 MS4525D0::MS4525D0(TwoWire &wirePort, uint8_t address)
     : _i2c(wirePort), _address(address), _baselinePressure(0.0f)
 {
@@ -14,10 +18,12 @@ void MS4525D0::calibrate() {
     int validCount = 0;
 
     for (int i = 0; i < numReadings; i++) {
-        uint16_t raw = readRawData();
-        float pressure = convertToPressure(raw);
-        if (!isnan(pressure)) {
-            readings[validCount++] = pressure;
+        uint16_t raw = 0;
+        if (readRawData(raw)) {
+            float pressure = convertToPressure(raw);
+            if (!isnan(pressure)) {
+                readings[validCount++] = pressure;
+            }
         }
         delay(100);  // 100 ms delay between readings
     }
@@ -37,7 +43,12 @@ void MS4525D0::calibrate() {
 }
 
 float MS4525D0::getAirspeed(float ambientPressure) {
-    uint16_t raw = readRawData();
+    uint16_t raw = 0;
+    if (!readRawData(raw)) {
+//        Serial.println("MS4525D0: raw read timeout");
+        return NAN;
+    }
+
     float pressure = convertToPressure(raw);
     if (isnan(pressure)) {
 //        Serial.println("MS4525D0: invalid pressure reading");
@@ -58,17 +69,28 @@ float MS4525D0::getAirspeed(float ambientPressure) {
     }
 }
 
-uint16_t MS4525D0::readRawData() {
-    // Request 2 bytes from the sensor
+bool MS4525D0::readRawData(uint16_t &raw) {
+    raw = 0;
+
+    // Bound the wait so a missing sensor or wedged I2C bus cannot stall the
+    // flight-control loop indefinitely while servos hold their previous command.
     _i2c.requestFrom(_address, (uint8_t)2);
-    if (_i2c.available() < 2) {
-//        Serial.println("Error reading raw data");
-        return 0;  // Return 0 if failed to read
+
+    const uint32_t startUs = micros();
+    while (_i2c.available() < 2) {
+        if ((uint32_t)(micros() - startUs) >= MS4525D0_I2C_READ_TIMEOUT_US) {
+            while (_i2c.available() > 0) {
+                (void)_i2c.read();
+            }
+//            Serial.println("Error reading raw data");
+            return false;
+        }
     }
+
     uint8_t highByte = _i2c.read();
     uint8_t lowByte = _i2c.read();
-    uint16_t rawValue = ((uint16_t)highByte << 8) | lowByte;
-    return rawValue;
+    raw = ((uint16_t)highByte << 8) | lowByte;
+    return true;
 }
 
 float MS4525D0::convertToPressure(uint16_t raw) {

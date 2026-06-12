@@ -43,9 +43,11 @@ private:
     float _baselinePressure;  // Baseline pressure from calibration (Pa)
 
     /**
-     * Read 2 bytes of raw sensor data and return as a 16-bit integer.
+     * Read 2 bytes of raw sensor data.
+     * @param raw Receives the 16-bit sensor value when the read succeeds.
+     * @return true when 2 bytes were read before the timeout, false otherwise.
      */
-    uint16_t readRawData();
+    bool readRawData(uint16_t &raw);
 
     /**
      * Convert a raw reading to differential pressure in Pascals.

@@ -212,11 +212,11 @@ constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
-// CRSF parser stalls in the field have shown up as 1-3 second gaps where raw
-// bytes still arrive but RC_CHANNELS_PACKED frames do not decode.  Keep the
-// last servo pulse during those short dropouts so surfaces do not twitch to
-// neutral, but still enter hard failsafe if the link stays quiet.
-constexpr uint32_t RC_SERVO_HOLD_TIMEOUT_US = 3000000UL;
+// CRSF parser stalls in the field have shown up as short gaps where raw bytes
+// still arrive but RC_CHANNELS_PACKED frames do not decode. Keep only a brief
+// blend window after RC goes stale so flight builds do not preserve stale
+// high-deflection surface commands for multiple seconds.
+constexpr uint32_t RC_SERVO_HOLD_TIMEOUT_US = 500000UL;
 constexpr uint32_t CRSF_BYTE_ACTIVITY_TIMEOUT_US = RC_FAILSAFE_TIMEOUT_US;
 constexpr uint32_t BAROMETER_TEMPERATURE_PERIOD_US = 500000UL;
 
@@ -321,6 +321,7 @@ struct ControlDebugCounters {
   uint32_t servoLoopFresh;
   uint32_t servoLoopStale;
   uint32_t servoLoopHold;
+  uint32_t airspeedInvalidReads;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -378,6 +379,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.servoLoopFresh = 0;
   controlDebugCounters.servoLoopStale = 0;
   controlDebugCounters.servoLoopHold = 0;
+  controlDebugCounters.airspeedInvalidReads = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -724,7 +726,10 @@ bool rcInputWithinServoHold(uint32_t nowUs) {
 
 uint16_t blendServoTowardNeutral(uint16_t startUs, uint32_t nowUs) {
   const uint32_t rcAgeUs = rcInputAgeUs(nowUs);
-  const uint32_t holdBlendDurationUs = RC_SERVO_HOLD_TIMEOUT_US - RC_FAILSAFE_TIMEOUT_US;
+  const uint32_t holdBlendDurationUs =
+      (RC_SERVO_HOLD_TIMEOUT_US > RC_FAILSAFE_TIMEOUT_US)
+          ? (RC_SERVO_HOLD_TIMEOUT_US - RC_FAILSAFE_TIMEOUT_US)
+          : 0UL;
   if (holdBlendDurationUs == 0 || rcAgeUs >= RC_SERVO_HOLD_TIMEOUT_US) {
     return SERVO_CENTER_US;
   }
@@ -1023,6 +1028,7 @@ void updateAirspeedCache() {
   float airspeedMph = airspeedSensor.getAirspeed();
   if (isnan(airspeedMph)) {
     // Serial.println("Airspeed sensor error");
+    ++controlDebugCounters.airspeedInvalidReads;
     airspeedMph = 0.0f;
     latestAirspeedValid = false;
   } else {
@@ -1481,6 +1487,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" tlm_alt_ft="); Serial.print(latestAltitudeFeet, 1);
   Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 2);
   Serial.print(" tlm_speed_mph="); Serial.print(latestAirspeedMph, 1);
+  Serial.print(" airspeed_invalid_hz="); Serial.print(controlDebugCounters.airspeedInvalidReads * scale, 1);
   Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
   Serial.print(" tlm_sats="); Serial.print(satsInUse);
   Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
