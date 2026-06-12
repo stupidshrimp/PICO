@@ -9,10 +9,13 @@ altitude value; here we only provide the visual representation.
 """
 
 import math
+import time
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
+
+from pico_modules.osd_smoothing import time_scaled_weight
 
 
 class AltitudeOSD(QWidget):
@@ -20,7 +23,8 @@ class AltitudeOSD(QWidget):
         super().__init__(parent)
         self._altitude = 0.0
         self._initialized = False
-        self._smoothing = 0.2  # Weight for new samples
+        self._smoothing = 0.2  # Per-call weight tuned at the ~30 Hz reference rate
+        self._last_update_time = None
         self.setMinimumWidth(80)
         # Allow the widget to blend with anything behind it
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -35,13 +39,14 @@ class AltitudeOSD(QWidget):
         """
         if altitude is None or not math.isfinite(altitude):
             return
+        now = time.monotonic()
         if not self._initialized:
             self._altitude = altitude
             self._initialized = True
         else:
-            self._altitude = (
-                self._altitude * (1 - self._smoothing) + altitude * self._smoothing
-            )
+            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
+            self._altitude = self._altitude * (1 - alpha) + altitude * alpha
+        self._last_update_time = now
         self.update()
 
     def paintEvent(self, event):

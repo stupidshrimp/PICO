@@ -10,10 +10,13 @@ creating a repeating pattern used on real attitude indicators.
 """
 
 import math
+import time
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtCore import QPointF, QRectF, Qt
+
+from pico_modules.osd_smoothing import time_scaled_weight
 
 
 class RollPitchOSD(QWidget):
@@ -25,7 +28,8 @@ class RollPitchOSD(QWidget):
         self._desired_roll = None
         self._desired_visible = False
         self._initialized = False
-        self._smoothing = 0.2  # Weight for new samples
+        self._smoothing = 0.2  # Per-call weight tuned at the ~30 Hz reference rate
+        self._last_update_time = None
         self.setMinimumSize(300, 300)
 
     def set_smoothing(self, weight: float) -> None:
@@ -64,13 +68,16 @@ class RollPitchOSD(QWidget):
             or not math.isfinite(pitch_deg)
         ):
             return
+        now = time.monotonic()
         if not self._initialized:
             self._roll = roll_deg
             self._pitch = pitch_deg
             self._initialized = True
         else:
-            self._roll = self._roll * (1 - self._smoothing) + roll_deg * self._smoothing
-            self._pitch = self._pitch * (1 - self._smoothing) + pitch_deg * self._smoothing
+            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
+            self._roll = self._roll * (1 - alpha) + roll_deg * alpha
+            self._pitch = self._pitch * (1 - alpha) + pitch_deg * alpha
+        self._last_update_time = now
         self.update()
 
     def setDesiredRollPitch(
