@@ -142,11 +142,21 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define R_REJECTED       (1.0e3)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
+// Reject normalized vector measurements whose direction disagrees with the
+// gyro-propagated attitude by more than these Euclidean innovation gates.
+// For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
+// roughly a 32-degree direction error.  This prevents transient acceleration
+// and magnetic disturbances from pulling the attitude solution toward a
+// physically unlikely orientation after the short startup convergence window.
+#define ACCEL_INNOVATION_GATE (0.65f)
+#define MAG_INNOVATION_GATE   (0.55f)
+#define EKF_INNOVATION_GATE_WARMUP_UPDATES (250U)
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
 uint8_t ekfConsecutiveFailures = 0;
+uint16_t ekfInnovationGateWarmupUpdates = 0;
 float_prec EKF_PINIT_data[SS_X_LEN*SS_X_LEN] = {
   P_INIT_QUAT, 0, 0, 0, 0, 0, 0,
   0, P_INIT_QUAT, 0, 0, 0, 0, 0,
@@ -370,6 +380,13 @@ float clampFloat(float value, float minValue, float maxValue) {
     return maxValue;
   }
   return value;
+}
+
+float vectorInnovationNorm(const Matrix& measurement, const Matrix& prediction, uint8_t startIndex) {
+  const float dx = measurement[startIndex][0] - prediction[startIndex][0];
+  const float dy = measurement[startIndex + 1][0] - prediction[startIndex + 1][0];
+  const float dz = measurement[startIndex + 2][0] - prediction[startIndex + 2][0];
+  return sqrtf(dx*dx + dy*dy + dz*dz);
 }
 
 void resetControlDebugCounters() {
@@ -1700,8 +1717,14 @@ void loop() {
     Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
 
     setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
+    Matrix predictedX = EKF_IMU.GetX();
     Matrix predictedY(SS_Z_LEN, 1);
-    Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
+    if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
+      Main_bUpdateNonlinearY(predictedY, predictedX, U);
+    } else {
+      Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
+    }
 
     // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
     float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
@@ -1717,6 +1740,9 @@ void loop() {
                          (fabs(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
     if (!accelRejected) {
       Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
+      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+        accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
+      }
     }
     if (accelRejected) {
       Y[0][0] = predictedY[0][0];
@@ -1732,6 +1758,9 @@ void loop() {
     bool magRejected = (normM <= NORM_EPSILON);
     if (!magRejected) {
       Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
+      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+        magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
+      }
     }
     if (magRejected) {
       Y[3][0] = predictedY[3][0];
@@ -1743,7 +1772,6 @@ void loop() {
     }
 
     // Update the EKF and measure computation time
-    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
     Matrix ekfPreviousX = EKF_IMU.GetX();
     Matrix ekfPreviousP = EKF_IMU.GetP();
     EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
@@ -1755,12 +1783,16 @@ void loop() {
         quaternionData[0][0] = 1.0;
         EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
         ekfConsecutiveFailures = 0;
+        ekfInnovationGateWarmupUpdates = 0;
       } else {
         EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
       }
       // Serial.println("Whoop ");
     } else {
       ekfConsecutiveFailures = 0;
+      if (ekfInnovationGateWarmupUpdates < EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+        ++ekfInnovationGateWarmupUpdates;
+      }
     }
 #if FC_TIMING_INSTRUMENTATION
     recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
