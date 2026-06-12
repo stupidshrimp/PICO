@@ -143,6 +143,8 @@ class CRSFPacketProcessor(QObject):
     transmit_debug_update = Signal(object)
     parameter_query_update = Signal(str)
     link_diagnostics_update = Signal(object)
+    safe_shutdown_update = Signal(list, int)
+    safe_shutdown_complete = Signal(bool)
     error = Signal(str)
 
     class PacketsTypes(IntEnum):
@@ -244,6 +246,7 @@ class CRSFPacketProcessor(QObject):
         self.raw_serial_debug_update.connect(self.set_raw_serial_debug_enabled)
         self.parameter_query_request.connect(self.query_elrs_parameters)
         self.diagnostic_enabled_update.connect(self.set_link_diagnostics_enabled)
+        self.safe_shutdown_update.connect(self.send_safe_shutdown_packets)
         self._thread.start()
 
 
@@ -594,6 +597,30 @@ class CRSFPacketProcessor(QObject):
         if signal is not None:
             signal.emit(stats)
         self._reset_tx_debug_window()
+
+
+    @Slot(list, int)
+    def send_safe_shutdown_packets(self, safe_channels, frame_count=3):
+        """Send throttle-cut/disarmed frames before periodic TX is disabled."""
+
+        success = False
+        try:
+            self.channels = self._normalise_channels(safe_channels)
+            count = max(1, int(frame_count or 1))
+            success = True
+            for _ in range(count):
+                result = self.send_current_packet()
+                success = success and result == "Good"
+                serial = getattr(self, "serial", None)
+                if serial is not None and serial.isOpen():
+                    serial.waitForBytesWritten(20)
+                QThread.msleep(max(1, int(getattr(self, "_tx_interval_ms", 4))))
+        except Exception as exc:
+            logger.exception("Failed to send safe shutdown packets")
+            self.error.emit(f"Failed to send safe shutdown packets: {exc}")
+            success = False
+        finally:
+            self.safe_shutdown_complete.emit(success)
 
     @Slot()
     def send_current_packet(self):
