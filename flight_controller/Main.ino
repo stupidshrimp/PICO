@@ -218,6 +218,11 @@ constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
 // neutral, but still enter hard failsafe if the link stays quiet.
 constexpr uint32_t RC_SERVO_HOLD_TIMEOUT_US = 3000000UL;
 constexpr uint32_t CRSF_BYTE_ACTIVITY_TIMEOUT_US = RC_FAILSAFE_TIMEOUT_US;
+// The ground station sends direct RC_CHANNELS_PACKED frames but does not send
+// the ELRS/CRSF link-statistics frames that CRSFforArduino uses to populate
+// channels->failsafe.  Keep the FC failsafe tied to RC packet age instead of
+// link-statistics quality so valid direct-control RC frames are not rejected.
+constexpr bool RC_RESPECT_LINK_STATISTICS_FAILSAFE = false;
 constexpr uint32_t BAROMETER_TEMPERATURE_PERIOD_US = 500000UL;
 
 struct TimingCounter {
@@ -613,8 +618,8 @@ void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
   // the library reports failsafe even while fresh RC frames are arriving.
   // Accept the decoded channel frame and let rcInputFresh() enforce our real
   // failsafe from packet age instead of the missing link-statistics flag.
-  rcReceiverFailsafeActive = channels->failsafe;
-  if (channels->failsafe) {
+  rcReceiverFailsafeActive = RC_RESPECT_LINK_STATISTICS_FAILSAFE && channels->failsafe;
+  if (rcReceiverFailsafeActive) {
     ++controlDebugCounters.rcFailsafePackets;
   }
 
