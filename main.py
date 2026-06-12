@@ -750,10 +750,10 @@ class MainWindow(QMainWindow):
         self.label_update_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.label_update_timer.timeout.connect(self.update_labels)
 
-        # Bound UI/OSD refresh work to about 30 Hz instead of running whenever
+        # Bound UI/OSD refresh work to about 70 Hz instead of running whenever
         # the event loop is idle, which keeps video, map, audio, and serial
         # processing responsive under load.
-        self.label_update_timer.start(33)
+        self.label_update_timer.start(14)
 
         self._gps_map_timer = QTimer(self)
         self._gps_map_timer.setInterval(1000)
