@@ -13,6 +13,7 @@
 
 #include <Wire.h>
 #include <elapsedMillis.h>
+#include <IWatchdog.h>
 
 // Arduino IDE sketch-local debug toggles must be defined before including
 // konfig.h because konfig.h supplies guarded defaults. Keep this bench-build
@@ -219,6 +220,13 @@ char cmd;
 #endif
 
 constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
+// Independent hardware watchdog (IWDG) timeout. The main loop services many
+// tasks per attitude period (8 ms) and the longest blocking call is now bounded
+// by the 25 ms I2C timeout, so 100 ms leaves ample margin against false resets
+// while still recovering quickly if the loop ever hangs (wedged bus, math
+// assert, etc.). The IWDG runs off the independent LSI clock, so it fires even
+// if the main clock or loop is stuck.
+constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
@@ -1584,6 +1592,13 @@ void setup() {
   // ----- Initialize I2C -----
   I2C_Alternate.begin();
   I2C_Alternate.setClock(400000);
+  // Bound every blocking I2C transaction (IMU/barometer/airspeed all share this
+  // bus). Without a timeout, a stuck SDA/SCL line would block readSensor() in
+  // the 125 Hz loop forever and freeze the control surfaces. With a timeout the
+  // call returns, the loop keeps running, and the hardware watchdog below will
+  // reset the board if the bus stays wedged. reset_with_timeout=true also
+  // releases the peripheral so it can recover on the next transaction.
+  I2C_Alternate.setWireTimeout(25000 /* us */, true /* reset_with_timeout */);
 
   // ----- Calibrate Barometer -----
   if (!barometer.begin()) {
@@ -1654,12 +1669,25 @@ void setup() {
   signalCalibrationComplete();
 
   resetPeriodicTimers();
+
+  // Start the hardware watchdog only after all blocking startup work and
+  // halt-on-failure sensor checks have completed. Starting it here preserves
+  // the existing "halt with neutral servos" behavior for startup sensor faults
+  // (those paths intentionally never reach this line) while protecting the
+  // flight loop: if any iteration stalls longer than WATCHDOG_TIMEOUT_US the
+  // board resets instead of holding stale servo commands indefinitely.
+  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
+
   Serial.println("CRSF Telemetry Ready");
 }
 
 
 void loop() {
   ++controlDebugCounters.loopIterations;
+  // Kick the watchdog once per iteration. Placed at the top so a hang anywhere
+  // in the body (wedged I2C, CRSF service, EKF math) lets the IWDG expire and
+  // reset the board rather than freezing the control surfaces.
+  IWatchdog.reload();
 #if FC_TIMING_INSTRUMENTATION
   uint32_t loopStartUs = micros();
 #endif
