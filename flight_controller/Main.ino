@@ -147,6 +147,11 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
 uint8_t ekfConsecutiveFailures = 0;
+// Counts back-to-back IMU read failures.  On an I2C error readSensor() leaves
+// the cached accel/gyro/mag at the previous sample, so feeding that into the
+// EKF would integrate a stale gyro reading as if it were current.  We skip the
+// fusion update on failure and hold the last attitude instead.
+uint16_t imuConsecutiveReadFailures = 0;
 float_prec EKF_PINIT_data[SS_X_LEN*SS_X_LEN] = {
   P_INIT_QUAT, 0, 0, 0, 0, 0, 0,
   0, P_INIT_QUAT, 0, 0, 0, 0, 0,
@@ -318,6 +323,7 @@ struct ControlDebugCounters {
   uint32_t rcPackets;
   uint32_t rcFailsafePackets;
   uint32_t ekfUpdates;
+  uint32_t imuReadFailures;
   uint32_t servoLoopFresh;
   uint32_t servoLoopStale;
   uint32_t servoLoopHold;
@@ -375,6 +381,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.rcPackets = 0;
   controlDebugCounters.rcFailsafePackets = 0;
   controlDebugCounters.ekfUpdates = 0;
+  controlDebugCounters.imuReadFailures = 0;
   controlDebugCounters.servoLoopFresh = 0;
   controlDebugCounters.servoLoopStale = 0;
   controlDebugCounters.servoLoopHold = 0;
@@ -1458,6 +1465,7 @@ void maybePrintControlDebugStats() {
   Serial.print("rc_hz="); Serial.print(controlDebugCounters.rcPackets * scale, 1);
   Serial.print(" rc_failsafe_hz="); Serial.print(controlDebugCounters.rcFailsafePackets * scale, 1);
   Serial.print(" ekf_hz="); Serial.print(controlDebugCounters.ekfUpdates * scale, 1);
+  Serial.print(" imu_fail_hz="); Serial.print(controlDebugCounters.imuReadFailures * scale, 1);
   Serial.print(" att_tx_hz="); Serial.print(controlDebugCounters.attitudeTelemetryWrites * scale, 1);
   Serial.print(" gps_tx_hz="); Serial.print(controlDebugCounters.gpsTelemetryWrites * scale, 1);
   // Report the telemetry values as they are represented on the CRSF uplink.
@@ -1674,8 +1682,10 @@ void loop() {
     }
     lastControlUpdateUs = controlUpdateUs;
     
-    // Read sensor data from the IMU
-    IMU.readSensor();
+    // Read sensor data from the IMU.  A non-positive status means the I2C read
+    // failed and the cached values still hold the previous sample, so the
+    // fusion update below is skipped to avoid integrating stale IMU data.
+    const bool imuReadOk = (IMU.readSensor() > 0);
     // Swap X/Y axes to align IMU frame with aircraft frame
     float Ax = IMU.getAccelY_mss();
     float Ay = IMU.getAccelX_mss();
@@ -1741,7 +1751,15 @@ void loop() {
     Matrix ekfPreviousP = EKF_IMU.GetP();
     EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
     u64compuTime = micros();
-    if (!EKF_IMU.bUpdate(Y, U)) {
+    if (!imuReadOk) {
+      // Stale IMU sample: skip the fusion update entirely so the old gyro/accel
+      // are not integrated as current.  The EKF state is untouched (bUpdate was
+      // not called), so the last good attitude is held for this tick.
+      if (imuConsecutiveReadFailures < 0xFFFFu) {
+        ++imuConsecutiveReadFailures;
+      }
+      ++controlDebugCounters.imuReadFailures;
+    } else if (!EKF_IMU.bUpdate(Y, U)) {
       ++ekfConsecutiveFailures;
       if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
         quaternionData.vSetToZero();
@@ -1754,6 +1772,7 @@ void loop() {
       // Serial.println("Whoop ");
     } else {
       ekfConsecutiveFailures = 0;
+      imuConsecutiveReadFailures = 0;
     }
 #if FC_TIMING_INSTRUMENTATION
     recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));

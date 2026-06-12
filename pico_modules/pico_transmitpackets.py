@@ -246,6 +246,10 @@ class CRSFPacketProcessor(QObject):
         # thread.  Initialised to "now" so transmission has a brief grace period
         # before the first ``channel_update`` arrives after the port opens.
         self._last_channel_update_perf = time.perf_counter()
+        # Monotonic timestamp of the last *successful* serial write.  Never
+        # reset, so the GUI pre-flight check can confirm RC frames are actually
+        # reaching the radio instead of merely that a processor object exists.
+        self._tx_last_write_perf = None
         self._parameter_query_active = False
         self._link_diagnostics_enabled = False
         self._diag_window_start = time.perf_counter()
@@ -298,10 +302,57 @@ class CRSFPacketProcessor(QObject):
 
     @Slot(QSerialPort.SerialPortError)
     def _handle_serial_error(self, err):
-        """Log serial port errors, ignoring harmless NoError signals."""
+        """Log serial port errors, ignoring harmless NoError signals.
+
+        Fatal errors (the device was unplugged, vanished, or access was lost)
+        are followed by dropping the port so the transmit loop's throttled
+        reconnect path can re-open it.  Without this, ``is_connected()`` can stay
+        ``True`` after a USB glitch while every write fails, silently killing RC
+        output until the user manually reconnects.
+        """
         if err == QSerialPort.SerialPortError.NoError:
             return
-        logger.error("Serial error: %s (%s)", err, self.serial.errorString())
+        error_string = self.serial.errorString() if self.serial else ""
+        logger.error("Serial error: %s (%s)", err, error_string)
+
+        fatal_errors = (
+            QSerialPort.SerialPortError.ResourceError,
+            QSerialPort.SerialPortError.DeviceNotFoundError,
+            QSerialPort.SerialPortError.PermissionError,
+        )
+        if err in fatal_errors:
+            logger.warning(
+                "Dropping serial port after fatal error %s to allow reconnect", err
+            )
+            self._drop_serial_for_reconnect()
+
+    def _drop_serial_for_reconnect(self):
+        """Close and clear the serial port so the next transmit tick reconnects."""
+        serial = self.serial
+        self.serial = None
+        if serial is None:
+            return
+        try:
+            serial.readyRead.disconnect(self.read_serial_data)
+        except Exception:
+            pass
+        try:
+            if serial.isOpen():
+                serial.close()
+        except Exception:
+            logger.debug("Failed to close serial during reconnect drop", exc_info=True)
+
+    def seconds_since_last_tx(self):
+        """Return seconds since the last successful RC frame write.
+
+        Returns ``None`` when nothing has been sent yet.  Reads a plain float
+        written by the worker thread, so it is safe to call directly from the
+        GUI thread for the pre-flight transmission-health check.
+        """
+        last = getattr(self, "_tx_last_write_perf", None)
+        if last is None:
+            return None
+        return time.perf_counter() - last
 
     @Slot(result=bool)
     def is_connected(self):
@@ -687,11 +738,16 @@ class CRSFPacketProcessor(QObject):
                 if bytes_written == -1:
                     self._tx_write_errors += 1
                     self._diag_tx_errors += 1
-                    raise IOError(self.serial.errorString())
+                    error_string = self.serial.errorString()
+                    # Drop the port so the throttled reconnect path re-opens it;
+                    # a persistent write failure otherwise repeats every tick.
+                    self._drop_serial_for_reconnect()
+                    raise IOError(error_string)
                 now_perf = time.perf_counter()
                 if self._tx_debug_last_write_perf is not None:
                     self._tx_last_interval_ms = (now_perf - self._tx_debug_last_write_perf) * 1000.0
                 self._tx_debug_last_write_perf = now_perf
+                self._tx_last_write_perf = now_perf
                 self._tx_sent_packets += 1
                 self._tx_bytes_written += max(0, int(bytes_written))
                 self._diag_tx_sent += 1

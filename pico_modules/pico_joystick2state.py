@@ -54,13 +54,19 @@ class _SerialReader(QThread):
                     try:
                         raw = self.serial_connection.readline().decode("utf-8").strip()
                     except (serial.SerialException, OSError) as exc:
-                        self.error.emit(f"Serial connection error: {exc}")
+                        # close() closes the port to interrupt a blocking read;
+                        # suppress the resulting error so an intentional shutdown
+                        # is not reported as a joystick loss (which would trip the
+                        # cut-throttle failsafe during a normal port reselect).
+                        if not self._stop.is_set():
+                            self.error.emit(f"Serial connection error: {exc}")
                         break
                     self._queue_raw_line(raw)
                 else:
                     self.msleep(5)
         except Exception as exc:  # pragma: no cover - serial read errors
-            self.error.emit(f"Error reading serial data: {exc}")
+            if not self._stop.is_set():
+                self.error.emit(f"Error reading serial data: {exc}")
 
 
 class JoystickRawHandler(QObject):
@@ -129,10 +135,17 @@ class JoystickRawHandler(QObject):
     def close(self):
         """Stop background reading and close the serial connection."""
         self._stop.set()
+        # Close the port first so a blocking readline() returns promptly instead
+        # of stalling close() for up to the 1 s read timeout.  The reader thread
+        # treats the resulting exception as an intentional shutdown (it checks
+        # ``_stop``) and exits without emitting an error.
+        if self.serial_connection.is_open:
+            try:
+                self.serial_connection.close()
+            except Exception:
+                pass
         if self.reading_thread.isRunning():
             self.reading_thread.wait()
-        if self.serial_connection.is_open:
-            self.serial_connection.close()
 
     # ------------------------------------------------------------------
     # Data processing

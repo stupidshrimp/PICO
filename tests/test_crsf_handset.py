@@ -129,6 +129,41 @@ class DummyWritableSerial:
         return "dummy serial error"
 
 
+class _DummyConnectable:
+    """Stand-in for a Qt signal exposing connect/disconnect."""
+
+    def connect(self, *args):
+        pass
+
+    def disconnect(self, *args):
+        pass
+
+
+class DummyDroppableSerial:
+    """Writable serial whose write fails and that tracks close()."""
+
+    def __init__(self, write_result: int = -1):
+        self.write_result = write_result
+        self.writes = []
+        self.closed = False
+        self._open = True
+        self.readyRead = _DummyConnectable()
+
+    def write(self, payload: bytes) -> int:
+        self.writes.append(payload)
+        return self.write_result
+
+    def errorString(self) -> str:
+        return "device removed"
+
+    def isOpen(self) -> bool:
+        return self._open
+
+    def close(self):
+        self.closed = True
+        self._open = False
+
+
 def test_channel_update_only_refreshes_latest_channels():
     processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
     processor.error = DummySignal()
@@ -656,3 +691,76 @@ def test_golden_gs_to_fc_channel_packet_matches_contract_bytes():
     packet = bytes(processor.create_packet())
 
     assert packet.hex() == "c81816ac00dfc42133715243067ce0031ff8c0073ef0810f7c03"
+
+
+def test_seconds_since_last_tx_none_until_first_write():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    assert processor.seconds_since_last_tx() is None
+
+
+def test_send_current_packet_records_last_write_time():
+    serial = DummyWritableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor._channel_stale_timeout_s = 0.0  # disable staleness watchdog
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    assert processor.seconds_since_last_tx() is None
+
+    assert processor.send_current_packet() == "Good"
+
+    age = processor.seconds_since_last_tx()
+    assert age is not None and age >= 0.0
+
+
+def test_write_failure_drops_serial_for_reconnect():
+    # A failed write must clear self.serial so the throttled reconnect path
+    # re-opens the port; otherwise TX silently dies after a USB glitch.
+    serial = DummyDroppableSerial(write_result=-1)
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor._channel_stale_timeout_s = 0.0
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert str(result).startswith("Error")
+    assert processor.serial is None
+    assert serial.closed is True
+    assert processor._tx_write_errors == 1
+    assert processor.error.emitted  # failure surfaced to the GUI
+
+
+def test_handle_serial_error_drops_port_on_resource_error():
+    from PySide6.QtSerialPort import QSerialPort
+
+    serial = DummyDroppableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = serial
+
+    processor._handle_serial_error(QSerialPort.SerialPortError.ResourceError)
+
+    assert processor.serial is None
+    assert serial.closed is True
+
+
+def test_handle_serial_error_keeps_port_on_nonfatal_error():
+    from PySide6.QtSerialPort import QSerialPort
+
+    serial = DummyDroppableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = serial
+
+    # A transient write/read-class error is logged but must not drop the port.
+    processor._handle_serial_error(QSerialPort.SerialPortError.WriteError)
+
+    assert processor.serial is serial
+    assert serial.closed is False
