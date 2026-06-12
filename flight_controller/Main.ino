@@ -40,15 +40,31 @@
 // Define additional hardware serial ports if the core does not provide them.
 // These mappings correspond to the STM32F405 feather board where
 // USART3 is on PB11 (RX) / PB10 (TX) and USART6 is on PC7 (RX) / PC6 (TX).
-// The core already defines Serial3/Serial6 when the underlying hardware
-// exposes USART3/USART6; avoid redefining them to prevent link errors.
+// The core already defines Serial3 when the underlying hardware exposes USART3;
+// avoid redefining it to prevent link errors.
 #if !defined(USART3)
 HardwareSerial Serial3(PB11, PB10);
 #endif
 
-#if !defined(USART6)
-HardwareSerial Serial6(PC7, PC6);
-#endif
+// Serial port mapping for the STM32F405 Feather flight controller:
+//   USART3 -> CRSF receiver/telemetry on PB11 (RX) / PB10 (TX)
+//   USART6 -> M8N GPS               on PC7  (RX) / PC6  (TX)
+//
+// IMPORTANT: `USART3`/`USART6` are CMSIS peripheral macros that are ALWAYS
+// defined on the STM32F405 (the chip physically has those peripherals),
+// regardless of which Arduino HardwareSerial objects exist or which pins they
+// use. The previous `#if !defined(USART6)` guard was therefore always false, so
+// the explicit PC7/PC6 pin mapping was silently compiled out and the GPS UART
+// fell back to whatever the core's default `Serial6` pins are -- which are NOT
+// PC7/PC6 on this board, so the M8N transmitted into pins nothing was reading
+// and the GPS appeared dead.
+//
+// CRSF keeps using the core-provided `Serial3` (its default USART3 pins already
+// match PB11/PB10 here). The GPS gets a dedicated, uniquely named HardwareSerial
+// constructed with explicit pins so it is ALWAYS bound to USART6 on PC7/PC6,
+// independent of the core's defaults and with no risk of clashing with a
+// core-provided `Serial6`.
+HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 
 // ----- IMU & EKF Variables -----
 #define IMU_ACC_Z0  (1)
@@ -851,8 +867,8 @@ void serviceCrsfLink() {
 }
 
 // ----- GPS -----
-// Instantiate the GPS object on Serial6
-M8N gps(Serial6);
+// Instantiate the GPS object on gpsSerial
+M8N gps(gpsSerial);
 
 // Global variables to store the latest GPS data
 double latestLatitude  = 0;
@@ -1310,9 +1326,9 @@ void gpsDiagPrintParsedSentence(char *sentence) {
 void gpsDiagSendPing() {
   static const uint8_t ubxMonVerPoll[] = {0xB5, 0x62, 0x0A, 0x04, 0x00, 0x00, 0x0E, 0x34};
   static const char nmeaPubxPositionPoll[] = "$PUBX,00*33\r\n";
-  Serial6.write(ubxMonVerPoll, sizeof(ubxMonVerPoll));
-  Serial6.print(nmeaPubxPositionPoll);
-  Serial6.flush();
+  gpsSerial.write(ubxMonVerPoll, sizeof(ubxMonVerPoll));
+  gpsSerial.print(nmeaPubxPositionPoll);
+  gpsSerial.flush();
 
   ++gpsDiagPingCount;
   gpsDiagBytesAtLastPing = gpsDiagByteCount;
@@ -1358,14 +1374,14 @@ void runGpsDiagnosticDebug() {
   Serial.print("GPSDIAG PC7/USART6 RX idle level before UART start: ");
   Serial.println(rxIdleLevel == HIGH ? "HIGH (normal UART idle if GPS TX is connected/powered)" : "LOW (possible short, swapped wire, or unpowered GPS)");
 
-  Serial6.begin(FC_GPS_DIAGNOSTIC_BAUD);
+  gpsSerial.begin(FC_GPS_DIAGNOSTIC_BAUD);
   gpsDiagLastByteMs = millis();
   gpsDiagLastStatusMs = millis();
   gpsDiagSendPing();
 
   while (true) {
-    while (Serial6.available() > 0) {
-      const int rawByte = Serial6.read();
+    while (gpsSerial.available() > 0) {
+      const int rawByte = gpsSerial.read();
       if (rawByte < 0) {
         continue;
       }
@@ -1589,8 +1605,8 @@ void setup() {
     latestRcChannels.value[i] = RC_INPUT_CENTER;
   }
 
-  // ----- Initialize GPS (Serial6) -----
-  Serial6.begin(9600);
+  // ----- Initialize GPS (gpsSerial) -----
+  gpsSerial.begin(9600);
   delay(1000);
   Serial.println("GPS module initialized on USART6.");
 
