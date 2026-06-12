@@ -152,6 +152,15 @@ def load_config(path: str = "config.json"):
         )
     except (TypeError, ValueError):
         crsf_config["channel_stale_timeout_s"] = 2.0
+    # Normalize the GUI control-poll interval so a malformed value (null or a
+    # non-numeric string) cannot crash the Configuration page or the transmit
+    # timer when it is later coerced to an int.
+    try:
+        crsf_config["channel_update_interval"] = max(
+            1, int(float(crsf_config.get("channel_update_interval", 8)))
+        )
+    except (TypeError, ValueError):
+        crsf_config["channel_update_interval"] = 8
 
     # Remove legacy GS-side throttle PID/stale-timeout keys.  The FC owns these
     # safety-critical control-loop values in flight_controller/Main.ino.

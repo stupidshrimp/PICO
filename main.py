@@ -3272,6 +3272,43 @@ class MainWindow(QMainWindow):
         )
         self.play_sound(sound_name)
 
+    def _config_info_icon(self, tooltip: str) -> QLabel:
+        """Return a small circled-i badge that shows ``tooltip`` on hover.
+
+        Wrapping the text in a paragraph tag forces Qt to treat the tooltip as
+        rich text, which makes ``QToolTip`` word-wrap longer descriptions instead
+        of rendering them on a single very wide line.
+        """
+        icon = QLabel("ⓘ")  # circled latin small letter i
+        icon.setToolTip(f"<p>{tooltip}</p>")
+        icon.setCursor(Qt.CursorShape.WhatsThisCursor)
+        icon.setStyleSheet(
+            "QLabel { color: rgb(120, 170, 255); font-weight: bold; padding: 0px 4px; }"
+        )
+        return icon
+
+    def _update_channel_poll_label(self, interval_ms: int) -> None:
+        """Refresh the approximate-Hz readout next to the GS poll interval."""
+        interval = max(1, int(interval_ms))
+        if hasattr(self, "channel_update_interval_value"):
+            self.channel_update_interval_value.setText(
+                f"≈ {1000.0 / interval:.0f} Hz"
+            )
+
+    def _safe_channel_update_interval(self, default: int = 8) -> int:
+        """Return the GS poll interval in ms, clamped to the spin box range.
+
+        Guards against a malformed ``channel_update_interval`` (null or a
+        non-numeric string) so building the Configuration page cannot raise
+        before the user has a chance to fix their config.
+        """
+        value = self._safe_float(
+            self.crsf_cfg.get("channel_update_interval"), default
+        )
+        if value is None:
+            value = default
+        return int(max(1, min(100, value)))
+
     def setup_configuration_page(self):
         """Create configuration page for selecting settings."""
         self.ui.configuration_page = QWidget()
@@ -3420,9 +3457,19 @@ class MainWindow(QMainWindow):
 
         # Radiofrequency settings
         rf_layout, self.rf_status = add_section("Radiofrequency Settings")
-        rf_layout.addWidget(
+        rf_baud_row = QHBoxLayout()
+        rf_baud_row.addWidget(
             QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
         )
+        rf_baud_row.addWidget(
+            self._config_info_icon(
+                "Serial baud rate for the CRSF radio link. Fixed to match the "
+                "ExpressLRS module; change it in config.json only if your hardware "
+                "uses a different rate."
+            )
+        )
+        rf_baud_row.addStretch()
+        rf_layout.addLayout(rf_baud_row)
         rf_layout.addWidget(
             QLabel(
                 "Select the attitude/RC packet rate to match the ELRS link configuration."
@@ -3433,6 +3480,12 @@ class MainWindow(QMainWindow):
         self.update_pico_rate_label()
         rf_port_row = QHBoxLayout()
         rf_port_row.addWidget(QLabel("Port"))
+        rf_port_row.addWidget(
+            self._config_info_icon(
+                "Serial port for the ExpressLRS/CRSF radio module that carries the "
+                "RC uplink and telemetry downlink."
+            )
+        )
         self.elrs_port_combo = QComboBox()
         self.elrs_port_combo.addItems(ports)
         rf_port_row.addWidget(self.elrs_port_combo)
@@ -3440,6 +3493,13 @@ class MainWindow(QMainWindow):
 
         rate_row = QHBoxLayout()
         rate_row.addWidget(QLabel("Attitude/RC Packet Rate"))
+        rate_row.addWidget(
+            self._config_info_icon(
+                "RF frame rate at which the CRSF worker transmits RC packets "
+                "(100/250/500 Hz). Must match the ExpressLRS link configuration. "
+                "This is the actual over-the-air control rate."
+            )
+        )
         self.packet_rate_combo = QComboBox()
         for rate_hz in ALLOWED_ATTITUDE_PACKET_RATES_HZ:
             self.packet_rate_combo.addItem(f"{rate_hz} Hz", rate_hz)
@@ -3449,15 +3509,74 @@ class MainWindow(QMainWindow):
         self.packet_rate_combo.setCurrentText(f"{configured_rate} Hz")
         rate_row.addWidget(self.packet_rate_combo)
         rf_layout.addLayout(rate_row)
+
+        poll_row = QHBoxLayout()
+        poll_row.addWidget(QLabel("GS control poll interval"))
+        poll_row.addWidget(
+            self._config_info_icon(
+                "How often the ground station samples the joystick/control inputs "
+                "and pushes fresh channel values to the CRSF worker. The worker "
+                "repeats the latest values at the packet rate above, so this does "
+                "NOT set the RF frame rate — a lower interval just means fresher "
+                "stick input feeding each transmitted frame."
+            )
+        )
+        poll_interval = self._safe_channel_update_interval()
+        self.channel_update_interval_spin = QSpinBox()
+        self.channel_update_interval_spin.setRange(1, 100)
+        self.channel_update_interval_spin.setSuffix(" ms")
+        self.channel_update_interval_spin.setValue(poll_interval)
+        poll_row.addWidget(self.channel_update_interval_spin)
+        self.channel_update_interval_value = QLabel()
+        poll_row.addWidget(self.channel_update_interval_value)
+        self._update_channel_poll_label(poll_interval)
+        rf_layout.addLayout(poll_row)
+
+        stale_row = QHBoxLayout()
+        stale_row.addWidget(QLabel("RC stale timeout"))
+        stale_row.addWidget(
+            self._config_info_icon(
+                "If the control pipeline stops refreshing channels for longer than "
+                "this, the CRSF worker stops transmitting instead of replaying the "
+                "last command, letting the flight controller's own packet-age "
+                "failsafe take over. Set to 0 to disable this ground-side watchdog."
+            )
+        )
+        self.channel_stale_timeout_spin = QDoubleSpinBox()
+        self.channel_stale_timeout_spin.setRange(0.0, 10.0)
+        self.channel_stale_timeout_spin.setDecimals(1)
+        self.channel_stale_timeout_spin.setSingleStep(0.5)
+        self.channel_stale_timeout_spin.setSuffix(" s")
+        self.channel_stale_timeout_spin.setValue(
+            float(self.crsf_cfg.get("channel_stale_timeout_s", 2.0))
+        )
+        stale_row.addWidget(self.channel_stale_timeout_spin)
+        rf_layout.addLayout(stale_row)
         add_separator()
 
         # Control system settings
         control_layout, self.control_status = add_section("Control System Settings")
-        control_layout.addWidget(
+        control_baud_row = QHBoxLayout()
+        control_baud_row.addWidget(
             QLabel(f"Baud rate: {self.joystick_cfg.get('baudrate', 'N/A')}")
         )
+        control_baud_row.addWidget(
+            self._config_info_icon(
+                "Serial baud rate for the joystick/control-input device. Fixed to "
+                "match the controller firmware; change it in config.json only if "
+                "your hardware uses a different rate."
+            )
+        )
+        control_baud_row.addStretch()
+        control_layout.addLayout(control_baud_row)
         control_port_row = QHBoxLayout()
         control_port_row.addWidget(QLabel("Port"))
+        control_port_row.addWidget(
+            self._config_info_icon(
+                "Serial port for the joystick/control-input device (for example the "
+                "custom Hall-effect stick controller)."
+            )
+        )
         self.control_port_combo = QComboBox()
         self.control_port_combo.addItems(ports)
         control_port_row.addWidget(self.control_port_combo)
@@ -3465,6 +3584,12 @@ class MainWindow(QMainWindow):
 
         dz_row = QHBoxLayout()
         dz_row.addWidget(QLabel("Deadzone (%)"))
+        dz_row.addWidget(
+            self._config_info_icon(
+                "Percentage of stick travel around center that is ignored, "
+                "preventing drift or jitter from a noisy resting position."
+            )
+        )
         self.deadzone_slider = QSlider(Qt.Horizontal)
         self.deadzone_slider.setRange(0, 100)
         self.deadzone_slider.setValue(self.joystick_cfg.get("deadzone", 0))
@@ -3475,6 +3600,12 @@ class MainWindow(QMainWindow):
 
         sens_row = QHBoxLayout()
         sens_row.addWidget(QLabel("Sensitivity (%)"))
+        sens_row.addWidget(
+            self._config_info_icon(
+                "Scales how much commanded deflection you get per unit of stick "
+                "movement. 100% is 1:1; higher is more aggressive."
+            )
+        )
         self.sensitivity_slider = QSlider(Qt.Horizontal)
         self.sensitivity_slider.setRange(1, 200)
         self.sensitivity_slider.setValue(self.joystick_cfg.get("sensitivity", 100))
@@ -3485,6 +3616,11 @@ class MainWindow(QMainWindow):
 
         yaw_sens_row = QHBoxLayout()
         yaw_sens_row.addWidget(QLabel("Yaw sensitivity (%)"))
+        yaw_sens_row.addWidget(
+            self._config_info_icon(
+                "Same as sensitivity but applied only to the yaw (rudder) axis."
+            )
+        )
         self.yaw_sensitivity_slider = QSlider(Qt.Horizontal)
         self.yaw_sensitivity_slider.setRange(1, 200)
         self.yaw_sensitivity_slider.setValue(
@@ -3499,6 +3635,12 @@ class MainWindow(QMainWindow):
 
         smooth_row = QHBoxLayout()
         smooth_row.addWidget(QLabel("Smoothing (%)"))
+        smooth_row.addWidget(
+            self._config_info_icon(
+                "Low-pass filter on raw stick input. Higher values feel smoother "
+                "but add control latency."
+            )
+        )
         self.smoothing_slider = QSlider(Qt.Horizontal)
         self.smoothing_slider.setRange(0, 100)
         self.smoothing_slider.setValue(self.joystick_cfg.get("smoothing", 0))
@@ -3509,6 +3651,13 @@ class MainWindow(QMainWindow):
 
         fbw_roll_row = QHBoxLayout()
         fbw_roll_row.addWidget(QLabel("FBW max roll (deg)"))
+        fbw_roll_row.addWidget(
+            self._config_info_icon(
+                "Maximum bank angle the ground station will command in Fly-By-Wire "
+                "mode. The flight controller still clamps at its own 80° safety "
+                "envelope."
+            )
+        )
         self.fbw_roll_limit_spin = QDoubleSpinBox()
         self.fbw_roll_limit_spin.setRange(0.0, self.FBW_FC_MAX_ROLL_ANGLE_DEG)
         self.fbw_roll_limit_spin.setDecimals(1)
@@ -3519,6 +3668,12 @@ class MainWindow(QMainWindow):
 
         fbw_pitch_row = QHBoxLayout()
         fbw_pitch_row.addWidget(QLabel("FBW max pitch (deg)"))
+        fbw_pitch_row.addWidget(
+            self._config_info_icon(
+                "Maximum pitch angle commanded in Fly-By-Wire mode, clamped again "
+                "by the flight controller's own safety envelope."
+            )
+        )
         self.fbw_pitch_limit_spin = QDoubleSpinBox()
         self.fbw_pitch_limit_spin.setRange(0.0, self.FBW_FC_MAX_PITCH_ANGLE_DEG)
         self.fbw_pitch_limit_spin.setDecimals(1)
@@ -3529,6 +3684,12 @@ class MainWindow(QMainWindow):
 
         auto_throttle_row = QHBoxLayout()
         auto_throttle_row.addWidget(QLabel("Auto throttle target airspeed (mph)"))
+        auto_throttle_row.addWidget(
+            self._config_info_icon(
+                "Target airspeed sent to the flight controller on CH3 when Auto "
+                "Throttle is engaged."
+            )
+        )
         self.auto_throttle_target_spin = QDoubleSpinBox()
         self.auto_throttle_target_spin.setRange(0.0, self.auto_throttle_speed_channel_max_mph)
         self.auto_throttle_target_spin.setDecimals(1)
@@ -3543,6 +3704,12 @@ class MainWindow(QMainWindow):
         )
         battery_row = QHBoxLayout()
         battery_row.addWidget(QLabel("Battery pack"))
+        battery_row.addWidget(
+            self._config_info_icon(
+                "Cell count of the flight battery. Sets the voltage thresholds used "
+                "by the battery diagnostics panel and low-battery warnings."
+            )
+        )
         self.battery_type_combo = QComboBox()
         self.battery_type_combo.addItems(["2s", "3s", "4s", "5s"])
         battery_row.addWidget(self.battery_type_combo)
@@ -3554,17 +3721,34 @@ class MainWindow(QMainWindow):
         map_layout, _ = add_section("GPS Map Settings", show_status=False)
         self.map_enabled_checkbox = QCheckBox("Enable offline map rendering")
         self.map_enabled_checkbox.setChecked(self.map_cfg.get("enabled", True))
-        map_layout.addWidget(self.map_enabled_checkbox)
+        map_enabled_row = QHBoxLayout()
+        map_enabled_row.addWidget(self.map_enabled_checkbox)
+        map_enabled_row.addWidget(
+            self._config_info_icon(
+                "Render the offline GPS map. Disable if map tiles are unavailable "
+                "or to save resources."
+            )
+        )
+        map_enabled_row.addStretch()
+        map_layout.addLayout(map_enabled_row)
 
         follow_row = QHBoxLayout()
         self.map_follow_checkbox = QCheckBox("Follow GPS position")
         self.map_follow_checkbox.setChecked(self._gps_follow_enabled)
         follow_row.addWidget(self.map_follow_checkbox)
+        follow_row.addWidget(
+            self._config_info_icon(
+                "Keep the map centered on the aircraft as new GPS fixes arrive."
+            )
+        )
         follow_row.addStretch()
         map_layout.addLayout(follow_row)
 
         zoom_row = QHBoxLayout()
         zoom_row.addWidget(QLabel("Default zoom"))
+        zoom_row.addWidget(
+            self._config_info_icon("Initial map zoom level applied on startup.")
+        )
         self.map_zoom_spin = QSpinBox()
         self.map_zoom_spin.setRange(self._map_min_zoom, self._map_max_zoom)
         self.map_zoom_spin.setValue(int(self.map_cfg.get("zoom", self._map_initial_zoom)))
@@ -3574,6 +3758,12 @@ class MainWindow(QMainWindow):
 
         center_row = QHBoxLayout()
         center_row.addWidget(QLabel("Default center"))
+        center_row.addWidget(
+            self._config_info_icon(
+                "Latitude/longitude the map centers on before a GPS fix is "
+                "available."
+            )
+        )
         self.map_lat_spin = QDoubleSpinBox()
         self.map_lat_spin.setRange(-90.0, 90.0)
         self.map_lat_spin.setDecimals(6)
@@ -3631,6 +3821,12 @@ class MainWindow(QMainWindow):
 
         airborne_takeoff_row = QHBoxLayout()
         airborne_takeoff_row.addWidget(QLabel("Airborne when AGL >"))
+        airborne_takeoff_row.addWidget(
+            self._config_info_icon(
+                "Above-ground altitude that, once exceeded, marks the aircraft as "
+                "airborne so stall and low-altitude alarms become armed."
+            )
+        )
         self.airborne_takeoff_alt_spin = QDoubleSpinBox()
         self.airborne_takeoff_alt_spin.setRange(0.0, 200.0)
         self.airborne_takeoff_alt_spin.setDecimals(1)
@@ -3644,6 +3840,12 @@ class MainWindow(QMainWindow):
 
         airborne_landed_row = QHBoxLayout()
         airborne_landed_row.addWidget(QLabel("Grounded below"))
+        airborne_landed_row.addWidget(
+            self._config_info_icon(
+                "Airspeed and altitude below which the aircraft is considered "
+                "landed, which suppresses in-flight alarms during ground handling."
+            )
+        )
         self.airborne_landed_speed_spin = QDoubleSpinBox()
         self.airborne_landed_speed_spin.setRange(0.0, 50.0)
         self.airborne_landed_speed_spin.setDecimals(1)
@@ -3664,8 +3866,92 @@ class MainWindow(QMainWindow):
         airborne_landed_row.addWidget(self.airborne_landed_alt_spin)
         warn_layout.addLayout(airborne_landed_row)
 
+        takeoff_mult_row = QHBoxLayout()
+        takeoff_mult_row.addWidget(QLabel("Takeoff airspeed = stall ×"))
+        takeoff_mult_row.addWidget(
+            self._config_info_icon(
+                "The takeoff airspeed threshold is the stall warning speed "
+                "multiplied by this factor; reaching it helps confirm the aircraft "
+                "is actually flying before latching the airborne state."
+            )
+        )
+        self.takeoff_airspeed_multiplier_spin = QDoubleSpinBox()
+        self.takeoff_airspeed_multiplier_spin.setRange(1.0, 3.0)
+        self.takeoff_airspeed_multiplier_spin.setDecimals(2)
+        self.takeoff_airspeed_multiplier_spin.setSingleStep(0.05)
+        self.takeoff_airspeed_multiplier_spin.setValue(
+            self._airborne_config_value("takeoff_airspeed_multiplier", 1.2)
+        )
+        takeoff_mult_row.addWidget(self.takeoff_airspeed_multiplier_spin)
+        warn_layout.addLayout(takeoff_mult_row)
+
+        takeoff_hold_row = QHBoxLayout()
+        takeoff_hold_row.addWidget(QLabel("Takeoff hold"))
+        takeoff_hold_row.addWidget(
+            self._config_info_icon(
+                "Airborne conditions must persist this long before the aircraft is "
+                "latched as airborne, debouncing brief altitude/airspeed spikes."
+            )
+        )
+        self.takeoff_hold_spin = QDoubleSpinBox()
+        self.takeoff_hold_spin.setRange(0.0, 10.0)
+        self.takeoff_hold_spin.setDecimals(1)
+        self.takeoff_hold_spin.setSingleStep(0.5)
+        self.takeoff_hold_spin.setSuffix(" s")
+        self.takeoff_hold_spin.setValue(
+            self._airborne_config_value("takeoff_hold_s", 2.0)
+        )
+        takeoff_hold_row.addWidget(self.takeoff_hold_spin)
+        warn_layout.addLayout(takeoff_hold_row)
+
+        landing_hold_row = QHBoxLayout()
+        landing_hold_row.addWidget(QLabel("Landing hold"))
+        landing_hold_row.addWidget(
+            self._config_info_icon(
+                "Landed conditions must persist this long before the aircraft is "
+                "latched as landed, preventing a brief touch-and-go from clearing "
+                "the airborne state."
+            )
+        )
+        self.landing_hold_spin = QDoubleSpinBox()
+        self.landing_hold_spin.setRange(0.0, 30.0)
+        self.landing_hold_spin.setDecimals(1)
+        self.landing_hold_spin.setSingleStep(0.5)
+        self.landing_hold_spin.setSuffix(" s")
+        self.landing_hold_spin.setValue(
+            self._airborne_config_value("landing_hold_s", 5.0)
+        )
+        landing_hold_row.addWidget(self.landing_hold_spin)
+        warn_layout.addLayout(landing_hold_row)
+
+        gps_fresh_row = QHBoxLayout()
+        gps_fresh_row.addWidget(QLabel("GPS fresh timeout"))
+        gps_fresh_row.addWidget(
+            self._config_info_icon(
+                "GPS data older than this is treated as stale by the airborne "
+                "detector and the sink-rate estimator, so bursty GPS delivery "
+                "cannot create a false descent-rate emergency."
+            )
+        )
+        self.gps_fresh_timeout_spin = QDoubleSpinBox()
+        self.gps_fresh_timeout_spin.setRange(0.0, 10.0)
+        self.gps_fresh_timeout_spin.setDecimals(1)
+        self.gps_fresh_timeout_spin.setSingleStep(0.5)
+        self.gps_fresh_timeout_spin.setSuffix(" s")
+        self.gps_fresh_timeout_spin.setValue(
+            self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        )
+        gps_fresh_row.addWidget(self.gps_fresh_timeout_spin)
+        warn_layout.addLayout(gps_fresh_row)
+
         stall_speed_row = QHBoxLayout()
         stall_speed_row.addWidget(QLabel("Airspeed <"))
+        stall_speed_row.addWidget(
+            self._config_info_icon(
+                "Stall alarm fires when airspeed drops below this while the aircraft "
+                "is above the stall altitude below."
+            )
+        )
         self.stall_speed_slider = QSlider(Qt.Horizontal)
         self.stall_speed_slider.setRange(0, 200)
         self.stall_speed_slider.setValue(
@@ -3678,6 +3964,12 @@ class MainWindow(QMainWindow):
 
         stall_alt_row = QHBoxLayout()
         stall_alt_row.addWidget(QLabel("Altitude >"))
+        stall_alt_row.addWidget(
+            self._config_info_icon(
+                "Minimum altitude required before the stall (low-airspeed) alarm is "
+                "allowed to sound."
+            )
+        )
         self.stall_alt_slider = QSlider(Qt.Horizontal)
         self.stall_alt_slider.setRange(0, 1000)
         self.stall_alt_slider.setValue(
@@ -3691,6 +3983,12 @@ class MainWindow(QMainWindow):
         warn_layout.addWidget(QLabel("Altitude Alarm"))
         alt_alarm_alt_row = QHBoxLayout()
         alt_alarm_alt_row.addWidget(QLabel("Altitude <"))
+        alt_alarm_alt_row.addWidget(
+            self._config_info_icon(
+                "Low-altitude alarm fires when altitude drops below this while "
+                "airspeed is above the threshold below."
+            )
+        )
         self.alt_alarm_alt_slider = QSlider(Qt.Horizontal)
         self.alt_alarm_alt_slider.setRange(0, 1000)
         self.alt_alarm_alt_slider.setValue(
@@ -3703,6 +4001,11 @@ class MainWindow(QMainWindow):
 
         alt_alarm_speed_row = QHBoxLayout()
         alt_alarm_speed_row.addWidget(QLabel("Airspeed >"))
+        alt_alarm_speed_row.addWidget(
+            self._config_info_icon(
+                "Airspeed above which the low-altitude alarm is allowed to sound."
+            )
+        )
         self.alt_alarm_speed_slider = QSlider(Qt.Horizontal)
         self.alt_alarm_speed_slider.setRange(0, 200)
         self.alt_alarm_speed_slider.setValue(
@@ -3715,6 +4018,12 @@ class MainWindow(QMainWindow):
 
         roll_row = QHBoxLayout()
         roll_row.addWidget(QLabel("Roll |>|"))
+        roll_row.addWidget(
+            self._config_info_icon(
+                "Bank-angle alarm fires when absolute roll exceeds this many "
+                "degrees."
+            )
+        )
         self.roll_angle_slider = QSlider(Qt.Horizontal)
         self.roll_angle_slider.setRange(0, 180)
         self.roll_angle_slider.setValue(
@@ -3728,6 +4037,12 @@ class MainWindow(QMainWindow):
         warn_layout.addWidget(QLabel("Sink Rate Alarm"))
         sink_rate_row = QHBoxLayout()
         sink_rate_row.addWidget(QLabel("Descent rate >"))
+        sink_rate_row.addWidget(
+            self._config_info_icon(
+                "Sink-rate alarm fires when the estimated descent rate exceeds this "
+                "value."
+            )
+        )
         self.sink_rate_threshold_spin = QDoubleSpinBox()
         self.sink_rate_threshold_spin.setRange(0.0, 200.0)
         self.sink_rate_threshold_spin.setDecimals(1)
@@ -3755,6 +4070,12 @@ class MainWindow(QMainWindow):
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
         self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
         self.packet_rate_combo.currentIndexChanged.connect(self.on_packet_rate_changed)
+        self.channel_update_interval_spin.valueChanged.connect(
+            self.on_channel_update_interval_changed
+        )
+        self.channel_stale_timeout_spin.valueChanged.connect(
+            self.on_channel_stale_timeout_changed
+        )
         self.deadzone_slider.valueChanged.connect(self.on_deadzone_changed)
         self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
         self.yaw_sensitivity_slider.valueChanged.connect(
@@ -3774,6 +4095,14 @@ class MainWindow(QMainWindow):
         )
         self.airborne_landed_alt_spin.valueChanged.connect(
             self.on_airborne_landed_alt_changed
+        )
+        self.takeoff_airspeed_multiplier_spin.valueChanged.connect(
+            self.on_takeoff_airspeed_multiplier_changed
+        )
+        self.takeoff_hold_spin.valueChanged.connect(self.on_takeoff_hold_changed)
+        self.landing_hold_spin.valueChanged.connect(self.on_landing_hold_changed)
+        self.gps_fresh_timeout_spin.valueChanged.connect(
+            self.on_gps_fresh_timeout_changed
         )
         self.stall_speed_slider.valueChanged.connect(self.on_stall_speed_changed)
         self.stall_alt_slider.valueChanged.connect(self.on_stall_alt_changed)
@@ -4516,6 +4845,26 @@ class MainWindow(QMainWindow):
             f"PICO writing RC packets at {actual_freq:.0f} Hz."
         )
 
+    def on_channel_update_interval_changed(self, value: int):
+        interval = max(1, int(value))
+        self.crsf_cfg["channel_update_interval"] = interval
+        self._update_channel_poll_label(interval)
+        # Re-arm the GUI transmit timer live so the new poll rate takes effect
+        # immediately when transmission is already running.
+        if self.transmit_timer.isActive():
+            self.transmit_timer.start(interval)
+        save_config(self.config)
+
+    def on_channel_stale_timeout_changed(self, value: float):
+        timeout = max(0.0, float(value))
+        self.crsf_cfg["channel_stale_timeout_s"] = timeout
+        # The worker reads this attribute defensively via getattr, so updating it
+        # live applies the new watchdog window without a reconnect.
+        processor = getattr(self, "crsf_processor", None)
+        if processor is not None:
+            processor._channel_stale_timeout_s = timeout
+        save_config(self.config)
+
     def on_deadzone_changed(self, value: int):
         self.joystick_cfg["deadzone"] = value
         self.deadzone_value_label.setText(str(value))
@@ -4596,6 +4945,25 @@ class MainWindow(QMainWindow):
     def on_airborne_landed_alt_changed(self, value: float):
         self.airborne_cfg["landed_altitude_ft"] = float(value)
         self._airborne_landing_start_time = None
+        save_config(self.config)
+
+    def on_takeoff_airspeed_multiplier_changed(self, value: float):
+        self.airborne_cfg["takeoff_airspeed_multiplier"] = float(value)
+        self._airborne_takeoff_start_time = None
+        save_config(self.config)
+
+    def on_takeoff_hold_changed(self, value: float):
+        self.airborne_cfg["takeoff_hold_s"] = float(value)
+        self._airborne_takeoff_start_time = None
+        save_config(self.config)
+
+    def on_landing_hold_changed(self, value: float):
+        self.airborne_cfg["landing_hold_s"] = float(value)
+        self._airborne_landing_start_time = None
+        save_config(self.config)
+
+    def on_gps_fresh_timeout_changed(self, value: float):
+        self.airborne_cfg["gps_fresh_timeout_s"] = float(value)
         save_config(self.config)
 
     def on_stall_speed_changed(self, value: int):
