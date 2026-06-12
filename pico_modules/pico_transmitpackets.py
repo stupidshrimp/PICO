@@ -120,6 +120,14 @@ class CRSFPacketProcessor(QObject):
     CRSF_SYNC = 0xC8
     TELEMETRY_SYNC = 0xEA  # Start byte used for telemetry frames
 
+    # Maximum age of the last fresh channel update before the pacer stops
+    # writing RC frames.  The GUI thread refreshes channels every few
+    # milliseconds; if it stalls, repeating the last channels would keep the
+    # FC's link alive with stale commands and defeat its packet-age failsafe.
+    # Stopping transmission lets the FC's own RC-fresh timeout (250 ms) engage.
+    # Kept well above normal GUI jitter so a momentary hiccup cannot false-trip.
+    RC_CHANNEL_STALE_TIMEOUT_S = 0.2
+
     CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA
     CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE
     CRSF_ADDRESS_ELRS_LUA = 0xEF
@@ -156,6 +164,7 @@ class CRSFPacketProcessor(QObject):
         packet_interval_ms=4,
         transmission_enabled=True,
         raw_serial_debug_enabled=False,
+        channel_stale_timeout_s=None,
     ):
         """Initialize the CRSFPacketProcessor.
 
@@ -203,6 +212,12 @@ class CRSFPacketProcessor(QObject):
         self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
         self._tx_enabled = bool(transmission_enabled)
         self._raw_serial_debug_enabled = bool(raw_serial_debug_enabled)
+        if channel_stale_timeout_s is None:
+            channel_stale_timeout_s = self.RC_CHANNEL_STALE_TIMEOUT_S
+        try:
+            self._channel_stale_timeout_s = max(0.0, float(channel_stale_timeout_s))
+        except (TypeError, ValueError):
+            self._channel_stale_timeout_s = self.RC_CHANNEL_STALE_TIMEOUT_S
         self._tx_pacer = None
         # Buffer for incoming telemetry bytes.  Telemetry packets can be
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
@@ -224,8 +239,13 @@ class CRSFPacketProcessor(QObject):
         self._tx_sent_packets = 0
         self._tx_write_errors = 0
         self._tx_bytes_written = 0
+        self._tx_stale_skips = 0
         self._tx_last_interval_ms = None
         self._tx_last_bytes_to_write = 0
+        # Monotonic timestamp of the last fresh channel update from the GUI
+        # thread.  Initialised to "now" so transmission has a brief grace period
+        # before the first ``channel_update`` arrives after the port opens.
+        self._last_channel_update_perf = time.perf_counter()
         self._parameter_query_active = False
         self._link_diagnostics_enabled = False
         self._diag_window_start = time.perf_counter()
@@ -411,6 +431,23 @@ class CRSFPacketProcessor(QObject):
         if self._tx_enabled and not self._tx_pacer.isActive():
             self._tx_pacer.start()
 
+    def _mark_channels_fresh(self):
+        """Record that fresh channel data arrived from the control pipeline."""
+        self._last_channel_update_perf = time.perf_counter()
+
+    def _channels_are_stale(self):
+        """Return ``True`` when the last fresh channel update is older than the
+        watchdog timeout.  A non-positive timeout disables the watchdog."""
+        timeout = getattr(
+            self, "_channel_stale_timeout_s", self.RC_CHANNEL_STALE_TIMEOUT_S
+        )
+        if timeout <= 0.0:
+            return False
+        last = getattr(self, "_last_channel_update_perf", None)
+        if last is None:
+            return False
+        return (time.perf_counter() - last) > timeout
+
     @Slot(int)
     def set_packet_interval(self, interval_ms):
         """Update the worker-thread transmit cadence."""
@@ -432,6 +469,9 @@ class CRSFPacketProcessor(QObject):
             if self._tx_pacer:
                 self._tx_pacer.stop()
             return
+        # Treat (re)enabling transmission as fresh so the watchdog grants a grace
+        # period before the GUI sends its next channel update.
+        self._mark_channels_fresh()
         self._ensure_tx_timer()
 
     @Slot(list)
@@ -439,6 +479,7 @@ class CRSFPacketProcessor(QObject):
         """Update channel values; periodic transmission is handled in this thread."""
         try:
             self.channels = self._normalise_channels(new_channels)
+            self._mark_channels_fresh()
             self._ensure_tx_timer()
             return "Good"
         except Exception as exc:  # Ensure worker thread stays alive
@@ -452,6 +493,7 @@ class CRSFPacketProcessor(QObject):
         try:
             self.channels = self._normalise_channels(new_channels)
             self._tx_enabled = True
+            self._mark_channels_fresh()
             self._ensure_tx_timer()
             return "Good"
         except Exception as exc:  # Ensure worker thread stays alive
@@ -476,6 +518,7 @@ class CRSFPacketProcessor(QObject):
         self._diag_tx_bytes = 0
         self._diag_tx_errors = 0
         self._diag_tx_coalesced = 0
+        self._diag_tx_stale = 0
 
     def _ensure_link_diagnostics_attrs(self) -> None:
         if not hasattr(self, "_link_diagnostics_enabled"):
@@ -524,6 +567,7 @@ class CRSFPacketProcessor(QObject):
             "tx_bytes_per_s": self._diag_tx_bytes / elapsed,
             "tx_error_hz": self._diag_tx_errors / elapsed,
             "tx_coalesced_hz": self._diag_tx_coalesced / elapsed,
+            "tx_stale_hz": self._diag_tx_stale / elapsed,
             "bytes_to_write": self._tx_last_bytes_to_write,
             "tx_enabled": self._tx_enabled,
             "connected": bool(self.is_connected()),
@@ -550,6 +594,7 @@ class CRSFPacketProcessor(QObject):
             "_tx_sent_packets",
             "_tx_write_errors",
             "_tx_bytes_written",
+            "_tx_stale_skips",
             "_tx_last_bytes_to_write",
         ):
             if not hasattr(self, attr):
@@ -566,6 +611,7 @@ class CRSFPacketProcessor(QObject):
         self._tx_sent_packets = 0
         self._tx_write_errors = 0
         self._tx_bytes_written = 0
+        self._tx_stale_skips = 0
         self._tx_last_interval_ms = None
         self._tx_last_bytes_to_write = 0
 
@@ -585,6 +631,7 @@ class CRSFPacketProcessor(QObject):
             "bytes_per_s": self._tx_bytes_written / elapsed if elapsed > 0 else 0.0,
             "coalesced_ticks": self._tx_pacer_coalesced,
             "write_errors": self._tx_write_errors,
+            "stale_skips": self._tx_stale_skips,
             "last_interval_ms": self._tx_last_interval_ms,
             "bytes_to_write": self._tx_last_bytes_to_write,
             "enabled": self._tx_enabled,
@@ -605,6 +652,17 @@ class CRSFPacketProcessor(QObject):
             self._diag_tx_attempts += 1
             if not self._tx_enabled:
                 return "Disabled"
+
+            # Stop writing once the source channel data goes stale.  The pacer
+            # otherwise repeats the last channels forever, so a frozen GUI thread
+            # would keep the FC link healthy with stale commands.  Halting TX
+            # lets the FC's RC-fresh timeout blend the surfaces toward neutral.
+            # The pacer keeps ticking, so transmission resumes immediately once
+            # a fresh channel update arrives.
+            if self._channels_are_stale():
+                self._tx_stale_skips += 1
+                self._diag_tx_stale += 1
+                return "Stale"
 
             # Check USB connection. This call is internally throttled so the
             # 250 Hz transmit loop does not enumerate ports on every tick.
