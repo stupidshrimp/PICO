@@ -227,19 +227,14 @@ constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
 // assert, etc.). The IWDG runs off the independent LSI clock, so it fires even
 // if the main clock or loop is stuck.
 //
-// When control-debug serial output is compiled in (bench builds), the
-// once-per-second FCDBG line is long and a backpressured/slow USB serial write
-// can legitimately take much longer than a control iteration. Use a generous
-// timeout in that case so normal diagnostic logging cannot trip the watchdog,
-// and keep the tight flight-build timeout when logging is disabled (the konfig.h
-// default for flight). The diagnostic print also reloads the watchdog right
-// before it runs (see loop()), so the long write always starts with a full
-// window.
-#if FC_CONTROL_DEBUG_SERIAL_OUTPUT
-constexpr uint32_t WATCHDOG_TIMEOUT_US = 500000UL;
-#else
+// This is kept flat (not tied to FC_CONTROL_DEBUG_SERIAL_OUTPUT) so the tight
+// flight-safe window is the default for every build -- the default Arduino
+// sketch forces the debug macro to 1, so coupling the timeout to it would
+// silently relax the watchdog for ordinary builds. The once-per-second FCDBG
+// diagnostic line is the only long blocking write, and loop() reloads the
+// watchdog immediately before emitting it, so a normal (host-reading) print
+// starts with a full 100 ms window and cannot trip the IWDG.
 constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
-#endif
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
