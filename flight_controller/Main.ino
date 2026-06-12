@@ -928,8 +928,8 @@ elapsedMicros gpsDrainTimer;
 elapsedMicros barometerTimer;
 elapsedMicros airspeedTimer;
 constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_US = 8000;  // 125 Hz
-constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 20000;      // 50 Hz, aligned with GPS cache refresh
-constexpr uint32_t GPS_DRAIN_PERIOD_US = 20000;          // 50 Hz UART drain/cache refresh
+constexpr uint32_t GPS_TELEMETRY_PERIOD_US = 50000;      // 20 Hz, reduced to lower radio link load
+constexpr uint32_t GPS_DRAIN_PERIOD_US = 100000;         // 10 Hz UART drain/cache refresh
 constexpr uint32_t BAROMETER_PERIOD_US = 16667;          // ~60 Hz hardware read/cache refresh
 constexpr uint32_t AIRSPEED_PERIOD_US = 16667;           // ~60 Hz hardware read/cache refresh
 
