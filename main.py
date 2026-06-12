@@ -2537,7 +2537,11 @@ class MainWindow(QMainWindow):
         if value is None:
             if key not in self._warned_warning_keys:
                 self._warned_warning_keys.add(key)
-                logging.warning(
+                # Log at error level: the root logger is configured with
+                # level=logging.ERROR at startup, so a warning here would be
+                # filtered out and never reach debug.log, defeating the
+                # intended "fail loud" behaviour.
+                logging.error(
                     "Warning threshold '%s' is missing or invalid (%r); "
                     "using safe default %s.",
                     key,
