@@ -70,6 +70,7 @@ class DocumentationPage:
         self._tab_widget = tab_widget
 
         self._add_tab("GCS", self._populate_gcs_tab)
+        self._add_tab("Safety", self._populate_safety_tab)
         self._add_tab("ELRS", self._populate_elrs_tab)
         self._add_tab("Electronics", self._populate_electronics_tab)
         self._add_tab("Airframes", self._populate_airframe_tab)
@@ -137,6 +138,164 @@ class DocumentationPage:
             "clear tooltips explaining the required recovery actions."
         )
         self._add_paragraph(frame_layout, workflow)
+
+        layout.addWidget(frame)
+
+    def _populate_safety_tab(self, layout: QVBoxLayout) -> None:
+        frame, frame_layout = self._create_section(
+            "Technical Safety Implementations"
+        )
+
+        overview = (
+            "Feather uses layered safety defenses instead of relying on any single "
+            "component. The Ground Control Station validates operator readiness, "
+            "keeps command data fresh, limits the requested flight envelope, and "
+            "annunciates hazardous telemetry. The flight controller independently "
+            "enforces packet-age failsafes, neutral/throttle-cut outputs, bounded "
+            "control loops, sensor rejection, and bench-only startup halts. These "
+            "layers are intentionally redundant so a GUI stall, stale telemetry "
+            "sample, missing sensor, or bad control mode cannot silently become a "
+            "persistent unsafe command."
+        )
+        self._add_paragraph(frame_layout, overview)
+
+        self._add_subsection(
+            frame_layout,
+            "Ground-station readiness checks",
+            (
+                "Pre-flight verification checks that the ELRS/CRSF serial port exists, "
+                "the joystick/control port is available or consciously substituted, "
+                "channel transmission is active, and throttle is at idle before launch.",
+                "Signal readiness requires fresh link-statistics telemetry with uplink "
+                "and downlink link quality at or above 60% and SNR at or above 5 dB, "
+                "which catches weak RF conditions before control authority is needed.",
+                "Attitude, GPS, and battery streams must be fresh and within sane "
+                "numeric ranges; GPS latitude/longitude, altitude, airspeed, satellite "
+                "count, and battery charge checks prevent the UI from treating stale or "
+                "nonsensical telemetry as a valid flight state.",
+                "The video-frame check warns when the VTX path has not produced an image "
+                "so the operator does not launch without situational awareness.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Command freshness and CRSF transmit watchdogs",
+            (
+                "The CRSF worker runs a high-resolution pacer so RC frames keep a stable "
+                "100/250/500 Hz cadence without depending on the GUI event loop.",
+                "Only one serial write may be queued at a time; if writes are slow, ticks "
+                "are coalesced instead of accumulating a backlog of old RC packets.",
+                "Every channel update is timestamped. If the GUI/control pipeline stops "
+                "refreshing channels for the configured stale timeout, the worker stops "
+                "transmitting instead of replaying the last command forever.",
+                "Stopping transmission deliberately lets the flight controller's faster "
+                "packet-age failsafe take over, blending surfaces toward neutral and "
+                "cutting throttle from firmware that is closest to the servos.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Authority limits and mode isolation",
+            (
+                "Fly-By-Wire roll and pitch requests are clamped in the GCS to operator "
+                "limits and then scaled against the flight controller's redundant "
+                "80-degree firmware envelope.",
+                "The flight controller also constrains final servo outputs to the 1000-"
+                "2000 us range, so PID overshoot or malformed channel values cannot "
+                "command beyond calibrated actuator travel.",
+                "Manual mode is a direct RC-to-servo path and explicitly resets FBW PID "
+                "and attitude-filter state so old attitude corrections cannot bleed into "
+                "manual aileron or elevator commands.",
+                "Mode switches use separate AUX channels with guard bands, reducing "
+                "chatter around thresholds and keeping ELRS arming independent from "
+                "control-mode and throttle-mode selection.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Flight-controller failsafes",
+            (
+                "The firmware treats RC packets older than 250 ms as stale. On a stale "
+                "link it resets roll, pitch, and throttle controllers, forces Manual and "
+                "Manual Throttle modes, clears auto-throttle percentage, and cuts "
+                "throttle.",
+                "A short servo-hold blend window smooths the transition from the last "
+                "known surface position toward neutral, but it is deliberately brief so "
+                "high-deflection commands are not preserved after the link stops decoding.",
+                "Throttle defaults to cut whenever RC is stale; auto throttle is allowed "
+                "only with fresh RC and fresh airspeed, and stale airspeed causes a "
+                "controlled throttle decay instead of an open-loop power increase.",
+                "Servo writes are hysteresis-limited and force-refreshed on a schedule to "
+                "reduce ISR load while still keeping actuators synchronized with the "
+                "latest safe command.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Bounded controllers and sensor validation",
+            (
+                "Roll, pitch, and auto-throttle PID controllers clamp their outputs and "
+                "integrators, preventing wind-up and limiting how fast closed-loop logic "
+                "can change servo or throttle commands.",
+                "Airspeed-hold output is interpreted as percent per second and integrated "
+                "into a 0-100% throttle command, making throttle changes rate-bounded and "
+                "auditable.",
+                "The EKF rejects accelerometer measurements that do not look like gravity "
+                "and magnetometer measurements that fail vector or innovation gates, then "
+                "uses predicted values with high measurement noise instead of injecting "
+                "bad sensor data into attitude estimates.",
+                "Repeated EKF update failures reset the filter back to a normalized "
+                "quaternion state, preserving a recoverable attitude estimate rather than "
+                "continuing with diverged state.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Operator warnings and debounced alarms",
+            (
+                "Configurable alarms monitor low airspeed at altitude, low altitude at "
+                "speed, excessive bank angle, and high sink rate; each can be disabled "
+                "individually while the master alarm switch controls all warnings.",
+                "Airspeed and altitude alerts arm only when the aircraft is considered "
+                "airborne and not already in the landing debounce, preventing nuisance "
+                "alarms during ground handling or normal touchdown.",
+                "Each warning condition must persist for more than one second before "
+                "audio plays, reducing false positives from single noisy telemetry frames.",
+                "Sink rate is estimated over a sliding altitude/time window and expires "
+                "when source data is stale, so bursty GPS delivery cannot create an "
+                "artificial descent-rate emergency.",
+            ),
+        )
+
+        self._add_subsection(
+            frame_layout,
+            "Bench-only diagnostics and safe startup",
+            (
+                "Magnetometer calibration and GPS diagnostic modes intentionally block "
+                "normal flight startup after collecting bench data, preventing a debug "
+                "build from being flown accidentally.",
+                "If the IMU fails initialization, the firmware halts startup with neutral "
+                "servos instead of proceeding with invalid attitude data.",
+                "GPS, barometer, airspeed, and telemetry tasks run on independent timers "
+                "so a slow low-rate sensor cannot block the high-rate attitude and servo "
+                "control loops.",
+            ),
+        )
+
+        closing = (
+            "Together, these implementations create a fail-operational monitoring "
+            "experience for the operator and a fail-safe actuation path in firmware. "
+            "The GCS tries to prevent unsafe launch conditions; if the desktop, link, "
+            "or telemetry pipeline fails anyway, the flight controller transitions the "
+            "aircraft toward neutral controls and throttle cut using its own local "
+            "timers and sensor validity checks."
+        )
+        self._add_paragraph(frame_layout, closing)
 
         layout.addWidget(frame)
 
