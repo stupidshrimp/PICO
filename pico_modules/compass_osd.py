@@ -7,10 +7,13 @@ A vertical line at the centre of the widget indicates the current heading.
 """
 
 import math
+import time
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QFont, QColor
 from PySide6.QtCore import Qt
+
+from pico_modules.osd_smoothing import time_scaled_weight
 
 
 class CompassOSD(QWidget):
@@ -18,7 +21,8 @@ class CompassOSD(QWidget):
         super().__init__(parent)
         self._yaw = 0.0
         self._initialized = False
-        self._smoothing = 0.2  # Weight for new samples
+        self._smoothing = 0.2  # Per-call weight tuned at the ~30 Hz reference rate
+        self._last_update_time = None
         self.setMinimumHeight(50)
         # Match the font used by other OSD widgets for visual consistency.
         self._font = QFont("Arial", 10)
@@ -27,13 +31,16 @@ class CompassOSD(QWidget):
         """Update the displayed yaw in degrees."""
         if yaw_deg is None or not math.isfinite(yaw_deg):
             return
+        now = time.monotonic()
         if not self._initialized:
             self._yaw = yaw_deg % 360.0
             self._initialized = True
         else:
             # Compute shortest angular difference and apply smoothing
+            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
             delta = (yaw_deg - self._yaw + 180) % 360 - 180
-            self._yaw = (self._yaw + delta * self._smoothing) % 360.0
+            self._yaw = (self._yaw + delta * alpha) % 360.0
+        self._last_update_time = now
         self.update()
 
     def paintEvent(self, event):

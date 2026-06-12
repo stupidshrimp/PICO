@@ -8,10 +8,13 @@ airspeed value in mph; here we only provide the visual representation.
 """
 
 import math
+import time
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QFont, QColor, QPolygon
 from PySide6.QtCore import Qt, QPoint
+
+from pico_modules.osd_smoothing import time_scaled_weight
 
 
 class AirspeedOSD(QWidget):
@@ -19,7 +22,8 @@ class AirspeedOSD(QWidget):
         super().__init__(parent)
         self._airspeed = 0.0
         self._initialized = False
-        self._smoothing = 0.2  # Weight for new samples
+        self._smoothing = 0.2  # Per-call weight tuned at the ~30 Hz reference rate
+        self._last_update_time = None
         self.setMinimumWidth(80)
         # Allow the widget to blend with anything behind it
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -34,13 +38,14 @@ class AirspeedOSD(QWidget):
         """
         if airspeed is None or not math.isfinite(airspeed):
             return
+        now = time.monotonic()
         if not self._initialized:
             self._airspeed = airspeed
             self._initialized = True
         else:
-            self._airspeed = (
-                self._airspeed * (1 - self._smoothing) + airspeed * self._smoothing
-            )
+            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
+            self._airspeed = self._airspeed * (1 - alpha) + airspeed * alpha
+        self._last_update_time = now
         self.update()
 
     def paintEvent(self, event):
