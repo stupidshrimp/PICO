@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -532,6 +533,111 @@ def test_golden_fc_to_gs_gps_frame_decodes_contract_values():
             10,
         )
     ]
+
+
+def test_send_current_packet_skips_write_when_channels_stale():
+    # When the GUI thread stops refreshing channels the pacer keeps ticking,
+    # but the watchdog must stop writing so the FC's own RC-fresh failsafe can
+    # engage instead of replaying the last commanded values forever.
+    serial = DummyWritableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor._channel_stale_timeout_s = 0.2
+    # Last fresh channel update is well beyond the watchdog window.
+    processor._last_channel_update_perf = time.perf_counter() - 1.0
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert result == "Stale"
+    assert serial.writes == []
+    assert processor._tx_stale_skips == 1
+    assert processor._diag_tx_stale == 1
+
+
+def test_send_current_packet_writes_when_channels_fresh():
+    serial = DummyWritableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor._channel_stale_timeout_s = 0.2
+    processor._last_channel_update_perf = time.perf_counter()
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert result == "Good"
+    assert len(serial.writes) == 1
+    assert processor._tx_stale_skips == 0
+
+
+def test_zero_stale_timeout_disables_watchdog():
+    # A non-positive timeout opts out of the watchdog entirely.
+    serial = DummyWritableSerial()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.channels = [CRSF_CHANNEL_CENTER] * 16
+    processor.serial = serial
+    processor.error = DummySignal()
+    processor._tx_enabled = True
+    processor._channel_stale_timeout_s = 0.0
+    processor._last_channel_update_perf = time.perf_counter() - 100.0
+    processor.check_usb_connection = lambda: True
+    processor.is_connected = lambda: True
+
+    result = processor.send_current_packet()
+
+    assert result == "Good"
+    assert len(serial.writes) == 1
+
+
+def test_channel_update_marks_channels_fresh():
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.error = DummySignal()
+    processor._ensure_tx_timer = lambda: None
+    processor._channel_stale_timeout_s = 0.2
+    processor._last_channel_update_perf = time.perf_counter() - 5.0
+
+    assert processor._channels_are_stale() is True
+
+    processor.update_and_send_packet([CRSF_CHANNEL_CENTER] * 4)
+
+    assert processor._channels_are_stale() is False
+
+
+def test_update_channels_and_enable_marks_channels_fresh():
+    pacer = DummyPacer()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.error = DummySignal()
+    processor._tx_enabled = False
+    processor._tx_pacer = pacer
+    processor._tx_interval_ms = 4
+    processor._channel_stale_timeout_s = 0.2
+    processor._last_channel_update_perf = time.perf_counter() - 5.0
+
+    processor.update_channels_and_enable([CRSF_CHANNEL_CENTER] * 4)
+
+    assert processor._channels_are_stale() is False
+
+
+def test_set_transmission_enabled_true_grants_grace_period():
+    pacer = DummyPacer()
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor._tx_pacer = pacer
+    processor._tx_interval_ms = 4
+    processor._channel_stale_timeout_s = 0.2
+    processor._last_channel_update_perf = time.perf_counter() - 5.0
+
+    processor.set_transmission_enabled(True)
+
+    assert processor._tx_enabled is True
+    assert processor._channels_are_stale() is False
 
 
 def test_golden_gs_to_fc_channel_packet_matches_contract_bytes():

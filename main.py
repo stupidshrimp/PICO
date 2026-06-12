@@ -1507,6 +1507,12 @@ class MainWindow(QMainWindow):
                 pass
             self.joystick = None
             self.update_connection_status(self.control_status, False)
+            # Losing the joystick removes roll/pitch authority (those channels
+            # fall back to centre in ``_build_control_channels``), but throttle
+            # would otherwise persist at its last commanded value and fly the
+            # aircraft away under power.  Cut throttle and revert to Manual so
+            # the model glides instead of holding the last setting.
+            self.cut_throttle()
             self.play_sound("flightcontrolsystemsoffline")
         # Suppress repetitive pop-ups for camera availability checks; the
         # VideoFeed class already overlays these messages on the feed. Showing
@@ -4345,6 +4351,10 @@ class MainWindow(QMainWindow):
                     sensitivity=self.joystick_cfg.get("sensitivity", 100),
                     smoothing=self.joystick_cfg.get("smoothing", 0),
                 )
+                # Mirror the initial setup so a later joystick serial loss still
+                # reaches handle_worker_error (which cuts throttle).  Without this
+                # the cut-throttle failsafe never fires after a manual reselect.
+                self.joystick.error.connect(self.handle_worker_error)
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         self.update_connection_status(self.control_status, self.joystick is not None)

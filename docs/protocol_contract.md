@@ -45,6 +45,19 @@ PWM `1000..2000 us` only after receiving the CRSF packet.
 | Throttle-mode high threshold | `1550` | CH7 values at or above this threshold select Auto Throttle |
 | Auto-throttle airspeed freshness timeout | `100000 us` (100 ms) | FC throttle PID is reset when pitot/airspeed data is stale, independent of GPS lock |
 
+## GS-side failsafes
+
+The FC failsafes above only engage when RC frames or raw CRSF bytes stop
+arriving. Because the GS transmit pacer repeats the last channel set at the
+CRSF rate, the GS must stop producing frames when its own control pipeline
+goes stale; otherwise the FC would keep seeing a healthy link carrying frozen
+commands.
+
+| Contract item | Value | Behavior |
+| --- | ---: | --- |
+| GS channel staleness timeout | `200 ms` | The GS transmit pacer stops writing RC frames when the last fresh channel update from the GUI thread is older than this window (e.g. a GUI stall). Transmission resumes immediately on the next update. Halting TX lets the FC RC-fresh timeout engage. Configurable via `CRSFPacketProcessor(channel_stale_timeout_s=…)`; a non-positive value disables the watchdog. |
+| Joystick loss | n/a | On joystick serial loss the GS centres roll/pitch (CH1/CH2) and cuts throttle to `0`, reverting CH7 to Manual Throttle, so the aircraft glides rather than holding the last commanded power. |
+
 ## FC → GS telemetry units
 
 ### Attitude (`0x1E`)
