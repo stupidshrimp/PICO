@@ -23,7 +23,7 @@ void M8N::begin() {
         0x03, 0x00,                          // inProtoMask: UBX+NMEA
         0x02, 0x00,                          // outProtoMask: NMEA only
         0x00, 0x00, 0x00, 0x00,              // flags, reserved
-        0x8D, 0x02
+        0x8D, 0x8F
     };
     // UBX-CFG-MSG (8-byte payload): enable GGA on UART1 at 1 Hz.
     static const uint8_t cfgMsgGga[] = {
