@@ -12,6 +12,43 @@ M8N::M8N(Stream &uart) : latitude(0.0), longitude(0.0),
     nmeaBuffer[0] = '\0';
 }
 
+void M8N::begin() {
+    // UBX-CFG-PRT: UART1, 9600 8N1, inProto=UBX+NMEA (0x03), outProto=NMEA only (0x02).
+    // Checksum covers bytes from class through last payload byte.
+    static const uint8_t cfgPrt[] = {
+        0xB5, 0x62, 0x06, 0x00, 0x14, 0x00,
+        0x01, 0x00, 0x00, 0x00,              // portID=1, reserved, txReady
+        0xC0, 0x08, 0x00, 0x00,              // mode: 8N1
+        0x80, 0x25, 0x00, 0x00,              // baudRate: 9600
+        0x03, 0x00,                          // inProtoMask: UBX+NMEA
+        0x02, 0x00,                          // outProtoMask: NMEA only
+        0x00, 0x00, 0x00, 0x00,              // flags, reserved
+        0x8D, 0x02
+    };
+    // UBX-CFG-MSG (8-byte payload): enable GGA on UART1 at 1 Hz.
+    static const uint8_t cfgMsgGga[] = {
+        0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+        0xF0, 0x00,                          // NMEA-GGA
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // rate=1 on UART1 only
+        0x00, 0x28
+    };
+    // UBX-CFG-MSG (8-byte payload): enable RMC on UART1 at 1 Hz.
+    static const uint8_t cfgMsgRmc[] = {
+        0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+        0xF0, 0x04,                          // NMEA-RMC
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // rate=1 on UART1 only
+        0x04, 0x44
+    };
+
+    uart.write(cfgPrt, sizeof(cfgPrt));
+    uart.flush();
+    delay(100);
+    uart.write(cfgMsgGga, sizeof(cfgMsgGga));
+    uart.write(cfgMsgRmc, sizeof(cfgMsgRmc));
+    uart.flush();
+    delay(100);
+}
+
 void M8N::gatherData() {
     while (uart.available()) {
         char c = static_cast<char>(uart.read());
