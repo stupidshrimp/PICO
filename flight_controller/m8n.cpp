@@ -39,10 +39,21 @@ void M8N::begin() {
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // rate=1 on UART1 only
         0x04, 0x44
     };
+    // UBX-CFG-RATE: measRate=1000ms, navRate=1, timeRef=GPS.
+    // CFG-MSG rate bytes are "once per nav solution", so this must be sent
+    // before CFG-MSG to guarantee 1 Hz output regardless of any saved nav rate.
+    static const uint8_t cfgRate[] = {
+        0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
+        0xE8, 0x03,                          // measRate: 1000 ms
+        0x01, 0x00,                          // navRate: 1 solution per measurement
+        0x01, 0x00,                          // timeRef: GPS time
+        0x01, 0x39
+    };
 
     uart.write(cfgPrt, sizeof(cfgPrt));
     uart.flush();
     delay(100);
+    uart.write(cfgRate, sizeof(cfgRate));
     uart.write(cfgMsgGga, sizeof(cfgMsgGga));
     uart.write(cfgMsgRmc, sizeof(cfgMsgRmc));
     uart.flush();
