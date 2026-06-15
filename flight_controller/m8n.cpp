@@ -12,19 +12,41 @@ M8N::M8N(Stream &uart) : latitude(0.0), longitude(0.0),
     nmeaBuffer[0] = '\0';
 }
 
-void M8N::begin() {
-    // UBX-CFG-PRT: UART1, 9600 8N1, inProto=UBX+NMEA (0x03), outProto=NMEA only (0x02).
-    // Checksum covers bytes from class through last payload byte.
-    static const uint8_t cfgPrt[] = {
+// Computes the UBX Fletcher-8 checksum over a frame's class/id/length/payload
+// bytes (everything between the two sync chars and the checksum) and writes
+// CK_A/CK_B into the final two bytes of the frame.
+static void ubxAppendChecksum(uint8_t *frame, size_t frameLen) {
+    uint8_t ckA = 0;
+    uint8_t ckB = 0;
+    for (size_t i = 2; i < frameLen - 2; ++i) {
+        ckA = static_cast<uint8_t>(ckA + frame[i]);
+        ckB = static_cast<uint8_t>(ckB + ckA);
+    }
+    frame[frameLen - 2] = ckA;
+    frame[frameLen - 1] = ckB;
+}
+
+void M8N::begin(uint32_t baud) {
+    // UBX-CFG-PRT: UART1, 8N1, inProto=UBX+NMEA (0x03), outProto=NMEA only (0x02).
+    // The baudRate field is filled from the caller so the module's UART speed
+    // stays in sync with the open serial port (the diagnostic build can override
+    // baud); the checksum is therefore computed at runtime.
+    uint8_t cfgPrt[] = {
         0xB5, 0x62, 0x06, 0x00, 0x14, 0x00,
         0x01, 0x00, 0x00, 0x00,              // portID=1, reserved, txReady
         0xC0, 0x08, 0x00, 0x00,              // mode: 8N1
-        0x80, 0x25, 0x00, 0x00,              // baudRate: 9600
+        0x00, 0x00, 0x00, 0x00,              // baudRate (filled below)
         0x03, 0x00,                          // inProtoMask: UBX+NMEA
         0x02, 0x00,                          // outProtoMask: NMEA only
         0x00, 0x00, 0x00, 0x00,              // flags, reserved
-        0x8D, 0x8F
+        0x00, 0x00                           // checksum (filled below)
     };
+    cfgPrt[14] = static_cast<uint8_t>(baud & 0xFF);
+    cfgPrt[15] = static_cast<uint8_t>((baud >> 8) & 0xFF);
+    cfgPrt[16] = static_cast<uint8_t>((baud >> 16) & 0xFF);
+    cfgPrt[17] = static_cast<uint8_t>((baud >> 24) & 0xFF);
+    ubxAppendChecksum(cfgPrt, sizeof(cfgPrt));
+
     // UBX-CFG-MSG (8-byte payload): enable GGA on UART1 at 1 Hz.
     static const uint8_t cfgMsgGga[] = {
         0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
