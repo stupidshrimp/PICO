@@ -168,6 +168,16 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // a faulty pitot reading cannot inject a large false acceleration into the
 // attitude solution. ~120 m/s is comfortably above this airframe's airspeed.
 #define CENTRIPETAL_MAX_AIRSPEED_MPS (120.0f)
+// The feed-forward only makes sense when the airframe is actually translating
+// through space. A pitot reading wind or prop wash while stationary or taxiing
+// can keep airspeed positive even though there is no real omega x V to remove,
+// so any rotation in that state would inject a phantom acceleration into the
+// gravity reference (especially during EKF warmup, before the innovation gate is
+// armed). Require GPS to confirm ground motion above this threshold, set above
+// typical taxi speed so the correction only engages in flight.
+#define CENTRIPETAL_MIN_GROUND_SPEED_MPS (5.0f)
+// Maximum age of a GPS fix still trusted to confirm motion for the feed-forward.
+#define CENTRIPETAL_GPS_FIX_TIMEOUT_US (2000000UL)
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -938,6 +948,9 @@ double latestLatitude  = 0;
 double latestLongitude = 0;
 uint8_t satsInUse      = 0;       // GPS satellites currently in use
 double latestGpsCourse = 0.0;
+float latestGpsGroundSpeedMps = 0.0f;  // Ground speed from GPS (RMC), meters per second
+bool latestGpsFixValid = false;        // True when the cached GPS fix is usable
+uint32_t lastGpsFixUpdateUs = 0;       // micros() of the last valid GPS fix update
 
 // Telemetry values prepared for CRSF GPS frame. The GPS CRSF frame uses the
 // latest cached GPS coordinates plus separately sampled airspeed/barometer data.
@@ -989,11 +1002,26 @@ void updateGpsCache() {
     latestLatitude = gps.latitude;
     latestLongitude = gps.longitude;
     latestGpsCourse = gps.course;
+    latestGpsGroundSpeedMps = static_cast<float>(gps.speed) * 0.514444f;  // knots -> m/s
+    latestGpsFixValid = true;
+    lastGpsFixUpdateUs = micros();
   } else {
     latestLatitude = 0.0;
     latestLongitude = 0.0;
     latestGpsCourse = 0.0;
+    latestGpsGroundSpeedMps = 0.0f;
+    latestGpsFixValid = false;
   }
+}
+
+// True when a fresh GPS fix shows the airframe is actually translating through
+// space (not just reading wind/prop wash on a stationary pitot). Used to gate the
+// accelerometer centripetal feed-forward so it only engages in real flight.
+bool gpsMotionConfirmed(uint32_t nowUs) {
+  return latestGpsFixValid &&
+         lastGpsFixUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastGpsFixUpdateUs) <= CENTRIPETAL_GPS_FIX_TIMEOUT_US &&
+         latestGpsGroundSpeedMps >= CENTRIPETAL_MIN_GROUND_SPEED_MPS;
 }
 
 void applyBarometerPressure(float baroPressure) {
@@ -2184,8 +2212,9 @@ void loop() {
     // produces a kinematic acceleration of [0, -r*V, q*V]; removing it leaves the
     // gravity-only specific force. The body rates come straight from the gyro
     // input U (bias is small and slowly varying). Only applied with a fresh,
-    // valid, bounded airspeed so a bad pitot reading cannot corrupt attitude.
-    if (airspeedInputFresh(controlUpdateUs)) {
+    // valid, bounded airspeed AND GPS-confirmed ground motion so a bad pitot
+    // reading or wind/prop wash on a stationary airframe cannot corrupt attitude.
+    if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs)) {
       float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
       if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
         centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
