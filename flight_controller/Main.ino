@@ -178,6 +178,17 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define CENTRIPETAL_MIN_GROUND_SPEED_MPS (5.0f)
 // Maximum age of a GPS fix still trusted to confirm motion for the feed-forward.
 #define CENTRIPETAL_GPS_FIX_TIMEOUT_US (2000000UL)
+// The free-flight omega x V model only holds once the airframe is truly flying
+// (velocity along body X, free to rotate about the CG). On a takeoff or landing
+// ground roll the aircraft is gear-constrained, so a rotation would inject a false
+// vertical correction even though pitot/GPS motion gates are satisfied. Latch an
+// "airborne" estimate from barometric height above the ground level captured at
+// boot (with airspeed confirmation) and require it before applying the feed-
+// forward. The engage/disengage hysteresis keeps the latch on through low-altitude
+// maneuvering (e.g. the turn to final) yet drops it once back near the runway.
+#define AIRBORNE_ENGAGE_HEIGHT_M (3.0f)       // climb above ground to latch airborne
+#define AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0f)   // airspeed needed to latch airborne
+#define AIRBORNE_DISENGAGE_HEIGHT_M (1.5f)    // back near the ground -> not airborne
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -960,6 +971,11 @@ float sensorAltitudeCm = 0.0f; // Altitude from barometer in centimeters
 float latestAirspeedMph = 0.0f;
 float latestAltitudeFeet = 0.0f;
 
+// Airborne detection for the centripetal feed-forward (see thresholds above).
+float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
+bool groundAltitudeCaptured = false;   // True once the ground reference is set
+bool aircraftAirborne = false;         // Latched airborne state gating the feed-forward
+
 // ----- Sensor and telemetry timing -----
 elapsedMicros attitudeTelemetryTimer;
 elapsedMicros gpsTelemetryTimer;
@@ -1032,6 +1048,29 @@ bool gpsMotionConfirmed(uint32_t nowUs) {
          latestGpsGroundSpeedMps >= CENTRIPETAL_MIN_GROUND_SPEED_MPS;
 }
 
+// Maintain the latched airborne estimate used to gate the centripetal feed-forward.
+// Engage once the baro shows a real climb above the captured ground level and
+// airspeed is in the flight range; stay engaged through low-altitude maneuvering
+// and only drop back to "on ground" once near the captured ground height. This
+// keeps the gear-constrained takeoff/landing roll out of the free-flight model.
+void updateAirborneState(uint32_t nowUs) {
+  if (!groundAltitudeCaptured) {
+    aircraftAirborne = false;
+    return;
+  }
+  const float heightM = (sensorAltitudeCm * 0.01f) - groundAltitudeM;
+  const float airspeedMps = airSpeedCms * 0.01f;
+  if (!aircraftAirborne) {
+    if (airspeedInputFresh(nowUs) &&
+        airspeedMps >= AIRBORNE_ENGAGE_AIRSPEED_MPS &&
+        heightM >= AIRBORNE_ENGAGE_HEIGHT_M) {
+      aircraftAirborne = true;
+    }
+  } else if (heightM <= AIRBORNE_DISENGAGE_HEIGHT_M) {
+    aircraftAirborne = false;
+  }
+}
+
 void applyBarometerPressure(float baroPressure) {
   if (!isfinite(baroPressure) || baroPressure <= 0.0f) {
     return;
@@ -1042,6 +1081,13 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
+  if (!groundAltitudeCaptured) {
+    // First valid reading happens on the ground during startup; use it as the
+    // height reference for airborne detection. Baro drift over a flight is small
+    // relative to the engage/disengage margins.
+    groundAltitudeM = altitudeMeters;
+    groundAltitudeCaptured = true;
+  }
 }
 
 void updateBarometerCacheBlocking() {
@@ -2221,10 +2267,13 @@ void loop() {
     // gravity-only specific force. The body rates are EKF bias-corrected (q,r minus
     // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
     // cannot inject a persistent bias*airspeed term in straight flight. Only
-    // applied with a fresh, valid, bounded airspeed AND GPS-confirmed ground motion
-    // so a bad pitot reading or wind/prop wash on a stationary airframe cannot
+    // applied with a fresh, valid, bounded airspeed, GPS-confirmed ground motion,
+    // and a latched airborne state so a bad pitot reading, wind/prop wash on a
+    // stationary airframe, or a gear-constrained takeoff/landing roll cannot
     // corrupt attitude.
-    if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs)) {
+    updateAirborneState(controlUpdateUs);
+    if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs) &&
+        aircraftAirborne) {
       float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
       if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
         centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
