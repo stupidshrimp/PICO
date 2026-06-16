@@ -2218,16 +2218,18 @@ void loop() {
     // EKF body frame the axis swap above gives X forward, Z up (a left-handed
     // basis), so a forward velocity V with body pitch rate q and yaw rate r
     // produces a kinematic acceleration of [0, -r*V, q*V]; removing it leaves the
-    // gravity-only specific force. The body rates come straight from the gyro
-    // input U (bias is small and slowly varying). Only applied with a fresh,
-    // valid, bounded airspeed AND GPS-confirmed ground motion so a bad pitot
-    // reading or wind/prop wash on a stationary airframe cannot corrupt attitude.
+    // gravity-only specific force. The body rates are EKF bias-corrected (q,r minus
+    // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
+    // cannot inject a persistent bias*airspeed term in straight flight. Only
+    // applied with a fresh, valid, bounded airspeed AND GPS-confirmed ground motion
+    // so a bad pitot reading or wind/prop wash on a stationary airframe cannot
+    // corrupt attitude.
     if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs)) {
       float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
       if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
         centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
-        const float pitchRate = U[1][0];  // q, body pitch rate (rad/s)
-        const float yawRate   = U[2][0];  // r, body yaw rate (rad/s)
+        const float pitchRate = U[1][0] - predictedX[5][0];  // q minus est. pitch-gyro bias
+        const float yawRate   = U[2][0] - predictedX[6][0];  // r minus est. yaw-gyro bias
         Y[1][0] += yawRate   * centripetalAirspeedMps;   // remove the -r*V term
         Y[2][0] -= pitchRate * centripetalAirspeedMps;   // remove the +q*V term
       }
