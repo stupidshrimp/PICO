@@ -116,6 +116,17 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #ifndef FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS
 #define FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS 3000UL
 #endif
+
+// Set to 1 to print the raw per-loop sensor values (roll/pitch/yaw, altitude,
+// airspeed, longitude/latitude, RC inputs, EKF compute time, and which
+// telemetry frames were sent) as one human-readable line. This is the
+// pre-EKF/pre-CRSF view of the sensor data, separate from the once-per-second
+// FCDBG telemetry summary gated by FC_CONTROL_DEBUG_SERIAL_OUTPUT. Leave at 0
+// for flight; set to 1 on the bench to watch the raw values stream.
+#ifndef FC_RAW_SENSOR_DEBUG_OUTPUT
+#define FC_RAW_SENSOR_DEBUG_OUTPUT 0
+#endif
+
 float_prec IMU_MAG_B0_data[3] = {
   cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
   cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD),
@@ -2390,7 +2401,7 @@ void loop() {
     uint16_t rc2 = rcPitchRaw;
     uint16_t rc3 = (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_CENTER;
     uint16_t rc4 = rcYawRaw;
-    #if 0 // Temporarily disable detailed debug prints
+    #if FC_RAW_SENSOR_DEBUG_OUTPUT
     // ----- Print all values in one line -----
     Serial.print("Roll: "); Serial.print(roll, 2);
     Serial.print(" | Pitch: "); Serial.print(pitch, 2);
