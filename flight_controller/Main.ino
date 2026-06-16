@@ -1244,6 +1244,18 @@ constexpr size_t GPS_DIAG_NMEA_BUFFER_SIZE = 121;
 constexpr size_t GPS_DIAG_MAX_FIELDS = 20;
 constexpr uint32_t GPS_DIAG_POST_PING_WINDOW_MS = 1500UL;
 
+// Auto-baud scan: when the link is alive (bytes flowing) but no NMEA frames
+// ever assemble, the module is almost always streaming at a baud other than
+// FC_GPS_DIAGNOSTIC_BAUD. Probe the common u-blox rates and lock onto the one
+// that yields real, checksum-valid NMEA. Ordered most-likely first.
+const uint32_t GPS_DIAG_BAUD_CANDIDATES[] = {9600UL, 38400UL, 115200UL, 57600UL, 19200UL, 4800UL};
+constexpr size_t GPS_DIAG_BAUD_CANDIDATE_COUNT =
+    sizeof(GPS_DIAG_BAUD_CANDIDATES) / sizeof(GPS_DIAG_BAUD_CANDIDATES[0]);
+constexpr uint32_t GPS_DIAG_BAUD_LISTEN_MS = 2500UL;
+// Require >=2 valid frames so a single loopback-echoed poll cannot false-lock;
+// a healthy 1 Hz module emits GGA+RMC, so a 2.5 s window sees ~4-5 frames.
+constexpr uint32_t GPS_DIAG_BAUD_LOCK_FRAMES = 2UL;
+
 char gpsDiagNmeaBuffer[GPS_DIAG_NMEA_BUFFER_SIZE];
 size_t gpsDiagNmeaBufferIndex = 0;
 bool gpsDiagReceivingNmea = false;
@@ -1403,6 +1415,117 @@ void gpsDiagPrintStatus() {
   }
 }
 
+// Feeds one received byte through the NMEA frame assembler. Shared by the
+// baud scan and the steady-state monitor loop so both count bytes/sentences
+// identically. A completed "$...\n" frame is handed to the parser, which
+// validates the checksum and updates the ok/fail counters.
+void gpsDiagConsumeByte(char c) {
+  ++gpsDiagByteCount;
+  gpsDiagLastByteMs = millis();
+
+  if (c == '$') {
+    gpsDiagNmeaBufferIndex = 0;
+    gpsDiagReceivingNmea = true;
+    gpsDiagDiscardingNmea = false;
+  } else if (!gpsDiagReceivingNmea) {
+    return;
+  }
+
+  if (c == '\r') {
+    return;
+  }
+
+  if (c == '\n') {
+    if (!gpsDiagDiscardingNmea) {
+      gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex] = '\0';
+      if (gpsDiagNmeaBufferIndex > 0) {
+        gpsDiagPrintParsedSentence(gpsDiagNmeaBuffer);
+      }
+    }
+    gpsDiagNmeaBufferIndex = 0;
+    gpsDiagNmeaBuffer[0] = '\0';
+    gpsDiagReceivingNmea = false;
+    gpsDiagDiscardingNmea = false;
+    return;
+  }
+
+  if (!gpsDiagDiscardingNmea) {
+    if (gpsDiagNmeaBufferIndex < GPS_DIAG_NMEA_BUFFER_SIZE - 1) {
+      gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex++] = c;
+    } else {
+      ++gpsDiagOverlengthCount;
+      gpsDiagNmeaBufferIndex = 0;
+      gpsDiagNmeaBuffer[0] = '\0';
+      gpsDiagReceivingNmea = false;
+      gpsDiagDiscardingNmea = true;
+    }
+  }
+}
+
+// Probes the common u-blox baud rates and locks onto the first one that yields
+// real, checksum-valid NMEA. The port is left open at the locked baud on
+// success. Returns the locked baud, or -1 if none produced valid framing.
+//
+// Safe by construction: M8N::begin(baud) sets the module's UART baud field to
+// the value we just opened the port at, so a probe can only ever (re)confirm
+// the baud being tested -- it can never knock a working link onto a wrong baud.
+// The scan does NOT transmit the PUBX poll, so a TX->RX loopback cannot echo a
+// valid NMEA sentence back and false-lock (and the >=2 frame threshold guards
+// against a lone coincidental frame regardless).
+int32_t gpsDiagScanForBaud() {
+  Serial.println("GPSDIAG SCAN: probing common baud rates for valid NMEA framing...");
+  for (size_t i = 0; i < GPS_DIAG_BAUD_CANDIDATE_COUNT; ++i) {
+    const uint32_t baud = GPS_DIAG_BAUD_CANDIDATES[i];
+    Serial.print("GPSDIAG SCAN: trying ");
+    Serial.print(baud);
+    Serial.println(" baud...");
+
+    gpsSerial.begin(baud);
+    delay(50);
+    // Discard bytes captured at the previous baud and reset the assembler so a
+    // straddling partial frame cannot leak across probes.
+    while (gpsSerial.available() > 0) {
+      (void)gpsSerial.read();
+    }
+    gpsDiagReceivingNmea = false;
+    gpsDiagDiscardingNmea = false;
+    gpsDiagNmeaBufferIndex = 0;
+
+    // Heard only if this baud matches the module: switch it to NMEA GGA+RMC.
+    gps.begin(baud);
+
+    const uint32_t okBefore = gpsDiagChecksumOkCount;
+    const uint32_t startMs = millis();
+    while ((uint32_t)(millis() - startMs) < GPS_DIAG_BAUD_LISTEN_MS) {
+      while (gpsSerial.available() > 0) {
+        const int rawByte = gpsSerial.read();
+        if (rawByte < 0) {
+          continue;
+        }
+        gpsDiagConsumeByte(static_cast<char>(rawByte & 0xFF));
+      }
+      delay(1);
+    }
+
+    const uint32_t okFrames = gpsDiagChecksumOkCount - okBefore;
+    Serial.print("GPSDIAG SCAN: ");
+    Serial.print(baud);
+    Serial.print(" baud -> ");
+    Serial.print(okFrames);
+    Serial.println(" valid NMEA frame(s)");
+
+    if (okFrames >= GPS_DIAG_BAUD_LOCK_FRAMES) {
+      Serial.print("GPSDIAG SCAN: LOCKED to ");
+      Serial.print(baud);
+      Serial.println(" baud (valid NMEA detected). Update gpsSerial.begin()/gps.begin() in setup() to match.");
+      return (int32_t)baud;
+    }
+  }
+
+  Serial.println("GPSDIAG SCAN: no baud produced valid NMEA. If bytes are flowing, suspect a TX<->RX loopback/short, UBX-only output, or a noisy/weak connection.");
+  return -1;
+}
+
 void runGpsDiagnosticDebug() {
   Serial.println();
   Serial.println("GPSDIAG mode is ENABLED. This is a bench-only helper; do not fly with FC_GPS_DIAGNOSTIC_MODE=1.");
@@ -1413,10 +1536,22 @@ void runGpsDiagnosticDebug() {
   Serial.print("GPSDIAG PC7/USART6 RX idle level before UART start: ");
   Serial.println(rxIdleLevel == HIGH ? "HIGH (normal UART idle if GPS TX is connected/powered)" : "LOW (possible short, swapped wire, or unpowered GPS)");
 
-  gpsSerial.begin(FC_GPS_DIAGNOSTIC_BAUD);
-  Serial.println("GPSDIAG INIT: sending UBX-CFG-PRT + CFG-MSG to switch module to NMEA output (GGA + RMC on UART1)...");
-  gps.begin(FC_GPS_DIAGNOSTIC_BAUD);
-  Serial.println("GPSDIAG INIT: done. If the module was in UBX-only mode, NMEA sentences should now appear.");
+  const int32_t lockedBaud = gpsDiagScanForBaud();
+  uint32_t monitorBaud;
+  if (lockedBaud > 0) {
+    monitorBaud = (uint32_t)lockedBaud;
+    // Port is already open at the locked baud from the scan; no re-begin needed.
+  } else {
+    monitorBaud = FC_GPS_DIAGNOSTIC_BAUD;
+    Serial.print("GPSDIAG: no baud locked; falling back to ");
+    Serial.print(monitorBaud);
+    Serial.println(" baud for continued raw monitoring.");
+    gpsSerial.begin(monitorBaud);
+    gps.begin(monitorBaud);
+  }
+  Serial.print("GPSDIAG: monitoring at ");
+  Serial.print(monitorBaud);
+  Serial.println(" baud.");
   gpsDiagLastByteMs = millis();
   gpsDiagLastStatusMs = millis();
   gpsDiagSendPing();
@@ -1427,47 +1562,7 @@ void runGpsDiagnosticDebug() {
       if (rawByte < 0) {
         continue;
       }
-      const char c = static_cast<char>(rawByte & 0xFF);
-      ++gpsDiagByteCount;
-      gpsDiagLastByteMs = millis();
-
-      if (c == '$') {
-        gpsDiagNmeaBufferIndex = 0;
-        gpsDiagReceivingNmea = true;
-        gpsDiagDiscardingNmea = false;
-      } else if (!gpsDiagReceivingNmea) {
-        continue;
-      }
-
-      if (c == '\r') {
-        continue;
-      }
-
-      if (c == '\n') {
-        if (!gpsDiagDiscardingNmea) {
-          gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex] = '\0';
-          if (gpsDiagNmeaBufferIndex > 0) {
-            gpsDiagPrintParsedSentence(gpsDiagNmeaBuffer);
-          }
-        }
-        gpsDiagNmeaBufferIndex = 0;
-        gpsDiagNmeaBuffer[0] = '\0';
-        gpsDiagReceivingNmea = false;
-        gpsDiagDiscardingNmea = false;
-        continue;
-      }
-
-      if (!gpsDiagDiscardingNmea) {
-        if (gpsDiagNmeaBufferIndex < GPS_DIAG_NMEA_BUFFER_SIZE - 1) {
-          gpsDiagNmeaBuffer[gpsDiagNmeaBufferIndex++] = c;
-        } else {
-          ++gpsDiagOverlengthCount;
-          gpsDiagNmeaBufferIndex = 0;
-          gpsDiagNmeaBuffer[0] = '\0';
-          gpsDiagReceivingNmea = false;
-          gpsDiagDiscardingNmea = true;
-        }
-      }
+      gpsDiagConsumeByte(static_cast<char>(rawByte & 0xFF));
     }
 
     const uint32_t nowMs = millis();
