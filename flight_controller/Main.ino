@@ -2163,9 +2163,9 @@ void loop() {
     Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
 
     // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
-    float normG = sqrt(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
+    float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
     bool accelRejected = (normG <= NORM_EPSILON) ||
-                         (fabs(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
+                         (fabsf(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
     if (!accelRejected) {
       Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
       if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
@@ -2182,7 +2182,7 @@ void loop() {
     }
 
     // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
-    float normM = sqrt(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
+    float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
     bool magRejected = (normM <= NORM_EPSILON);
     if (!magRejected) {
       Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
@@ -2236,10 +2236,10 @@ void loop() {
     float q3 = quaternionData[3][0];
     
     // Invert roll sign so right rolls are negative and left rolls are positive
-    float roll  = -atan2(2.0*(q0*q1 + q2*q3), 1.0 - 2.0*(q1*q1 + q2*q2)) * (180.0 / M_PI);
-    float pitchArg = clampFloat(2.0*(q0*q2 - q3*q1), -1.0f, 1.0f);
-    float pitch = asin(pitchArg) * (180.0 / M_PI);
-    float yaw   = atan2(2.0*(q0*q3 + q1*q2), 1.0 - 2.0*(q2*q2 + q3*q3)) * (180.0 / M_PI);
+    float roll  = -atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
+    float pitchArg = clampFloat(2.0f*(q0*q2 - q3*q1), -1.0f, 1.0f);
+    float pitch = asinf(pitchArg) * (180.0f / (float)M_PI);
+    float yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
     // Previously applied calibration offsets have been removed so that
     // raw EKF-derived roll and pitch values are reported directly.
     
@@ -2655,7 +2655,7 @@ void SPEW_THE_ERROR(char const * str)
     #if (SYSTEM_IMPLEMENTATION == SYSTEM_IMPLEMENTATION_PC)
         cout << (str) << endl;
     #elif (SYSTEM_IMPLEMENTATION == SYSTEM_IMPLEMENTATION_EMBEDDED_ARDUINO)
-//        Serial.println(str);
+        Serial.println(str);
     #else
         /* Silent function */
     #endif

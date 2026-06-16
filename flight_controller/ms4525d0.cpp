@@ -89,7 +89,17 @@ bool MS4525D0::readRawData(uint16_t &raw) {
 
     uint8_t highByte = _i2c.read();
     uint8_t lowByte = _i2c.read();
-    raw = ((uint16_t)highByte << 8) | lowByte;
+    const uint16_t word = ((uint16_t)highByte << 8) | lowByte;
+
+    // The two most-significant bits are the status field; only 00 (normal data)
+    // carries a usable reading. Reject stale (10), command-mode (01), and fault
+    // (11) frames here instead of letting their payload masquerade as pressure.
+    if ((word >> 14) != 0) {
+        return false;
+    }
+
+    // Keep only the 14-bit pressure counts.
+    raw = word & 0x3FFF;
     return true;
 }
 
