@@ -1414,6 +1414,9 @@ void runGpsDiagnosticDebug() {
   Serial.println(rxIdleLevel == HIGH ? "HIGH (normal UART idle if GPS TX is connected/powered)" : "LOW (possible short, swapped wire, or unpowered GPS)");
 
   gpsSerial.begin(FC_GPS_DIAGNOSTIC_BAUD);
+  Serial.println("GPSDIAG INIT: sending UBX-CFG-PRT + CFG-MSG to switch module to NMEA output (GGA + RMC on UART1)...");
+  gps.begin(FC_GPS_DIAGNOSTIC_BAUD);
+  Serial.println("GPSDIAG INIT: done. If the module was in UBX-only mode, NMEA sentences should now appear.");
   gpsDiagLastByteMs = millis();
   gpsDiagLastStatusMs = millis();
   gpsDiagSendPing();
@@ -1661,6 +1664,7 @@ void setup() {
 
   // ----- Initialize GPS (gpsSerial) -----
   gpsSerial.begin(9600);
+  gps.begin(9600);  // Switch module to NMEA output; enable GGA + RMC on UART1.
   delay(1000);
   Serial.println("GPS module initialized on USART6.");
 

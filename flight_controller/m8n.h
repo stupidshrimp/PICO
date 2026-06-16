@@ -8,6 +8,12 @@ public:
     // Constructor: takes a reference to a Stream (e.g., Serial1, etc.)
     M8N(Stream &uart);
 
+    // Send UBX init commands to switch the module to NMEA-only output and
+    // enable GGA + RMC sentences on UART1. Pass the baud the serial port is
+    // open at so the module's UART speed stays in sync. Call once after opening
+    // the serial port (e.g. gpsSerial.begin(9600)) before entering the main loop.
+    void begin(uint32_t baud = 9600);
+
     // Call this method repeatedly (e.g. in loop()) to process incoming data
     void gatherData();
 
