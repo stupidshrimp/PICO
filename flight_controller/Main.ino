@@ -1607,10 +1607,19 @@ int32_t gpsDiagScanForBaud() {
   }
 
   Serial.println("GPSDIAG SCAN: no baud produced valid NMEA. If bytes are flowing, suspect a TX<->RX loopback/short, UBX-only output, or a noisy/weak connection.");
-  if (gpsDiagUbxSyncCount > 0) {
+  if (gpsDiagChecksumOkCount > 0) {
+    // NMEA did appear, just not the >=2 frames needed to lock. Do not blame the
+    // reconfigure line -- the module is already emitting NMEA, the link is just
+    // marginal/intermittent.
+    Serial.print("GPSDIAG SCAN: some valid NMEA was seen (");
+    Serial.print(gpsDiagChecksumOkCount);
+    Serial.print(" frame(s)) but fewer than the ");
+    Serial.print(GPS_DIAG_BAUD_LOCK_FRAMES);
+    Serial.println(" needed to lock -> suspect a marginal/noisy link or weak signal, not UBX-only output.");
+  } else if (gpsDiagUbxSyncCount > 0) {
     Serial.print("GPSDIAG SCAN: saw ");
     Serial.print(gpsDiagUbxSyncCount);
-    Serial.println(" UBX sync(s) but no NMEA -> module is in UBX-only output mode. The CFG-PRT command that enables NMEA is not taking effect; verify board PC6/USART6 TX -> GPS RX is actually connected (that line carries the reconfigure command), then power-cycle.");
+    Serial.println(" UBX sync(s) and no valid NMEA -> module is in UBX-only output mode. The CFG-PRT command that enables NMEA is not taking effect; verify board PC6/USART6 TX -> GPS RX is actually connected (that line carries the reconfigure command), then power-cycle.");
   }
   return -1;
 }
