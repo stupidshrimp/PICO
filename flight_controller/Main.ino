@@ -2416,17 +2416,24 @@ void loop() {
     Serial.print(" RC4: "); Serial.print(rc4);
     Serial.print(" | Comp Time: "); Serial.print((float)u64compuTime);
     Serial.print(" µs");
+    // The attitude/GPS telemetry sends run after this print, so their
+    // *SentThisLoop flags are not set yet. Predict the outcome from the same
+    // conditions those sends use so "TLM Sent" reflects what this loop will
+    // actually emit instead of always reporting "None".
+    const bool willSendAttitude =
+        attitudeSampleValid && attitudeTelemetryTimer >= ATTITUDE_TELEMETRY_PERIOD_US;
+    const bool willSendGps = gpsTelemetryTimer >= GPS_TELEMETRY_PERIOD_US;
     Serial.print(" | TLM Sent: ");
-    if (attitudeTelemetrySentThisLoop) {
+    if (willSendAttitude) {
       Serial.print("Att");
     }
-    if (gpsTelemetrySentThisLoop) {
-      if (attitudeTelemetrySentThisLoop) {
+    if (willSendGps) {
+      if (willSendAttitude) {
         Serial.print("+");
       }
       Serial.print("GPS");
     }
-    if (!attitudeTelemetrySentThisLoop && !gpsTelemetrySentThisLoop) {
+    if (!willSendAttitude && !willSendGps) {
       Serial.print("None");
     }
     Serial.println();
