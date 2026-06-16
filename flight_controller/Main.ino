@@ -154,6 +154,20 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define R_REJECTED       (1.0e3)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
+// Centripetal/transport-acceleration feed-forward for the accelerometer gravity
+// reference. In a sustained coordinated or banked turn the specific force the
+// accelerometer measures contains a centripetal term a = omega x V that can stay
+// inside the norm and innovation gates yet slowly bias roll/pitch back toward
+// wings-level. Subtracting an estimate of that term (built from the body rates
+// and forward airspeed) before normalizing the accel vector recovers a cleaner
+// gravity reference during turns. Set to 0 to fall back to the raw accel vector.
+#ifndef FC_ACCEL_CENTRIPETAL_COMPENSATION
+#define FC_ACCEL_CENTRIPETAL_COMPENSATION 1
+#endif
+// Upper bound (m/s) on the airspeed used to build the centripetal correction so
+// a faulty pitot reading cannot inject a large false acceleration into the
+// attitude solution. ~120 m/s is comfortably above this airframe's airspeed.
+#define CENTRIPETAL_MAX_AIRSPEED_MPS (120.0f)
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -2161,6 +2175,27 @@ void loop() {
     Y[3][0] = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
     Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
     Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+
+#if FC_ACCEL_CENTRIPETAL_COMPENSATION
+    // Subtract the centripetal/transport acceleration (a ~= omega x V) from the
+    // measured specific force before treating it as a gravity reference. In this
+    // EKF body frame the axis swap above gives X forward, Z up (a left-handed
+    // basis), so a forward velocity V with body pitch rate q and yaw rate r
+    // produces a kinematic acceleration of [0, -r*V, q*V]; removing it leaves the
+    // gravity-only specific force. The body rates come straight from the gyro
+    // input U (bias is small and slowly varying). Only applied with a fresh,
+    // valid, bounded airspeed so a bad pitot reading cannot corrupt attitude.
+    if (airspeedInputFresh(controlUpdateUs)) {
+      float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
+      if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
+        centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
+        const float pitchRate = U[1][0];  // q, body pitch rate (rad/s)
+        const float yawRate   = U[2][0];  // r, body yaw rate (rad/s)
+        Y[1][0] += yawRate   * centripetalAirspeedMps;   // remove the -r*V term
+        Y[2][0] -= pitchRate * centripetalAirspeedMps;   // remove the +q*V term
+      }
+    }
+#endif
 
     // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
     float normG = sqrt(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
