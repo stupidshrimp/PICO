@@ -116,6 +116,14 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #ifndef FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS
 #define FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS 3000UL
 #endif
+// When set, the bench diagnostic first commands the module down to 9600 baud
+// (from whatever rate it currently uses) and saves that to its flash, so it
+// comes up at 9600 -- matching the rate the flight code already uses. This is
+// the no-hardware fix for a module that shipped at a high baud whose signal is
+// marginal on the existing wiring.
+#ifndef FC_GPS_DIAGNOSTIC_FORCE_9600
+#define FC_GPS_DIAGNOSTIC_FORCE_9600 1
+#endif
 float_prec IMU_MAG_B0_data[3] = {
   cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
   cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD),
@@ -1481,6 +1489,34 @@ void gpsDiagPrintHexAscii(const uint8_t *buf, size_t len) {
   Serial.println("|");
 }
 
+// Commands the module to 9600 baud regardless of the rate it currently runs
+// at, then persists that to its flash. CFG-PRT(baud=9600) is sent while the
+// port is opened at each candidate rate in turn -- only the probe whose baud
+// matches the module is understood, so exactly one takes effect no matter where
+// the module started. The final pass re-enables NMEA GGA+RMC at 9600 and saves.
+void gpsDiagForceModuleTo9600() {
+  Serial.println("GPSDIAG FORCE9600: commanding module to 9600 baud from any current rate...");
+  for (size_t i = 0; i < GPS_DIAG_BAUD_CANDIDATE_COUNT; ++i) {
+    const uint32_t b = GPS_DIAG_BAUD_CANDIDATES[i];
+    if (b == 9600UL) {
+      continue;  // handled by the finalize step below
+    }
+    Serial.print("GPSDIAG FORCE9600: sending CFG-PRT(9600) while talking at ");
+    Serial.print(b);
+    Serial.println(" baud...");
+    gpsSerial.begin(b);
+    delay(50);
+    gps.begin(9600);  // CFG-PRT baud field = 9600; only the matching rate is heard
+    delay(150);
+  }
+  // Finalize at 9600: re-enable NMEA GGA+RMC and persist to BBR + flash.
+  gpsSerial.begin(9600);
+  delay(50);
+  gps.begin(9600);
+  gps.saveConfig();
+  Serial.println("GPSDIAG FORCE9600: module set to 9600 and config saved (persists across power cycles).");
+}
+
 // Probes the common u-blox baud rates and locks onto the first one that yields
 // real, checksum-valid NMEA. The port is left open at the locked baud on
 // success. Returns the locked baud, or -1 if none produced valid framing.
@@ -1569,6 +1605,10 @@ void runGpsDiagnosticDebug() {
   const int rxIdleLevel = digitalRead(PC7);
   Serial.print("GPSDIAG PC7/USART6 RX idle level before UART start: ");
   Serial.println(rxIdleLevel == HIGH ? "HIGH (normal UART idle if GPS TX is connected/powered)" : "LOW (possible short, swapped wire, or unpowered GPS)");
+
+#if FC_GPS_DIAGNOSTIC_FORCE_9600
+  gpsDiagForceModuleTo9600();
+#endif
 
   const int32_t lockedBaud = gpsDiagScanForBaud();
   uint32_t monitorBaud;

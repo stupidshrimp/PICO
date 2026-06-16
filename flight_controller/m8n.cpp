@@ -82,6 +82,23 @@ void M8N::begin(uint32_t baud) {
     delay(100);
 }
 
+void M8N::saveConfig() {
+    // UBX-CFG-CFG: clearMask=0, saveMask=0x0000FFFF (all config), loadMask=0,
+    // deviceMask=0x03 (battery-backed RAM + flash). Checksum filled at runtime.
+    uint8_t cfgCfg[] = {
+        0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00,
+        0x00, 0x00, 0x00, 0x00,              // clearMask
+        0xFF, 0xFF, 0x00, 0x00,              // saveMask: all
+        0x00, 0x00, 0x00, 0x00,              // loadMask
+        0x03,                                // deviceMask: BBR + flash
+        0x00, 0x00                           // checksum (filled below)
+    };
+    ubxAppendChecksum(cfgCfg, sizeof(cfgCfg));
+    uart.write(cfgCfg, sizeof(cfgCfg));
+    uart.flush();
+    delay(100);
+}
+
 void M8N::gatherData() {
     while (uart.available()) {
         char c = static_cast<char>(uart.read());
