@@ -14,6 +14,11 @@ public:
     // the serial port (e.g. gpsSerial.begin(9600)) before entering the main loop.
     void begin(uint32_t baud = 9600);
 
+    // Persists the module's current configuration (baud, enabled messages, rate)
+    // to battery-backed RAM and flash via UBX-CFG-CFG, so it survives a power
+    // cycle. Call after begin() once the desired settings are in place.
+    void saveConfig();
+
     // Call this method repeatedly (e.g. in loop()) to process incoming data
     void gatherData();
 

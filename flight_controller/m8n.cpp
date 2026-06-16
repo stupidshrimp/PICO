@@ -82,6 +82,27 @@ void M8N::begin(uint32_t baud) {
     delay(100);
 }
 
+void M8N::saveConfig() {
+    // UBX-CFG-CFG: clearMask=0, loadMask=0, deviceMask=0x03 (battery-backed RAM
+    // + flash). saveMask=0x0000001F sets only the documented config-section bits
+    // -- ioPort(0), msgConf(1), infMsg(2), navConf(3), rxmConf(4) -- which cover
+    // the CFG-PRT (baud), CFG-MSG, and CFG-RATE changes we persist. Setting the
+    // reserved bits via 0xFFFF risks a NAK on M8, leaving the 9600 setting
+    // volatile and reverting on power cycle. Checksum filled at runtime.
+    uint8_t cfgCfg[] = {
+        0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00,
+        0x00, 0x00, 0x00, 0x00,              // clearMask
+        0x1F, 0x00, 0x00, 0x00,              // saveMask: documented sections 0-4
+        0x00, 0x00, 0x00, 0x00,              // loadMask
+        0x03,                                // deviceMask: BBR + flash
+        0x00, 0x00                           // checksum (filled below)
+    };
+    ubxAppendChecksum(cfgCfg, sizeof(cfgCfg));
+    uart.write(cfgCfg, sizeof(cfgCfg));
+    uart.flush();
+    delay(100);
+}
+
 void M8N::gatherData() {
     while (uart.available()) {
         char c = static_cast<char>(uart.read());
