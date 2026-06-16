@@ -1462,6 +1462,25 @@ void gpsDiagConsumeByte(char c) {
   }
 }
 
+// Prints a raw byte buffer as space-separated hex plus a printable-ASCII
+// gutter ('.' for non-printable). Lets a human eyeball the wire data: readable
+// "$GPGGA,..." text means the baud is right (even if checksums fail); a
+// repeating "B5 62" sync means UBX binary; structureless high-bit bytes point
+// to inverted polarity or a corrupted/weak line.
+void gpsDiagPrintHexAscii(const uint8_t *buf, size_t len) {
+  Serial.print("  hex:");
+  for (size_t i = 0; i < len; ++i) {
+    Serial.print(buf[i] < 0x10 ? " 0" : " ");
+    Serial.print(buf[i], HEX);
+  }
+  Serial.print("  |");
+  for (size_t i = 0; i < len; ++i) {
+    const char c = (char)buf[i];
+    Serial.print((c >= 0x20 && c < 0x7F) ? c : '.');
+  }
+  Serial.println("|");
+}
+
 // Probes the common u-blox baud rates and locks onto the first one that yields
 // real, checksum-valid NMEA. The port is left open at the locked baud on
 // success. Returns the locked baud, or -1 if none produced valid framing.
@@ -1494,6 +1513,11 @@ int32_t gpsDiagScanForBaud() {
     // Heard only if this baud matches the module: switch it to NMEA GGA+RMC.
     gps.begin(baud);
 
+    // Capture a raw sample so a human can identify the data even when no frame
+    // assembles. Skip the first 400 ms so we sample steady-state stream bytes
+    // rather than any startup/CFG echo.
+    uint8_t sampleBuf[48];
+    size_t sampleLen = 0;
     const uint32_t okBefore = gpsDiagChecksumOkCount;
     const uint32_t startMs = millis();
     while ((uint32_t)(millis() - startMs) < GPS_DIAG_BAUD_LISTEN_MS) {
@@ -1502,7 +1526,12 @@ int32_t gpsDiagScanForBaud() {
         if (rawByte < 0) {
           continue;
         }
-        gpsDiagConsumeByte(static_cast<char>(rawByte & 0xFF));
+        const uint8_t b = static_cast<uint8_t>(rawByte & 0xFF);
+        if (sampleLen < sizeof(sampleBuf) &&
+            (uint32_t)(millis() - startMs) >= 400UL) {
+          sampleBuf[sampleLen++] = b;
+        }
+        gpsDiagConsumeByte(static_cast<char>(b));
       }
       delay(1);
     }
@@ -1513,6 +1542,11 @@ int32_t gpsDiagScanForBaud() {
     Serial.print(" baud -> ");
     Serial.print(okFrames);
     Serial.println(" valid NMEA frame(s)");
+    if (sampleLen > 0) {
+      gpsDiagPrintHexAscii(sampleBuf, sampleLen);
+    } else {
+      Serial.println("  (no bytes captured in sample window)");
+    }
 
     if (okFrames >= GPS_DIAG_BAUD_LOCK_FRAMES) {
       Serial.print("GPSDIAG SCAN: LOCKED to ");
