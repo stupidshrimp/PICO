@@ -1434,9 +1434,14 @@ void gpsDiagPrintRawSample() {
       break;
     }
   }
-  if (sampleHasUbxSync) {
-    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) in ambient output -> module is streaming UBX binary, not NMEA.");
+  // Only diagnose UBX-only when no valid NMEA has been seen anywhere (scan or
+  // monitor). A mixed UBX+NMEA module emits B5 62 too, but there NMEA is present
+  // and working, so the "not NMEA / fix your wiring" hint would mislead.
+  if (sampleHasUbxSync && gpsDiagChecksumOkCount == 0) {
+    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) in ambient output and no NMEA seen -> module is streaming UBX binary, not NMEA.");
     Serial.println("GPSDIAG RAW SAMPLE: enable NMEA output and confirm board PC6/USART6 TX -> GPS RX is connected, otherwise the module never hears the CFG-PRT reconfigure command.");
+  } else if (sampleHasUbxSync) {
+    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) seen alongside valid NMEA -> module is in mixed UBX+NMEA mode; NMEA is present, no wiring action needed.");
   }
 }
 
