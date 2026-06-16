@@ -31,6 +31,10 @@ public:
     int fix_quality;         // From GGA sentence
     int satellites_in_use;   // From GGA sentence
     bool has_valid_fix;      // True when RMC/GGA data passed checksum and fix gates.
+    // Increments whenever a freshly received RMC sentence yields a valid fix (with
+    // new ground speed/course). Lets callers distinguish a genuinely new fix from
+    // the sticky has_valid_fix flag, which stays true if the GPS UART goes silent.
+    uint32_t fix_update_counter;
 
 private:
     static constexpr size_t NMEA_BUFFER_SIZE = 121;

@@ -950,7 +950,8 @@ uint8_t satsInUse      = 0;       // GPS satellites currently in use
 double latestGpsCourse = 0.0;
 float latestGpsGroundSpeedMps = 0.0f;  // Ground speed from GPS (RMC), meters per second
 bool latestGpsFixValid = false;        // True when the cached GPS fix is usable
-uint32_t lastGpsFixUpdateUs = 0;       // micros() of the last valid GPS fix update
+uint32_t lastGpsFixUpdateUs = 0;       // micros() of the last *new* valid GPS fix
+uint32_t lastGpsFixCounter = 0;        // gps.fix_update_counter at the last refresh
 
 // Telemetry values prepared for CRSF GPS frame. The GPS CRSF frame uses the
 // latest cached GPS coordinates plus separately sampled airspeed/barometer data.
@@ -1004,7 +1005,14 @@ void updateGpsCache() {
     latestGpsCourse = gps.course;
     latestGpsGroundSpeedMps = static_cast<float>(gps.speed) * 0.514444f;  // knots -> m/s
     latestGpsFixValid = true;
-    lastGpsFixUpdateUs = micros();
+    // Only advance the freshness timestamp when the driver actually parsed a new
+    // fix this cycle. gps.has_valid_fix is sticky and would otherwise refresh on
+    // every 50 Hz poll even after the GPS UART goes silent, defeating the
+    // CENTRIPETAL_GPS_FIX_TIMEOUT_US staleness check in gpsMotionConfirmed().
+    if (gps.fix_update_counter != lastGpsFixCounter) {
+      lastGpsFixCounter = gps.fix_update_counter;
+      lastGpsFixUpdateUs = micros();
+    }
   } else {
     latestLatitude = 0.0;
     latestLongitude = 0.0;

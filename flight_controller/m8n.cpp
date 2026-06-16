@@ -6,6 +6,7 @@
 M8N::M8N(Stream &uart) : latitude(0.0), longitude(0.0),
                          speed(0.0), course(0.0), altitude(0.0),
                          fix_quality(0), satellites_in_use(0), has_valid_fix(false),
+                         fix_update_counter(0),
                          uart(uart), nmeaBufferIndex(0), nmeaDiscarding(false), rmcDataActive(false) {
     timestamp[0] = '\0';
     date[0] = '\0';
@@ -199,6 +200,11 @@ void M8N::parseRMC(char *sentence) {
         has_valid_fix = currentCoordinatesValid &&
                         (fix_quality > 0 || satellites_in_use == 0) &&
                         (satellites_in_use == 0 || satellites_in_use >= MIN_SATELLITES_FOR_FIX);
+        if (has_valid_fix) {
+            // Mark that fresh ground speed/course arrived so callers can detect a
+            // silent GPS instead of trusting the sticky has_valid_fix flag.
+            ++fix_update_counter;
+        }
 
         // Process timestamp and date (parts[1] HHMMSS.SS, parts[9] DDMMYY).
         if (strlen(parts[1]) >= 6 && strlen(parts[9]) >= 6) {
