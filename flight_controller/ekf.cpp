@@ -150,6 +150,16 @@ bool EKF::bUpdate(const Matrix& Y, const Matrix& U)
         return false;
     }
 
+    /* bMatrixIsValid() only checks matrix dimensions, so a non-finite value that
+     * propagated through the Kalman gain (e.g. an Inf/NaN from an ill-conditioned
+     * update) would otherwise pass undetected into the attitude solution. Guard
+     * the corrected state here so the caller restores the last good estimate. */
+    for (int16_t _i = 0; _i < SS_X_LEN; _i++) {
+        if (!isfinite(X_Est[_i][0])) {
+            return false;
+        }
+    }
+
     /* P(k|k)  = (I - K*H)*P(k|k-1), implemented with the Joseph stabilized form. */
     Matrix IminusKH = MatIdentity(SS_X_LEN) - (Gain*H);
     P = IminusKH*P*(IminusKH.Transpose()) + Gain*R*(Gain.Transpose());
