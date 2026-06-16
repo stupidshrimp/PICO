@@ -1243,6 +1243,9 @@ void runMagnetometerCalibrationDebug() {
 constexpr size_t GPS_DIAG_NMEA_BUFFER_SIZE = 121;
 constexpr size_t GPS_DIAG_MAX_FIELDS = 20;
 constexpr uint32_t GPS_DIAG_POST_PING_WINDOW_MS = 1500UL;
+// Ambient listen window used to fill the raw-byte sample before the monitor
+// transmits its first poll, so the dump reflects the receiver's own output.
+constexpr uint32_t GPS_DIAG_QUIET_SAMPLE_MS = 1500UL;
 
 // Auto-baud scan: when the link is alive (bytes flowing) but no NMEA frames
 // ever assemble, the module is almost always streaming at a baud other than
@@ -1265,6 +1268,17 @@ uint32_t gpsDiagSentenceCount = 0;
 uint32_t gpsDiagChecksumOkCount = 0;
 uint32_t gpsDiagChecksumFailCount = 0;
 uint32_t gpsDiagOverlengthCount = 0;
+// UBX binary frames start with the sync pair 0xB5 0x62. A module that streams
+// these (and never assembles a "$...\n" NMEA frame) is in UBX-only output mode,
+// which is the most common reason bytes flow but sentences stays at 0.
+uint32_t gpsDiagUbxSyncCount = 0;
+uint8_t gpsDiagPrevByte = 0;
+// Small ring of the first raw bytes seen at the monitor baud, dumped once as
+// hex + ASCII so the operator can eyeball whether the link carries NMEA text,
+// UBX binary, or garbage (baud/signal problem).
+constexpr size_t GPS_DIAG_RAW_SAMPLE_SIZE = 32;
+uint8_t gpsDiagRawSample[GPS_DIAG_RAW_SAMPLE_SIZE];
+size_t gpsDiagRawSampleLen = 0;
 uint32_t gpsDiagPingCount = 0;
 uint32_t gpsDiagBytesAtLastPing = 0;
 uint32_t gpsDiagLastPingMs = 0;
@@ -1388,6 +1402,49 @@ void gpsDiagSendPing() {
   Serial.println(gpsDiagPingCount);
 }
 
+// Dumps the captured raw-byte sample as hex and printable ASCII. This is the
+// fastest way to tell apart the three "bytes flow but sentences=0" cases:
+//   * readable "$GxGGA,..." text  -> NMEA is present; suspect a parser/baud edge
+//   * leading B5 62 / unreadable   -> UBX binary; NMEA output is disabled
+//   * pure noise, no structure     -> baud mismatch or a marginal/noisy line
+void gpsDiagPrintRawSample() {
+  Serial.print("GPSDIAG RAW SAMPLE hex:");
+  for (size_t i = 0; i < gpsDiagRawSampleLen; ++i) {
+    Serial.print(' ');
+    if (gpsDiagRawSample[i] < 0x10) {
+      Serial.print('0');
+    }
+    Serial.print(gpsDiagRawSample[i], HEX);
+  }
+  Serial.println();
+  Serial.print("GPSDIAG RAW SAMPLE ascii: ");
+  for (size_t i = 0; i < gpsDiagRawSampleLen; ++i) {
+    const uint8_t b = gpsDiagRawSample[i];
+    Serial.print((b >= 0x20 && b < 0x7F) ? static_cast<char>(b) : '.');
+  }
+  Serial.println();
+
+  // Base the UBX-only hint on this sample alone, not the cumulative counter:
+  // the sample is captured from a quiet, no-transmit window, so it excludes our
+  // own config writes, polls, and any loopback echo of them.
+  bool sampleHasUbxSync = false;
+  for (size_t i = 1; i < gpsDiagRawSampleLen; ++i) {
+    if (gpsDiagRawSample[i - 1] == 0xB5 && gpsDiagRawSample[i] == 0x62) {
+      sampleHasUbxSync = true;
+      break;
+    }
+  }
+  // Only diagnose UBX-only when no valid NMEA has been seen anywhere (scan or
+  // monitor). A mixed UBX+NMEA module emits B5 62 too, but there NMEA is present
+  // and working, so the "not NMEA / fix your wiring" hint would mislead.
+  if (sampleHasUbxSync && gpsDiagChecksumOkCount == 0) {
+    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) in ambient output and no NMEA seen -> module is streaming UBX binary, not NMEA.");
+    Serial.println("GPSDIAG RAW SAMPLE: enable NMEA output and confirm board PC6/USART6 TX -> GPS RX is connected, otherwise the module never hears the CFG-PRT reconfigure command.");
+  } else if (sampleHasUbxSync) {
+    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) seen alongside valid NMEA -> module is in mixed UBX+NMEA mode; NMEA is present, no wiring action needed.");
+  }
+}
+
 void gpsDiagPrintStatus() {
   const uint32_t nowMs = millis();
   if ((uint32_t)(nowMs - gpsDiagLastStatusMs) < FC_GPS_DIAGNOSTIC_STATUS_PERIOD_MS) {
@@ -1400,6 +1457,7 @@ void gpsDiagPrintStatus() {
   Serial.print(" checksum_ok="); Serial.print(gpsDiagChecksumOkCount);
   Serial.print(" checksum_fail="); Serial.print(gpsDiagChecksumFailCount);
   Serial.print(" overlength="); Serial.print(gpsDiagOverlengthCount);
+  Serial.print(" ubx_sync="); Serial.print(gpsDiagUbxSyncCount);
   Serial.print(" ms_since_last_byte="); Serial.println(nowMs - gpsDiagLastByteMs);
 
   if (gpsDiagLastPingMs != 0 &&
@@ -1422,6 +1480,15 @@ void gpsDiagPrintStatus() {
 void gpsDiagConsumeByte(char c) {
   ++gpsDiagByteCount;
   gpsDiagLastByteMs = millis();
+
+  const uint8_t rawByte = static_cast<uint8_t>(c);
+  if (gpsDiagPrevByte == 0xB5 && rawByte == 0x62) {
+    ++gpsDiagUbxSyncCount;
+  }
+  gpsDiagPrevByte = rawByte;
+  if (gpsDiagRawSampleLen < GPS_DIAG_RAW_SAMPLE_SIZE) {
+    gpsDiagRawSample[gpsDiagRawSampleLen++] = rawByte;
+  }
 
   if (c == '$') {
     gpsDiagNmeaBufferIndex = 0;
@@ -1494,7 +1561,21 @@ int32_t gpsDiagScanForBaud() {
     // Heard only if this baud matches the module: switch it to NMEA GGA+RMC.
     gps.begin(baud);
 
+    // gps.begin() just transmitted UBX config frames (each starts with B5 62).
+    // Discard the module's ACK and any TX<->RX loopback echo of those frames so
+    // self-sent UBX bytes are never counted as the receiver's own UBX output --
+    // otherwise a wiring short would yield a false "UBX-only" diagnosis. The
+    // listen window below transmits nothing, so everything it counts is received.
+    while (gpsSerial.available() > 0) {
+      (void)gpsSerial.read();
+    }
+    gpsDiagReceivingNmea = false;
+    gpsDiagDiscardingNmea = false;
+    gpsDiagNmeaBufferIndex = 0;
+    gpsDiagPrevByte = 0;  // avoid a straddling 0xB5 faking a UBX sync on the first received byte
+
     const uint32_t okBefore = gpsDiagChecksumOkCount;
+    const uint32_t ubxBefore = gpsDiagUbxSyncCount;
     const uint32_t startMs = millis();
     while ((uint32_t)(millis() - startMs) < GPS_DIAG_BAUD_LISTEN_MS) {
       while (gpsSerial.available() > 0) {
@@ -1508,11 +1589,14 @@ int32_t gpsDiagScanForBaud() {
     }
 
     const uint32_t okFrames = gpsDiagChecksumOkCount - okBefore;
+    const uint32_t ubxFrames = gpsDiagUbxSyncCount - ubxBefore;
     Serial.print("GPSDIAG SCAN: ");
     Serial.print(baud);
     Serial.print(" baud -> ");
     Serial.print(okFrames);
-    Serial.println(" valid NMEA frame(s)");
+    Serial.print(" valid NMEA frame(s), ");
+    Serial.print(ubxFrames);
+    Serial.println(" UBX sync(s)");
 
     if (okFrames >= GPS_DIAG_BAUD_LOCK_FRAMES) {
       Serial.print("GPSDIAG SCAN: LOCKED to ");
@@ -1523,6 +1607,20 @@ int32_t gpsDiagScanForBaud() {
   }
 
   Serial.println("GPSDIAG SCAN: no baud produced valid NMEA. If bytes are flowing, suspect a TX<->RX loopback/short, UBX-only output, or a noisy/weak connection.");
+  if (gpsDiagChecksumOkCount > 0) {
+    // NMEA did appear, just not the >=2 frames needed to lock. Do not blame the
+    // reconfigure line -- the module is already emitting NMEA, the link is just
+    // marginal/intermittent.
+    Serial.print("GPSDIAG SCAN: some valid NMEA was seen (");
+    Serial.print(gpsDiagChecksumOkCount);
+    Serial.print(" frame(s)) but fewer than the ");
+    Serial.print(GPS_DIAG_BAUD_LOCK_FRAMES);
+    Serial.println(" needed to lock -> suspect a marginal/noisy link or weak signal, not UBX-only output.");
+  } else if (gpsDiagUbxSyncCount > 0) {
+    Serial.print("GPSDIAG SCAN: saw ");
+    Serial.print(gpsDiagUbxSyncCount);
+    Serial.println(" UBX sync(s) and no valid NMEA -> module is in UBX-only output mode. The CFG-PRT command that enables NMEA is not taking effect; verify board PC6/USART6 TX -> GPS RX is actually connected (that line carries the reconfigure command), then power-cycle.");
+  }
   return -1;
 }
 
@@ -1552,6 +1650,33 @@ void runGpsDiagnosticDebug() {
   Serial.print("GPSDIAG: monitoring at ");
   Serial.print(monitorBaud);
   Serial.println(" baud.");
+
+  // Capture the raw-byte sample from a QUIET ambient window before transmitting
+  // anything. Sampling after gpsDiagSendPing() would bias the dump (and its
+  // UBX-only hint) toward our own solicited UBX-MON-VER/PUBX responses -- a
+  // healthy module that emits NMEA but also answers UBX polls could otherwise
+  // look UBX-only. Drop stale bytes first so the sample reflects this baud.
+  while (gpsSerial.available() > 0) {
+    (void)gpsSerial.read();
+  }
+  gpsDiagRawSampleLen = 0;
+  gpsDiagPrevByte = 0;
+  const uint32_t quietSampleStartMs = millis();
+  while (gpsDiagRawSampleLen < GPS_DIAG_RAW_SAMPLE_SIZE &&
+         (uint32_t)(millis() - quietSampleStartMs) < GPS_DIAG_QUIET_SAMPLE_MS) {
+    while (gpsSerial.available() > 0) {
+      const int rawByte = gpsSerial.read();
+      if (rawByte < 0) {
+        continue;
+      }
+      gpsDiagConsumeByte(static_cast<char>(rawByte & 0xFF));
+    }
+    delay(1);
+  }
+  if (gpsDiagRawSampleLen > 0) {
+    gpsDiagPrintRawSample();
+  }
+
   gpsDiagLastByteMs = millis();
   gpsDiagLastStatusMs = millis();
   gpsDiagSendPing();
