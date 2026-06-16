@@ -3272,20 +3272,17 @@ class MainWindow(QMainWindow):
         )
         self.play_sound(sound_name)
 
-    def _config_info_icon(self, tooltip: str) -> QLabel:
-        """Return a small circled-i badge that shows ``tooltip`` on hover.
+    def _config_tooltip_label(self, text: str, tooltip: str) -> QLabel:
+        """Return a configuration label that shows ``tooltip`` on hover.
 
-        Wrapping the text in a paragraph tag forces Qt to treat the tooltip as
-        rich text, which makes ``QToolTip`` word-wrap longer descriptions instead
-        of rendering them on a single very wide line.
+        Wrapping the tooltip in a paragraph tag forces Qt to treat it as rich
+        text, which makes ``QToolTip`` word-wrap longer descriptions instead of
+        rendering them on a single very wide line.
         """
-        icon = QLabel("ⓘ")  # circled latin small letter i
-        icon.setToolTip(f"<p>{tooltip}</p>")
-        icon.setCursor(Qt.CursorShape.WhatsThisCursor)
-        icon.setStyleSheet(
-            "QLabel { color: rgb(120, 170, 255); font-weight: bold; padding: 0px 4px; }"
-        )
-        return icon
+        label = QLabel(text)
+        label.setToolTip(f"<p>{tooltip}</p>")
+        label.setCursor(Qt.CursorShape.WhatsThisCursor)
+        return label
 
     def _update_channel_poll_label(self, interval_ms: int) -> None:
         """Refresh the approximate-Hz readout next to the GS poll interval."""
@@ -3459,10 +3456,8 @@ class MainWindow(QMainWindow):
         rf_layout, self.rf_status = add_section("Radiofrequency Settings")
         rf_baud_row = QHBoxLayout()
         rf_baud_row.addWidget(
-            QLabel(f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}")
-        )
-        rf_baud_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                f"Baud rate: {self.crsf_cfg.get('baudrate', 'N/A')}",
                 "Serial baud rate for the CRSF radio link. Fixed to match the "
                 "ExpressLRS module; change it in config.json only if your hardware "
                 "uses a different rate."
@@ -3479,9 +3474,9 @@ class MainWindow(QMainWindow):
         rf_layout.addWidget(self.pico_rate_label)
         self.update_pico_rate_label()
         rf_port_row = QHBoxLayout()
-        rf_port_row.addWidget(QLabel("Port"))
         rf_port_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Port",
                 "Serial port for the ExpressLRS/CRSF radio module that carries the "
                 "RC uplink and telemetry downlink."
             )
@@ -3492,9 +3487,9 @@ class MainWindow(QMainWindow):
         rf_layout.addLayout(rf_port_row)
 
         rate_row = QHBoxLayout()
-        rate_row.addWidget(QLabel("Attitude/RC Packet Rate"))
         rate_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Attitude/RC Packet Rate",
                 "RF frame rate at which the CRSF worker transmits RC packets "
                 "(100/250/500 Hz). Must match the ExpressLRS link configuration. "
                 "This is the actual over-the-air control rate."
@@ -3511,9 +3506,9 @@ class MainWindow(QMainWindow):
         rf_layout.addLayout(rate_row)
 
         poll_row = QHBoxLayout()
-        poll_row.addWidget(QLabel("GS control poll interval"))
         poll_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "GS control poll interval",
                 "How often the ground station samples the joystick/control inputs "
                 "and pushes fresh channel values to the CRSF worker. The worker "
                 "repeats the latest values at the packet rate above, so this does "
@@ -3533,9 +3528,9 @@ class MainWindow(QMainWindow):
         rf_layout.addLayout(poll_row)
 
         stale_row = QHBoxLayout()
-        stale_row.addWidget(QLabel("RC stale timeout"))
         stale_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "RC stale timeout",
                 "If the control pipeline stops refreshing channels for longer than "
                 "this, the CRSF worker stops transmitting instead of replaying the "
                 "last command, letting the flight controller's own packet-age "
@@ -3558,10 +3553,8 @@ class MainWindow(QMainWindow):
         control_layout, self.control_status = add_section("Control System Settings")
         control_baud_row = QHBoxLayout()
         control_baud_row.addWidget(
-            QLabel(f"Baud rate: {self.joystick_cfg.get('baudrate', 'N/A')}")
-        )
-        control_baud_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                f"Baud rate: {self.joystick_cfg.get('baudrate', 'N/A')}",
                 "Serial baud rate for the joystick/control-input device. Fixed to "
                 "match the controller firmware; change it in config.json only if "
                 "your hardware uses a different rate."
@@ -3570,9 +3563,9 @@ class MainWindow(QMainWindow):
         control_baud_row.addStretch()
         control_layout.addLayout(control_baud_row)
         control_port_row = QHBoxLayout()
-        control_port_row.addWidget(QLabel("Port"))
         control_port_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Port",
                 "Serial port for the joystick/control-input device (for example the "
                 "custom Hall-effect stick controller)."
             )
@@ -3583,9 +3576,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(control_port_row)
 
         dz_row = QHBoxLayout()
-        dz_row.addWidget(QLabel("Deadzone (%)"))
         dz_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Deadzone (%)",
                 "Percentage of stick travel around center that is ignored, "
                 "preventing drift or jitter from a noisy resting position."
             )
@@ -3599,9 +3592,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(dz_row)
 
         sens_row = QHBoxLayout()
-        sens_row.addWidget(QLabel("Sensitivity (%)"))
         sens_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Sensitivity (%)",
                 "Scales how much commanded deflection you get per unit of stick "
                 "movement. 100% is 1:1; higher is more aggressive."
             )
@@ -3615,9 +3608,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(sens_row)
 
         yaw_sens_row = QHBoxLayout()
-        yaw_sens_row.addWidget(QLabel("Yaw sensitivity (%)"))
         yaw_sens_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Yaw sensitivity (%)",
                 "Same as sensitivity but applied only to the yaw (rudder) axis."
             )
         )
@@ -3634,9 +3627,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(yaw_sens_row)
 
         smooth_row = QHBoxLayout()
-        smooth_row.addWidget(QLabel("Smoothing (%)"))
         smooth_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Smoothing (%)",
                 "Low-pass filter on raw stick input. Higher values feel smoother "
                 "but add control latency."
             )
@@ -3650,9 +3643,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(smooth_row)
 
         fbw_roll_row = QHBoxLayout()
-        fbw_roll_row.addWidget(QLabel("FBW max roll (deg)"))
         fbw_roll_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "FBW max roll (deg)",
                 "Maximum bank angle the ground station will command in Fly-By-Wire "
                 "mode. The flight controller still clamps at its own 80° safety "
                 "envelope."
@@ -3667,9 +3660,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(fbw_roll_row)
 
         fbw_pitch_row = QHBoxLayout()
-        fbw_pitch_row.addWidget(QLabel("FBW max pitch (deg)"))
         fbw_pitch_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "FBW max pitch (deg)",
                 "Maximum pitch angle commanded in Fly-By-Wire mode, clamped again "
                 "by the flight controller's own safety envelope."
             )
@@ -3683,9 +3676,9 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(fbw_pitch_row)
 
         auto_throttle_row = QHBoxLayout()
-        auto_throttle_row.addWidget(QLabel("Auto throttle target airspeed (mph)"))
         auto_throttle_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Auto throttle target airspeed (mph)",
                 "Target airspeed sent to the flight controller on CH3 when Auto "
                 "Throttle is engaged."
             )
@@ -3703,9 +3696,9 @@ class MainWindow(QMainWindow):
             "Aircraft configuration", show_status=False
         )
         battery_row = QHBoxLayout()
-        battery_row.addWidget(QLabel("Battery pack"))
         battery_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Battery pack",
                 "Cell count of the flight battery. Sets the voltage thresholds used "
                 "by the battery diagnostics panel and low-battery warnings."
             )
@@ -3721,33 +3714,32 @@ class MainWindow(QMainWindow):
         map_layout, _ = add_section("GPS Map Settings", show_status=False)
         self.map_enabled_checkbox = QCheckBox("Enable offline map rendering")
         self.map_enabled_checkbox.setChecked(self.map_cfg.get("enabled", True))
+        self.map_enabled_checkbox.setToolTip(
+            "<p>Render the offline GPS map. Disable if map tiles are unavailable "
+            "or to save resources.</p>"
+        )
+        self.map_enabled_checkbox.setCursor(Qt.CursorShape.WhatsThisCursor)
         map_enabled_row = QHBoxLayout()
         map_enabled_row.addWidget(self.map_enabled_checkbox)
-        map_enabled_row.addWidget(
-            self._config_info_icon(
-                "Render the offline GPS map. Disable if map tiles are unavailable "
-                "or to save resources."
-            )
-        )
         map_enabled_row.addStretch()
         map_layout.addLayout(map_enabled_row)
 
         follow_row = QHBoxLayout()
         self.map_follow_checkbox = QCheckBox("Follow GPS position")
         self.map_follow_checkbox.setChecked(self._gps_follow_enabled)
-        follow_row.addWidget(self.map_follow_checkbox)
-        follow_row.addWidget(
-            self._config_info_icon(
-                "Keep the map centered on the aircraft as new GPS fixes arrive."
-            )
+        self.map_follow_checkbox.setToolTip(
+            "<p>Keep the map centered on the aircraft as new GPS fixes arrive.</p>"
         )
+        self.map_follow_checkbox.setCursor(Qt.CursorShape.WhatsThisCursor)
+        follow_row.addWidget(self.map_follow_checkbox)
         follow_row.addStretch()
         map_layout.addLayout(follow_row)
 
         zoom_row = QHBoxLayout()
-        zoom_row.addWidget(QLabel("Default zoom"))
         zoom_row.addWidget(
-            self._config_info_icon("Initial map zoom level applied on startup.")
+            self._config_tooltip_label(
+                "Default zoom", "Initial map zoom level applied on startup."
+            )
         )
         self.map_zoom_spin = QSpinBox()
         self.map_zoom_spin.setRange(self._map_min_zoom, self._map_max_zoom)
@@ -3757,9 +3749,9 @@ class MainWindow(QMainWindow):
         map_layout.addLayout(zoom_row)
 
         center_row = QHBoxLayout()
-        center_row.addWidget(QLabel("Default center"))
         center_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Default center",
                 "Latitude/longitude the map centers on before a GPS fix is "
                 "available."
             )
@@ -3820,9 +3812,9 @@ class MainWindow(QMainWindow):
         warn_layout.addWidget(airborne_note)
 
         airborne_takeoff_row = QHBoxLayout()
-        airborne_takeoff_row.addWidget(QLabel("Airborne when AGL >"))
         airborne_takeoff_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Airborne when AGL >",
                 "Above-ground altitude that, once exceeded, marks the aircraft as "
                 "airborne so stall and low-altitude alarms become armed."
             )
@@ -3839,9 +3831,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(airborne_takeoff_row)
 
         airborne_landed_row = QHBoxLayout()
-        airborne_landed_row.addWidget(QLabel("Grounded below"))
         airborne_landed_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Grounded below",
                 "Airspeed and altitude below which the aircraft is considered "
                 "landed, which suppresses in-flight alarms during ground handling."
             )
@@ -3867,9 +3859,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(airborne_landed_row)
 
         takeoff_mult_row = QHBoxLayout()
-        takeoff_mult_row.addWidget(QLabel("Takeoff airspeed = stall ×"))
         takeoff_mult_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Takeoff airspeed = stall ×",
                 "The takeoff airspeed threshold is the stall warning speed "
                 "multiplied by this factor; reaching it helps confirm the aircraft "
                 "is actually flying before latching the airborne state."
@@ -3886,9 +3878,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(takeoff_mult_row)
 
         takeoff_hold_row = QHBoxLayout()
-        takeoff_hold_row.addWidget(QLabel("Takeoff hold"))
         takeoff_hold_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Takeoff hold",
                 "Airborne conditions must persist this long before the aircraft is "
                 "latched as airborne, debouncing brief altitude/airspeed spikes."
             )
@@ -3905,9 +3897,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(takeoff_hold_row)
 
         landing_hold_row = QHBoxLayout()
-        landing_hold_row.addWidget(QLabel("Landing hold"))
         landing_hold_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Landing hold",
                 "Landed conditions must persist this long before the aircraft is "
                 "latched as landed, preventing a brief touch-and-go from clearing "
                 "the airborne state."
@@ -3925,9 +3917,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(landing_hold_row)
 
         gps_fresh_row = QHBoxLayout()
-        gps_fresh_row.addWidget(QLabel("GPS fresh timeout"))
         gps_fresh_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "GPS fresh timeout",
                 "GPS data older than this is treated as stale by the airborne "
                 "detector and the sink-rate estimator, so bursty GPS delivery "
                 "cannot create a false descent-rate emergency."
@@ -3945,9 +3937,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(gps_fresh_row)
 
         stall_speed_row = QHBoxLayout()
-        stall_speed_row.addWidget(QLabel("Airspeed <"))
         stall_speed_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Airspeed <",
                 "Stall alarm fires when airspeed drops below this while the aircraft "
                 "is above the stall altitude below."
             )
@@ -3963,9 +3955,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(stall_speed_row)
 
         stall_alt_row = QHBoxLayout()
-        stall_alt_row.addWidget(QLabel("Altitude >"))
         stall_alt_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Altitude >",
                 "Minimum altitude required before the stall (low-airspeed) alarm is "
                 "allowed to sound."
             )
@@ -3982,9 +3974,9 @@ class MainWindow(QMainWindow):
 
         warn_layout.addWidget(QLabel("Altitude Alarm"))
         alt_alarm_alt_row = QHBoxLayout()
-        alt_alarm_alt_row.addWidget(QLabel("Altitude <"))
         alt_alarm_alt_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Altitude <",
                 "Low-altitude alarm fires when altitude drops below this while "
                 "airspeed is above the threshold below."
             )
@@ -4000,9 +3992,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(alt_alarm_alt_row)
 
         alt_alarm_speed_row = QHBoxLayout()
-        alt_alarm_speed_row.addWidget(QLabel("Airspeed >"))
         alt_alarm_speed_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Airspeed >",
                 "Airspeed above which the low-altitude alarm is allowed to sound."
             )
         )
@@ -4017,9 +4009,9 @@ class MainWindow(QMainWindow):
         warn_layout.addLayout(alt_alarm_speed_row)
 
         roll_row = QHBoxLayout()
-        roll_row.addWidget(QLabel("Roll |>|"))
         roll_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Roll |>|",
                 "Bank-angle alarm fires when absolute roll exceeds this many "
                 "degrees."
             )
@@ -4036,9 +4028,9 @@ class MainWindow(QMainWindow):
 
         warn_layout.addWidget(QLabel("Sink Rate Alarm"))
         sink_rate_row = QHBoxLayout()
-        sink_rate_row.addWidget(QLabel("Descent rate >"))
         sink_rate_row.addWidget(
-            self._config_info_icon(
+            self._config_tooltip_label(
+                "Descent rate >",
                 "Sink-rate alarm fires when the estimated descent rate exceeds this "
                 "value."
             )
