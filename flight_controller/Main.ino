@@ -1624,10 +1624,50 @@ int32_t gpsDiagScanForBaud() {
   return -1;
 }
 
+// Smallest pulse width (us) still treated as a data bit; anything shorter is
+// ringing/glitch. Anything longer than the gap threshold is an inter-burst idle
+// and is excluded from the bit-period sample (but still timed for polarity).
+constexpr uint32_t GPS_DIAG_GLITCH_FLOOR_US = 2UL;
+constexpr uint32_t GPS_DIAG_IDLE_GAP_US = 8000UL;        // ~125 baud: below any real rate
+constexpr uint32_t GPS_DIAG_MEASURE_WINDOW_US = 2500000UL; // span >=1 burst at 1 Hz
+constexpr size_t GPS_DIAG_PULSE_SAMPLES = 200;           // captured per measurement
+constexpr uint32_t GPS_DIAG_PULSE_MIN_SUPPORT = 3UL;     // repeats needed to trust a width
+
+// Returns the shortest pulse width that RECURS -- the smallest sample with at
+// least GPS_DIAG_PULSE_MIN_SUPPORT others within +/-25%. A genuine bit period
+// repeats constantly inside a burst, so this rejects one-off glitches and the
+// occasional split/merged edge from a slow digitalRead, which a plain minimum
+// would latch onto. Writes the supporter count to support. Returns 0 if no
+// width is corroborated.
+uint32_t gpsDiagRecurringMinPulse(const uint16_t *pulses, size_t count, uint32_t &support) {
+  uint32_t best = 0;
+  support = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const uint32_t candidate = pulses[i];
+    if (best != 0 && candidate >= best) {
+      continue;  // cannot improve on a smaller corroborated width
+    }
+    const uint32_t lo = (candidate * 3UL) / 4UL;
+    const uint32_t hi = (candidate * 5UL) / 4UL;
+    uint32_t hits = 0;
+    for (size_t j = 0; j < count; ++j) {
+      if (pulses[j] >= lo && pulses[j] <= hi) {
+        ++hits;
+      }
+    }
+    if (hits >= GPS_DIAG_PULSE_MIN_SUPPORT) {
+      best = candidate;
+      support = hits;
+    }
+  }
+  return best;
+}
+
 // Last-resort probe for the "bytes flow but no baud decodes" case: the bits are
 // being framed wrong, which means either a non-standard baud or an inverted RX
 // signal. This bypasses the USART and reads PC7 as a raw GPIO, timing the line
-// directly: the shortest high/low pulse is ~one bit period (=> the actual baud)
+// directly: the shortest recurring pulse is ~one bit period (=> the actual baud,
+// measured from the CPU clock, independent of how the USART baud is configured)
 // and the level the line rests in between bursts is the idle polarity (a normal
 // TTL UART idles HIGH; LOW means the signal is inverted). gpsSerial is released
 // first so the GPIO sampling does not fight the USART peripheral for the pin.
@@ -1636,10 +1676,8 @@ void gpsDiagMeasureLinePulses() {
   pinMode(PC7, INPUT);
   delayMicroseconds(50);
 
-  constexpr uint32_t GPS_DIAG_GLITCH_FLOOR_US = 2UL;       // reject sub-us ringing
-  constexpr uint32_t GPS_DIAG_MEASURE_WINDOW_US = 2500000UL; // span >=1 burst at 1 Hz
-
-  uint32_t minPulseUs = 0xFFFFFFFFUL;
+  static uint16_t pulses[GPS_DIAG_PULSE_SAMPLES];  // off-stack; bench use is single-threaded
+  size_t pulseCount = 0;
   uint32_t highTotalUs = 0;
   uint32_t lowTotalUs = 0;
   uint32_t edgeCount = 0;
@@ -1653,13 +1691,16 @@ void gpsDiagMeasureLinePulses() {
     if (level != lastLevel) {
       const uint32_t nowUs = micros();
       const uint32_t durUs = nowUs - lastEdgeUs;
+      // Idle gaps go to the polarity tally only; data-range pulses also feed the
+      // bit-period sample until the buffer is full (one burst easily fills it).
       if (lastLevel == HIGH) {
         highTotalUs += durUs;
       } else {
         lowTotalUs += durUs;
       }
-      if (durUs >= GPS_DIAG_GLITCH_FLOOR_US && durUs < minPulseUs) {
-        minPulseUs = durUs;
+      if (durUs >= GPS_DIAG_GLITCH_FLOOR_US && durUs <= GPS_DIAG_IDLE_GAP_US &&
+          pulseCount < GPS_DIAG_PULSE_SAMPLES) {
+        pulses[pulseCount++] = (uint16_t)durUs;
       }
       lastEdgeUs = nowUs;
       lastLevel = level;
@@ -1676,10 +1717,11 @@ void gpsDiagMeasureLinePulses() {
   }
 
   Serial.print("GPSDIAG LINE: edges="); Serial.print(edgeCount);
+  Serial.print(" pulse_samples="); Serial.print(pulseCount);
   Serial.print(" high_total_us="); Serial.print(highTotalUs);
   Serial.print(" low_total_us="); Serial.println(lowTotalUs);
 
-  if (edgeCount < 4 || minPulseUs == 0xFFFFFFFFUL) {
+  if (edgeCount < 4) {
     Serial.println("GPSDIAG LINE: too few edges to measure -> line is essentially static. Check GPS power, common ground, and that GPS TX actually reaches PC7.");
     return;
   }
@@ -1689,9 +1731,20 @@ void gpsDiagMeasureLinePulses() {
   Serial.println(idleHigh ? "HIGH (normal TTL UART idle)"
                           : "LOW (INVERTED or shorted -- a standard TTL UART idles HIGH)");
 
-  const uint32_t impliedBaud = 1000000UL / minPulseUs;
-  Serial.print("GPSDIAG LINE: shortest pulse="); Serial.print(minPulseUs);
-  Serial.print(" us -> implied baud ~"); Serial.println(impliedBaud);
+  uint32_t support = 0;
+  const uint32_t bitUs = gpsDiagRecurringMinPulse(pulses, pulseCount, support);
+  if (bitUs == 0) {
+    Serial.println("GPSDIAG LINE: no consistent bit period found (too few corroborated pulses) -> link is likely noisy/marginal. Re-check ground and connection quality.");
+    if (!idleHigh) {
+      Serial.println("GPSDIAG LINE: note idle reads LOW, so an inverted/shorted signal is still the prime suspect.");
+    }
+    return;
+  }
+
+  const uint32_t impliedBaud = 1000000UL / bitUs;
+  Serial.print("GPSDIAG LINE: shortest recurring pulse="); Serial.print(bitUs);
+  Serial.print(" us ("); Serial.print(support);
+  Serial.print(" samples) -> implied baud ~"); Serial.println(impliedBaud);
 
   const uint32_t commonBauds[] = {4800UL, 9600UL, 19200UL, 38400UL, 57600UL, 115200UL};
   uint32_t nearest = commonBauds[0];
@@ -1708,7 +1761,7 @@ void gpsDiagMeasureLinePulses() {
 
   if (!idleHigh) {
     Serial.println("GPSDIAG LINE: VERDICT -> signal is INVERTED. No standard baud can decode an inverted line. Fix: remove/bypass whatever inverts the GPS TX before PC7 (a backwards level-shifter, an extra transistor stage), or feed the FC a plain non-inverted 3.3V TTL signal.");
-  } else if (bestErr <= (nearest / 20)) {
+  } else if (bestErr <= (nearest / 10)) {
     Serial.print("GPSDIAG LINE: VERDICT -> line looks like a normal ");
     Serial.print(nearest);
     Serial.println(" baud TTL UART. If the scan still could not decode it, the FC USART6 clock is producing the wrong actual baud (check the board's clock config) or the link is too marginal/noisy.");
