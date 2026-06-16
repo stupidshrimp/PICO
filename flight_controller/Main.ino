@@ -1243,6 +1243,9 @@ void runMagnetometerCalibrationDebug() {
 constexpr size_t GPS_DIAG_NMEA_BUFFER_SIZE = 121;
 constexpr size_t GPS_DIAG_MAX_FIELDS = 20;
 constexpr uint32_t GPS_DIAG_POST_PING_WINDOW_MS = 1500UL;
+// Ambient listen window used to fill the raw-byte sample before the monitor
+// transmits its first poll, so the dump reflects the receiver's own output.
+constexpr uint32_t GPS_DIAG_QUIET_SAMPLE_MS = 1500UL;
 
 // Auto-baud scan: when the link is alive (bytes flowing) but no NMEA frames
 // ever assemble, the module is almost always streaming at a baud other than
@@ -1276,7 +1279,6 @@ uint8_t gpsDiagPrevByte = 0;
 constexpr size_t GPS_DIAG_RAW_SAMPLE_SIZE = 32;
 uint8_t gpsDiagRawSample[GPS_DIAG_RAW_SAMPLE_SIZE];
 size_t gpsDiagRawSampleLen = 0;
-bool gpsDiagRawSamplePrinted = false;
 uint32_t gpsDiagPingCount = 0;
 uint32_t gpsDiagBytesAtLastPing = 0;
 uint32_t gpsDiagLastPingMs = 0;
@@ -1421,8 +1423,19 @@ void gpsDiagPrintRawSample() {
     Serial.print((b >= 0x20 && b < 0x7F) ? static_cast<char>(b) : '.');
   }
   Serial.println();
-  if (gpsDiagUbxSyncCount > 0) {
-    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) detected -> module is streaming UBX binary, not NMEA.");
+
+  // Base the UBX-only hint on this sample alone, not the cumulative counter:
+  // the sample is captured from a quiet, no-transmit window, so it excludes our
+  // own config writes, polls, and any loopback echo of them.
+  bool sampleHasUbxSync = false;
+  for (size_t i = 1; i < gpsDiagRawSampleLen; ++i) {
+    if (gpsDiagRawSample[i - 1] == 0xB5 && gpsDiagRawSample[i] == 0x62) {
+      sampleHasUbxSync = true;
+      break;
+    }
+  }
+  if (sampleHasUbxSync) {
+    Serial.println("GPSDIAG RAW SAMPLE: UBX sync (B5 62) in ambient output -> module is streaming UBX binary, not NMEA.");
     Serial.println("GPSDIAG RAW SAMPLE: enable NMEA output and confirm board PC6/USART6 TX -> GPS RX is connected, otherwise the module never hears the CFG-PRT reconfigure command.");
   }
 }
@@ -1433,11 +1446,6 @@ void gpsDiagPrintStatus() {
     return;
   }
   gpsDiagLastStatusMs = nowMs;
-
-  if (!gpsDiagRawSamplePrinted && gpsDiagRawSampleLen >= GPS_DIAG_RAW_SAMPLE_SIZE) {
-    gpsDiagPrintRawSample();
-    gpsDiagRawSamplePrinted = true;
-  }
 
   Serial.print("GPSDIAG STATUS: bytes="); Serial.print(gpsDiagByteCount);
   Serial.print(" sentences="); Serial.print(gpsDiagSentenceCount);
@@ -1544,10 +1552,22 @@ int32_t gpsDiagScanForBaud() {
     gpsDiagReceivingNmea = false;
     gpsDiagDiscardingNmea = false;
     gpsDiagNmeaBufferIndex = 0;
-    gpsDiagPrevByte = 0;  // avoid a straddling 0xB5 faking a UBX sync at the new baud
 
     // Heard only if this baud matches the module: switch it to NMEA GGA+RMC.
     gps.begin(baud);
+
+    // gps.begin() just transmitted UBX config frames (each starts with B5 62).
+    // Discard the module's ACK and any TX<->RX loopback echo of those frames so
+    // self-sent UBX bytes are never counted as the receiver's own UBX output --
+    // otherwise a wiring short would yield a false "UBX-only" diagnosis. The
+    // listen window below transmits nothing, so everything it counts is received.
+    while (gpsSerial.available() > 0) {
+      (void)gpsSerial.read();
+    }
+    gpsDiagReceivingNmea = false;
+    gpsDiagDiscardingNmea = false;
+    gpsDiagNmeaBufferIndex = 0;
+    gpsDiagPrevByte = 0;  // avoid a straddling 0xB5 faking a UBX sync on the first received byte
 
     const uint32_t okBefore = gpsDiagChecksumOkCount;
     const uint32_t ubxBefore = gpsDiagUbxSyncCount;
@@ -1616,10 +1636,33 @@ void runGpsDiagnosticDebug() {
   Serial.print("GPSDIAG: monitoring at ");
   Serial.print(monitorBaud);
   Serial.println(" baud.");
-  // Refresh the raw-byte sample so the hex/ASCII dump reflects the monitor baud.
+
+  // Capture the raw-byte sample from a QUIET ambient window before transmitting
+  // anything. Sampling after gpsDiagSendPing() would bias the dump (and its
+  // UBX-only hint) toward our own solicited UBX-MON-VER/PUBX responses -- a
+  // healthy module that emits NMEA but also answers UBX polls could otherwise
+  // look UBX-only. Drop stale bytes first so the sample reflects this baud.
+  while (gpsSerial.available() > 0) {
+    (void)gpsSerial.read();
+  }
   gpsDiagRawSampleLen = 0;
-  gpsDiagRawSamplePrinted = false;
   gpsDiagPrevByte = 0;
+  const uint32_t quietSampleStartMs = millis();
+  while (gpsDiagRawSampleLen < GPS_DIAG_RAW_SAMPLE_SIZE &&
+         (uint32_t)(millis() - quietSampleStartMs) < GPS_DIAG_QUIET_SAMPLE_MS) {
+    while (gpsSerial.available() > 0) {
+      const int rawByte = gpsSerial.read();
+      if (rawByte < 0) {
+        continue;
+      }
+      gpsDiagConsumeByte(static_cast<char>(rawByte & 0xFF));
+    }
+    delay(1);
+  }
+  if (gpsDiagRawSampleLen > 0) {
+    gpsDiagPrintRawSample();
+  }
+
   gpsDiagLastByteMs = millis();
   gpsDiagLastStatusMs = millis();
   gpsDiagSendPing();
