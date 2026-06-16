@@ -154,6 +154,41 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define R_REJECTED       (1.0e3)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
+// Centripetal/transport-acceleration feed-forward for the accelerometer gravity
+// reference. In a sustained coordinated or banked turn the specific force the
+// accelerometer measures contains a centripetal term a = omega x V that can stay
+// inside the norm and innovation gates yet slowly bias roll/pitch back toward
+// wings-level. Subtracting an estimate of that term (built from the body rates
+// and forward airspeed) before normalizing the accel vector recovers a cleaner
+// gravity reference during turns. Set to 0 to fall back to the raw accel vector.
+#ifndef FC_ACCEL_CENTRIPETAL_COMPENSATION
+#define FC_ACCEL_CENTRIPETAL_COMPENSATION 1
+#endif
+// Upper bound (m/s) on the airspeed used to build the centripetal correction so
+// a faulty pitot reading cannot inject a large false acceleration into the
+// attitude solution. ~120 m/s is comfortably above this airframe's airspeed.
+#define CENTRIPETAL_MAX_AIRSPEED_MPS (120.0f)
+// The feed-forward only makes sense when the airframe is actually translating
+// through space. A pitot reading wind or prop wash while stationary or taxiing
+// can keep airspeed positive even though there is no real omega x V to remove,
+// so any rotation in that state would inject a phantom acceleration into the
+// gravity reference (especially during EKF warmup, before the innovation gate is
+// armed). Require GPS to confirm ground motion above this threshold, set above
+// typical taxi speed so the correction only engages in flight.
+#define CENTRIPETAL_MIN_GROUND_SPEED_MPS (5.0f)
+// Maximum age of a GPS fix still trusted to confirm motion for the feed-forward.
+#define CENTRIPETAL_GPS_FIX_TIMEOUT_US (2000000UL)
+// The free-flight omega x V model only holds once the airframe is truly flying
+// (velocity along body X, free to rotate about the CG). On a takeoff or landing
+// ground roll the aircraft is gear-constrained, so a rotation would inject a false
+// vertical correction even though pitot/GPS motion gates are satisfied. Latch an
+// "airborne" estimate from barometric height above the ground level captured at
+// boot (with airspeed confirmation) and require it before applying the feed-
+// forward. The engage/disengage hysteresis keeps the latch on through low-altitude
+// maneuvering (e.g. the turn to final) yet drops it once back near the runway.
+#define AIRBORNE_ENGAGE_HEIGHT_M (3.0f)       // climb above ground to latch airborne
+#define AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0f)   // airspeed needed to latch airborne
+#define AIRBORNE_DISENGAGE_HEIGHT_M (1.5f)    // back near the ground -> not airborne
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -924,6 +959,10 @@ double latestLatitude  = 0;
 double latestLongitude = 0;
 uint8_t satsInUse      = 0;       // GPS satellites currently in use
 double latestGpsCourse = 0.0;
+float latestGpsGroundSpeedMps = 0.0f;  // Ground speed from GPS (RMC), meters per second
+bool latestGpsFixValid = false;        // True when the cached GPS fix is usable
+uint32_t lastGpsFixUpdateUs = 0;       // micros() of the last *new* valid GPS fix
+uint32_t lastGpsFixCounter = 0;        // gps.fix_update_counter at the last refresh
 
 // Telemetry values prepared for CRSF GPS frame. The GPS CRSF frame uses the
 // latest cached GPS coordinates plus separately sampled airspeed/barometer data.
@@ -931,6 +970,11 @@ float airSpeedCms      = 0.0f; // Airspeed from sensor in centimeters per second
 float sensorAltitudeCm = 0.0f; // Altitude from barometer in centimeters
 float latestAirspeedMph = 0.0f;
 float latestAltitudeFeet = 0.0f;
+
+// Airborne detection for the centripetal feed-forward (see thresholds above).
+float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
+bool groundAltitudeCaptured = false;   // True once the ground reference is set
+bool aircraftAirborne = false;         // Latched airborne state gating the feed-forward
 
 // ----- Sensor and telemetry timing -----
 elapsedMicros attitudeTelemetryTimer;
@@ -975,10 +1019,55 @@ void updateGpsCache() {
     latestLatitude = gps.latitude;
     latestLongitude = gps.longitude;
     latestGpsCourse = gps.course;
+    latestGpsGroundSpeedMps = static_cast<float>(gps.speed) * 0.514444f;  // knots -> m/s
+    latestGpsFixValid = true;
+    // Only advance the freshness timestamp when the driver actually parsed a new
+    // fix this cycle. gps.has_valid_fix is sticky and would otherwise refresh on
+    // every 50 Hz poll even after the GPS UART goes silent, defeating the
+    // CENTRIPETAL_GPS_FIX_TIMEOUT_US staleness check in gpsMotionConfirmed().
+    if (gps.fix_update_counter != lastGpsFixCounter) {
+      lastGpsFixCounter = gps.fix_update_counter;
+      lastGpsFixUpdateUs = micros();
+    }
   } else {
     latestLatitude = 0.0;
     latestLongitude = 0.0;
     latestGpsCourse = 0.0;
+    latestGpsGroundSpeedMps = 0.0f;
+    latestGpsFixValid = false;
+  }
+}
+
+// True when a fresh GPS fix shows the airframe is actually translating through
+// space (not just reading wind/prop wash on a stationary pitot). Used to gate the
+// accelerometer centripetal feed-forward so it only engages in real flight.
+bool gpsMotionConfirmed(uint32_t nowUs) {
+  return latestGpsFixValid &&
+         lastGpsFixUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastGpsFixUpdateUs) <= CENTRIPETAL_GPS_FIX_TIMEOUT_US &&
+         latestGpsGroundSpeedMps >= CENTRIPETAL_MIN_GROUND_SPEED_MPS;
+}
+
+// Maintain the latched airborne estimate used to gate the centripetal feed-forward.
+// Engage once the baro shows a real climb above the captured ground level and
+// airspeed is in the flight range; stay engaged through low-altitude maneuvering
+// and only drop back to "on ground" once near the captured ground height. This
+// keeps the gear-constrained takeoff/landing roll out of the free-flight model.
+void updateAirborneState(uint32_t nowUs) {
+  if (!groundAltitudeCaptured) {
+    aircraftAirborne = false;
+    return;
+  }
+  const float heightM = (sensorAltitudeCm * 0.01f) - groundAltitudeM;
+  const float airspeedMps = airSpeedCms * 0.01f;
+  if (!aircraftAirborne) {
+    if (airspeedInputFresh(nowUs) &&
+        airspeedMps >= AIRBORNE_ENGAGE_AIRSPEED_MPS &&
+        heightM >= AIRBORNE_ENGAGE_HEIGHT_M) {
+      aircraftAirborne = true;
+    }
+  } else if (heightM <= AIRBORNE_DISENGAGE_HEIGHT_M) {
+    aircraftAirborne = false;
   }
 }
 
@@ -992,6 +1081,13 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
+  if (!groundAltitudeCaptured) {
+    // First valid reading happens on the ground during startup; use it as the
+    // height reference for airborne detection. Baro drift over a flight is small
+    // relative to the engage/disengage margins.
+    groundAltitudeM = altitudeMeters;
+    groundAltitudeCaptured = true;
+  }
 }
 
 void updateBarometerCacheBlocking() {
@@ -2161,6 +2257,33 @@ void loop() {
     Y[3][0] = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
     Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
     Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+
+#if FC_ACCEL_CENTRIPETAL_COMPENSATION
+    // Subtract the centripetal/transport acceleration (a ~= omega x V) from the
+    // measured specific force before treating it as a gravity reference. In this
+    // EKF body frame the axis swap above gives X forward, Z up (a left-handed
+    // basis), so a forward velocity V with body pitch rate q and yaw rate r
+    // produces a kinematic acceleration of [0, -r*V, q*V]; removing it leaves the
+    // gravity-only specific force. The body rates are EKF bias-corrected (q,r minus
+    // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
+    // cannot inject a persistent bias*airspeed term in straight flight. Only
+    // applied with a fresh, valid, bounded airspeed, GPS-confirmed ground motion,
+    // and a latched airborne state so a bad pitot reading, wind/prop wash on a
+    // stationary airframe, or a gear-constrained takeoff/landing roll cannot
+    // corrupt attitude.
+    updateAirborneState(controlUpdateUs);
+    if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs) &&
+        aircraftAirborne) {
+      float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
+      if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
+        centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
+        const float pitchRate = U[1][0] - predictedX[5][0];  // q minus est. pitch-gyro bias
+        const float yawRate   = U[2][0] - predictedX[6][0];  // r minus est. yaw-gyro bias
+        Y[1][0] += yawRate   * centripetalAirspeedMps;   // remove the -r*V term
+        Y[2][0] -= pitchRate * centripetalAirspeedMps;   // remove the +q*V term
+      }
+    }
+#endif
 
     // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
     float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
