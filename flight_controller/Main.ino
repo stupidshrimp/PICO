@@ -478,6 +478,119 @@ float vectorInnovationNorm(const Matrix& measurement, const Matrix& prediction, 
   return sqrtf(dx*dx + dy*dy + dz*dz);
 }
 
+#if FC_EKF_ADAPTIVE_R
+// Map a measurement deviation ratio (0 == perfect agreement with the prediction,
+// 1 == the hard-gate boundary) to an inflated measurement variance. The variance
+// ramps smoothly and monotonically from the base value (ratio 0) up to the
+// rejection floor R_REJECTED (ratio 1):
+//     R = base * (R_REJECTED/base)^(ratio^2)
+// Squaring the ratio keeps R close to the base for small, benign disturbances and
+// ramps it up steeply only as the deviation approaches the gate, so a noisy or
+// maneuvering measurement is de-weighted continuously instead of being switched
+// off in a single step (which previously produced a visible attitude "pop").
+static float ekfAdaptiveVariance(float baseVariance, float deviationRatio) {
+  const float s = clampFloat(deviationRatio, 0.0f, 1.0f);
+  return baseVariance * expf(s * s * logf(static_cast<float>(R_REJECTED) / baseVariance));
+}
+#endif
+
+// Apply the accelerometer gravity-reference gate to the global measurement Y.
+// Normalizes the accel sub-vector and sets EKF_RACTIVE[0..2]. The deviation that
+// drives the gate is the larger of (a) how far the specific-force magnitude is
+// from gravity and (b) the direction innovation versus the gyro-propagated
+// gravity prediction (the latter only after the warmup window). With
+// FC_EKF_ADAPTIVE_R the variance is inflated smoothly toward R_REJECTED as that
+// deviation grows; a deviation past the gate is hard-rejected in either mode.
+// predictedY is h(x) evaluated at the current (already-predicted) state.
+static void ekfApplyAccelGate(const Matrix& predictedY) {
+  const float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
+
+  // Degenerate magnitude: cannot normalize, reject outright.
+  if (normG <= NORM_EPSILON) {
+    Y[0][0] = predictedY[0][0];
+    Y[1][0] = predictedY[1][0];
+    Y[2][0] = predictedY[2][0];
+    EKF_RACTIVE[0][0] = R_REJECTED;
+    EKF_RACTIVE[1][1] = R_REJECTED;
+    EKF_RACTIVE[2][2] = R_REJECTED;
+    return;
+  }
+
+  Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
+
+  // Deviation ratios: 1.0 == the hard-gate boundary.
+  float deviation = fabsf(normG - GRAVITY_NOMINAL_MSS) /
+                    (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION);
+  if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+    const float innovationRatio = vectorInnovationNorm(Y, predictedY, 0) / ACCEL_INNOVATION_GATE;
+    if (innovationRatio > deviation) {
+      deviation = innovationRatio;
+    }
+  }
+
+  if (deviation > 1.0f) {
+    // Past the gate: full rejection (matches the original hard gate exactly).
+    Y[0][0] = predictedY[0][0];
+    Y[1][0] = predictedY[1][0];
+    Y[2][0] = predictedY[2][0];
+    EKF_RACTIVE[0][0] = R_REJECTED;
+    EKF_RACTIVE[1][1] = R_REJECTED;
+    EKF_RACTIVE[2][2] = R_REJECTED;
+    return;
+  }
+
+#if FC_EKF_ADAPTIVE_R
+  const float r = ekfAdaptiveVariance(R_INIT_ACC, deviation);
+  EKF_RACTIVE[0][0] = r;
+  EKF_RACTIVE[1][1] = r;
+  EKF_RACTIVE[2][2] = r;
+#endif
+  // FC_EKF_ADAPTIVE_R == 0: leave the base variance set by setEkfMeasurementNoise().
+}
+
+// Apply the magnetometer gate to the global measurement Y. Normalizes the mag
+// sub-vector and sets EKF_RACTIVE[3..5]. The mag has no magnitude reference, so
+// the deviation is purely the direction innovation versus the prediction (only
+// after the warmup window). See ekfApplyAccelGate() for the adaptive/hard modes.
+static void ekfApplyMagGate(const Matrix& predictedY) {
+  const float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
+
+  if (normM <= NORM_EPSILON) {
+    Y[3][0] = predictedY[3][0];
+    Y[4][0] = predictedY[4][0];
+    Y[5][0] = predictedY[5][0];
+    EKF_RACTIVE[3][3] = R_REJECTED;
+    EKF_RACTIVE[4][4] = R_REJECTED;
+    EKF_RACTIVE[5][5] = R_REJECTED;
+    return;
+  }
+
+  Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
+
+  float deviation = 0.0f;
+  if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+    deviation = vectorInnovationNorm(Y, predictedY, 3) / MAG_INNOVATION_GATE;
+  }
+
+  if (deviation > 1.0f) {
+    Y[3][0] = predictedY[3][0];
+    Y[4][0] = predictedY[4][0];
+    Y[5][0] = predictedY[5][0];
+    EKF_RACTIVE[3][3] = R_REJECTED;
+    EKF_RACTIVE[4][4] = R_REJECTED;
+    EKF_RACTIVE[5][5] = R_REJECTED;
+    return;
+  }
+
+#if FC_EKF_ADAPTIVE_R
+  const float r = ekfAdaptiveVariance(R_INIT_MAG, deviation);
+  EKF_RACTIVE[3][3] = r;
+  EKF_RACTIVE[4][4] = r;
+  EKF_RACTIVE[5][5] = r;
+#endif
+  // FC_EKF_ADAPTIVE_R == 0: leave the base variance set by setEkfMeasurementNoise().
+}
+
 void resetControlDebugCounters() {
   controlDebugCounters.rcPackets = 0;
   controlDebugCounters.rcFailsafePackets = 0;
@@ -2287,42 +2400,9 @@ static void ekfPrepareAndGate(const Matrix& predictedY, uint32_t nowUs) {
   }
 #endif
 
-  // Accelerometer: normalize, reject non-gravity magnitudes / large innovations.
-  const float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-  bool accelRejected = (normG <= NORM_EPSILON) ||
-                       (fabsf(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
-  if (!accelRejected) {
-    Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-    if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-      accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
-    }
-  }
-  if (accelRejected) {
-    Y[0][0] = predictedY[0][0];
-    Y[1][0] = predictedY[1][0];
-    Y[2][0] = predictedY[2][0];
-    EKF_RACTIVE[0][0] = R_REJECTED;
-    EKF_RACTIVE[1][1] = R_REJECTED;
-    EKF_RACTIVE[2][2] = R_REJECTED;
-  }
-
-  // Magnetometer: normalize, reject invalid fields / large innovations.
-  const float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-  bool magRejected = (normM <= NORM_EPSILON);
-  if (!magRejected) {
-    Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-    if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-      magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
-    }
-  }
-  if (magRejected) {
-    Y[3][0] = predictedY[3][0];
-    Y[4][0] = predictedY[4][0];
-    Y[5][0] = predictedY[5][0];
-    EKF_RACTIVE[3][3] = R_REJECTED;
-    EKF_RACTIVE[4][4] = R_REJECTED;
-    EKF_RACTIVE[5][5] = R_REJECTED;
-  }
+  // Accelerometer and magnetometer: normalize, then gate / adaptively scale R.
+  ekfApplyAccelGate(predictedY);
+  ekfApplyMagGate(predictedY);
 }
 #endif  // FC_EKF_TWO_RATE
 
@@ -2535,42 +2615,9 @@ void loop() {
     }
 #endif
 
-    // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
-    float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    bool accelRejected = (normG <= NORM_EPSILON) ||
-                         (fabsf(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
-    if (!accelRejected) {
-      Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
-      }
-    }
-    if (accelRejected) {
-      Y[0][0] = predictedY[0][0];
-      Y[1][0] = predictedY[1][0];
-      Y[2][0] = predictedY[2][0];
-      EKF_RACTIVE[0][0] = R_REJECTED;
-      EKF_RACTIVE[1][1] = R_REJECTED;
-      EKF_RACTIVE[2][2] = R_REJECTED;
-    }
-
-    // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
-    float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    bool magRejected = (normM <= NORM_EPSILON);
-    if (!magRejected) {
-      Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
-      }
-    }
-    if (magRejected) {
-      Y[3][0] = predictedY[3][0];
-      Y[4][0] = predictedY[4][0];
-      Y[5][0] = predictedY[5][0];
-      EKF_RACTIVE[3][3] = R_REJECTED;
-      EKF_RACTIVE[4][4] = R_REJECTED;
-      EKF_RACTIVE[5][5] = R_REJECTED;
-    }
+    // Normalize and gate / adaptively scale R for the accel and mag measurements.
+    ekfApplyAccelGate(predictedY);
+    ekfApplyMagGate(predictedY);
 
     // Update the EKF and measure computation time
     Matrix ekfPreviousX = EKF_IMU.GetX();

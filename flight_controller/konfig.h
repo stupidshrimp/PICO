@@ -32,6 +32,18 @@
 #endif
 
 
+/* Continuous (adaptive) measurement-noise scaling for the EKF correction.
+ * 1 = inflate per-axis measurement variance R smoothly as a measurement deviates
+ * from the gyro-propagated prediction (a "soft gate"), so a vibrating or
+ * maneuvering accelerometer / disturbed magnetometer is de-weighted gradually
+ * instead of being switched fully on/off (the binary gate causes a visible
+ * attitude "pop" when it toggles); 0 = original hard accept/reject gate. The
+ * hard outlier rejection at the gate boundary is retained in both modes. */
+#ifndef FC_EKF_ADAPTIVE_R
+#define FC_EKF_ADAPTIVE_R 1
+#endif
+
+
 /* Change this size based on the biggest matrix you will use */
 #define MATRIX_MAXIMUM_SIZE     (7)
 
