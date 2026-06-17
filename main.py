@@ -316,6 +316,8 @@ class MainWindow(QMainWindow):
         self._setup_command_sidebar()
         self._setup_airborne_indicator()
         self._setup_gps_fix_indicator()
+        self._setup_blackbox_indicator()
+        self._setup_telemetry_status_indicator()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
@@ -987,37 +989,6 @@ class MainWindow(QMainWindow):
 
         column_layout.addWidget(signal_container)
 
-        battery_container = QFrame(frame)
-        battery_container.setObjectName("batteryHealthContainer")
-        battery_container.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        battery_container.setStyleSheet(panel_style)
-
-        battery_layout = QVBoxLayout(battery_container)
-        battery_layout.setContentsMargins(12, 12, 12, 12)
-        battery_layout.setSpacing(10)
-
-        battery_title = QLabel("Battery", battery_container)
-        battery_title.setObjectName("batteryHealthTitle")
-        battery_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        battery_title.setFont(signal_title.font())
-        style_section_header(battery_title)
-        battery_layout.addWidget(battery_title)
-
-        self.battery_percent_bar = QProgressBar(battery_container)
-        self.battery_percent_bar.setRange(0, 100)
-        self.battery_percent_bar.setValue(0)
-        self.battery_percent_bar.setFormat("--%")
-        self.battery_percent_bar.setAlignment(Qt.AlignCenter)
-        self.battery_percent_bar.setTextVisible(True)
-        self.battery_percent_bar.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        )
-        battery_layout.addWidget(self.battery_percent_bar)
-
-        column_layout.addWidget(battery_container)
-
         flight_status_container = QFrame(frame)
         flight_status_container.setObjectName("flightStatusContainer")
         flight_status_container.setSizePolicy(
@@ -1088,6 +1059,66 @@ class MainWindow(QMainWindow):
             self.gps_fix_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
         flight_status_layout.addLayout(gps_fix_row)
+
+        blackbox_row = QHBoxLayout()
+        blackbox_row.setContentsMargins(0, 0, 0, 0)
+        blackbox_row.setSpacing(12)
+
+        blackbox_text_layout = QVBoxLayout()
+        blackbox_text_layout.setContentsMargins(0, 0, 0, 0)
+        blackbox_text_layout.setSpacing(2)
+
+        blackbox_title = QLabel("Blackbox", flight_status_container)
+        blackbox_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        blackbox_title.setFont(signal_title.font())
+        style_section_header(blackbox_title)
+        blackbox_text_layout.addWidget(blackbox_title)
+
+        self.blackbox_status_label = QLabel("INACTIVE", flight_status_container)
+        self.blackbox_status_label.setObjectName("blackboxStatusLabel")
+        self.blackbox_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.blackbox_status_label.setMinimumHeight(28)
+        blackbox_text_layout.addWidget(self.blackbox_status_label)
+
+        blackbox_row.addLayout(blackbox_text_layout, 1)
+
+        self.blackbox_status_dot = QLabel(flight_status_container)
+        self.blackbox_status_dot.setObjectName("blackboxStatusDot")
+        self.blackbox_status_dot.setFixedSize(14, 14)
+        blackbox_row.addWidget(
+            self.blackbox_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+        flight_status_layout.addLayout(blackbox_row)
+
+        telemetry_status_row = QHBoxLayout()
+        telemetry_status_row.setContentsMargins(0, 0, 0, 0)
+        telemetry_status_row.setSpacing(12)
+
+        telemetry_status_text_layout = QVBoxLayout()
+        telemetry_status_text_layout.setContentsMargins(0, 0, 0, 0)
+        telemetry_status_text_layout.setSpacing(2)
+
+        telemetry_status_title = QLabel("Telemetry", flight_status_container)
+        telemetry_status_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        telemetry_status_title.setFont(signal_title.font())
+        style_section_header(telemetry_status_title)
+        telemetry_status_text_layout.addWidget(telemetry_status_title)
+
+        self.telemetry_status_label = QLabel("OFFLINE", flight_status_container)
+        self.telemetry_status_label.setObjectName("telemetryStatusLabel")
+        self.telemetry_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.telemetry_status_label.setMinimumHeight(28)
+        telemetry_status_text_layout.addWidget(self.telemetry_status_label)
+
+        telemetry_status_row.addLayout(telemetry_status_text_layout, 1)
+
+        self.telemetry_status_dot = QLabel(flight_status_container)
+        self.telemetry_status_dot.setObjectName("telemetryStatusDot")
+        self.telemetry_status_dot.setFixedSize(14, 14)
+        telemetry_status_row.addWidget(
+            self.telemetry_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+        flight_status_layout.addLayout(telemetry_status_row)
 
         column_layout.addWidget(flight_status_container)
 
@@ -1226,6 +1257,104 @@ class MainWindow(QMainWindow):
             "border-radius: 7px;"
         )
         self._last_gps_fix_indicator_state = state
+
+    def _setup_blackbox_indicator(self) -> None:
+        """Initialise the command-page Blackbox recording indicator."""
+
+        self._last_blackbox_indicator_state = None
+        self._update_blackbox_indicator()
+
+    def _update_blackbox_indicator(self) -> None:
+        """Render whether sortie (blackbox) recording is active."""
+
+        label = getattr(self, "blackbox_status_label", None)
+        dot = getattr(self, "blackbox_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "active" if bool(getattr(self, "sortie_recording", False)) else "inactive"
+        if state == self._last_blackbox_indicator_state:
+            return
+
+        if state == "active":
+            text = "ACTIVE"
+            accent = "#21d07a"
+            background = "rgba(33, 208, 122, 32)"
+            border = "rgba(33, 208, 122, 155)"
+            dot_shadow = "rgba(33, 208, 122, 95)"
+        else:
+            text = "INACTIVE"
+            accent = "#9aa4b2"
+            background = "rgba(154, 164, 178, 24)"
+            border = "rgba(154, 164, 178, 105)"
+            dot_shadow = "rgba(154, 164, 178, 70)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_blackbox_indicator_state = state
+
+    def _setup_telemetry_status_indicator(self) -> None:
+        """Initialise the command-page telemetry online/offline indicator."""
+
+        self._last_telemetry_indicator_state = None
+        self._update_telemetry_status_indicator()
+
+    def _update_telemetry_status_indicator(self) -> None:
+        """Render the telemetry link state from attitude packet reception."""
+
+        label = getattr(self, "telemetry_status_label", None)
+        dot = getattr(self, "telemetry_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "online" if bool(getattr(self, "attitude_connected", False)) else "offline"
+        if state == self._last_telemetry_indicator_state:
+            return
+
+        if state == "online":
+            text = "ONLINE"
+            accent = "#21d07a"
+            background = "rgba(33, 208, 122, 32)"
+            border = "rgba(33, 208, 122, 155)"
+            dot_shadow = "rgba(33, 208, 122, 95)"
+        else:
+            text = "OFFLINE"
+            accent = "#ff5252"
+            background = "rgba(255, 82, 82, 28)"
+            border = "rgba(255, 82, 82, 135)"
+            dot_shadow = "rgba(255, 82, 82, 75)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_telemetry_indicator_state = state
 
     def _setup_sortie_section(self) -> None:
         """Create the Sortie controls within the settings sidebar."""
@@ -1414,6 +1543,7 @@ class MainWindow(QMainWindow):
         self.sortie_filename = filename
         self._sortie_ready_state = True
         self._update_sortie_ui_state()
+        self._update_blackbox_indicator()
 
     def stop_sortie_recording(self) -> None:
         """Stop telemetry sortie recording and close the file handle."""
@@ -1433,6 +1563,7 @@ class MainWindow(QMainWindow):
         self.sortie_recording = False
         self.sortie_filename = None
         self._update_sortie_button_availability(force=True)
+        self._update_blackbox_indicator()
 
     def _record_telemetry_sample(self, packet_type: str) -> None:
         """Write the current telemetry snapshot to the sortie log."""
@@ -2507,6 +2638,8 @@ class MainWindow(QMainWindow):
             ):
                 self.attitude_first_received_time = None
 
+        self._update_telemetry_status_indicator()
+
         if self.link_stats_connected:
             if (
                 self.last_link_stats_packet_time is None
@@ -2844,6 +2977,7 @@ class MainWindow(QMainWindow):
                     self.attitude_connected = True
                     self.attitude_first_received_time = None
                     self._handle_connection_sound("attitude", True)
+                    self._update_telemetry_status_indicator()
             else:
                 self.attitude_first_received_time = None
 
