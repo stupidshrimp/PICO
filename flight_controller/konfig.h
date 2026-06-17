@@ -38,9 +38,16 @@
  * maneuvering accelerometer / disturbed magnetometer is de-weighted gradually
  * instead of being switched fully on/off (the binary gate causes a visible
  * attitude "pop" when it toggles); 0 = original hard accept/reject gate. The
- * hard outlier rejection at the gate boundary is retained in both modes. */
+ * hard outlier rejection at the gate boundary is retained in both modes.
+ *
+ * Defaults to FC_EKF_TWO_RATE so that the master switch keeps its one-line
+ * rollback contract: setting FC_EKF_TWO_RATE 0 restores the original single-rate
+ * 125 Hz predict+correct behavior (including the original binary gate) without
+ * needing to know about this second macro. Define FC_EKF_ADAPTIVE_R explicitly
+ * to mix the two features (e.g. single-rate with the adaptive gate) for A/B
+ * testing. */
 #ifndef FC_EKF_ADAPTIVE_R
-#define FC_EKF_ADAPTIVE_R 1
+#define FC_EKF_ADAPTIVE_R FC_EKF_TWO_RATE
 #endif
 
 
