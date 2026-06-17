@@ -935,6 +935,17 @@ class MainWindow(QMainWindow):
                 "color: white; background: transparent; border: none;"
             )
 
+        # Status indicators are laid out in a compact 2x2 grid (Signal/Battery
+        # on top, Flight Status/GPS Fix below) so the sidebar keeps enough
+        # vertical room for the attitude model beneath them without scrolling.
+        status_grid = QGridLayout()
+        status_grid.setContentsMargins(0, 0, 0, 0)
+        status_grid.setHorizontalSpacing(12)
+        status_grid.setVerticalSpacing(12)
+        status_grid.setColumnStretch(0, 1)
+        status_grid.setColumnStretch(1, 1)
+        column_layout.addLayout(status_grid)
+
         signal_container = QFrame(frame)
         signal_container.setObjectName("signalHealthContainer")
         signal_container.setSizePolicy(
@@ -986,7 +997,7 @@ class MainWindow(QMainWindow):
             metrics_grid.addWidget(left_widget, row, 0)
             metrics_grid.addWidget(right_widget, row, 1)
 
-        column_layout.addWidget(signal_container)
+        status_grid.addWidget(signal_container, 0, 0, Qt.AlignTop)
 
         battery_container = QFrame(frame)
         battery_container.setObjectName("batteryHealthContainer")
@@ -1017,7 +1028,7 @@ class MainWindow(QMainWindow):
         )
         battery_layout.addWidget(self.battery_percent_bar)
 
-        column_layout.addWidget(battery_container)
+        status_grid.addWidget(battery_container, 0, 1, Qt.AlignTop)
 
         flight_status_container = QFrame(frame)
         flight_status_container.setObjectName("flightStatusContainer")
@@ -1060,6 +1071,19 @@ class MainWindow(QMainWindow):
         )
         flight_status_layout.addLayout(flight_status_row)
 
+        status_grid.addWidget(flight_status_container, 1, 0, Qt.AlignTop)
+
+        gps_fix_container = QFrame(frame)
+        gps_fix_container.setObjectName("gpsFixContainer")
+        gps_fix_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        gps_fix_container.setStyleSheet(panel_style)
+
+        gps_fix_layout = QVBoxLayout(gps_fix_container)
+        gps_fix_layout.setContentsMargins(12, 12, 12, 12)
+        gps_fix_layout.setSpacing(10)
+
         gps_fix_row = QHBoxLayout()
         gps_fix_row.setContentsMargins(0, 0, 0, 0)
         gps_fix_row.setSpacing(12)
@@ -1068,13 +1092,13 @@ class MainWindow(QMainWindow):
         gps_fix_text_layout.setContentsMargins(0, 0, 0, 0)
         gps_fix_text_layout.setSpacing(2)
 
-        gps_fix_title = QLabel("GPS Fix", flight_status_container)
+        gps_fix_title = QLabel("GPS Fix", gps_fix_container)
         gps_fix_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         gps_fix_title.setFont(signal_title.font())
         style_section_header(gps_fix_title)
         gps_fix_text_layout.addWidget(gps_fix_title)
 
-        self.gps_fix_status_label = QLabel("NO FIX", flight_status_container)
+        self.gps_fix_status_label = QLabel("NO FIX", gps_fix_container)
         self.gps_fix_status_label.setObjectName("gpsFixStatusLabel")
         self.gps_fix_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.gps_fix_status_label.setMinimumHeight(28)
@@ -1082,15 +1106,15 @@ class MainWindow(QMainWindow):
 
         gps_fix_row.addLayout(gps_fix_text_layout, 1)
 
-        self.gps_fix_status_dot = QLabel(flight_status_container)
+        self.gps_fix_status_dot = QLabel(gps_fix_container)
         self.gps_fix_status_dot.setObjectName("gpsFixStatusDot")
         self.gps_fix_status_dot.setFixedSize(14, 14)
         gps_fix_row.addWidget(
             self.gps_fix_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        flight_status_layout.addLayout(gps_fix_row)
+        gps_fix_layout.addLayout(gps_fix_row)
 
-        column_layout.addWidget(flight_status_container)
+        status_grid.addWidget(gps_fix_container, 1, 1, Qt.AlignTop)
 
         attitude_container = QFrame(frame)
         attitude_container.setObjectName("attitudeModelContainer")
