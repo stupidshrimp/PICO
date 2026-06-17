@@ -18,8 +18,10 @@ Two ambient effects layer behind the model:
 
 * **Wind streaks** whose density and speed scale with the pitot airspeed
   telemetry, conveying how fast the airframe is moving through the air.
-* **An altitude background** whose sky gradient darkens with height and whose
-  visible ground band shrinks as the barometric altitude climbs.
+* **An altitude background**, themed to match the application's dark slate
+  chrome and accent green so it reads as part of the GUI rather than a bright
+  outdoor scene, whose sky gradient darkens with height and whose visible
+  ground band shrinks as the barometric altitude climbs.
 
 The model is drawn entirely with :class:`QPainter` using a hand-rolled
 perspective projection (NumPy is already a project dependency), keeping it
@@ -59,6 +61,23 @@ ALT_FULL_SCALE_FT = 400.0
 
 # Airspeed (mph) at which the wind effect reaches its maximum density/speed.
 AIRSPEED_FULL_SCALE_MPH = 45.0
+
+# Sky/ground background palette.  These mirror the application's dark theme so
+# the widget's backdrop reads as part of the GUI rather than a bright outdoor
+# scene: the sky borrows the slate tones of the window and side panels
+# (rgb(33, 37, 43)/rgb(40, 44, 52) in modules/ui_main.py) and the ground borrows
+# the signature accent green (#2E7D32 / rgb(46, 125, 50) from
+# modules/app_settings.py).  Within each pair the colour is blended from its
+# low-altitude value to its high-altitude value as the aircraft climbs, so the
+# sky still deepens and the ground still lightens/recedes with height.
+_SKY_TOP_LOW = QColor(40, 46, 56)        # slate near the sidebar/content panels
+_SKY_TOP_HIGH = QColor(18, 20, 26)       # deep, near-black overhead at altitude
+_SKY_HORIZON_LOW = QColor(70, 80, 96)    # lighter slate haze along the horizon
+_SKY_HORIZON_HIGH = QColor(33, 37, 43)   # the app's base background tone
+_GROUND_TOP_LOW = QColor(46, 125, 50)    # accent green meeting the horizon
+_GROUND_TOP_HIGH = QColor(70, 150, 78)   # lighter green when viewed from height
+_GROUND_BOT_LOW = QColor(24, 64, 30)     # deeper green underfoot
+_GROUND_BOT_HIGH = QColor(46, 110, 52)
 
 # Fixed chase-camera orientation (degrees) applied on top of the live attitude
 # so the neutral model is seen from behind and slightly above, like the
@@ -500,9 +519,9 @@ class Attitude3DOSD(QWidget):
                 int(a.blue() + (b.blue() - a.blue()) * s),
             )
 
-        # Sky darkens and deepens in blue as altitude increases.
-        top = lerp(QColor(96, 152, 208), QColor(8, 18, 52), t)
-        horizon = lerp(QColor(196, 222, 244), QColor(60, 104, 168), t)
+        # Sky darkens toward the deep slate of the app chrome as altitude rises.
+        top = lerp(_SKY_TOP_LOW, _SKY_TOP_HIGH, t)
+        horizon = lerp(_SKY_HORIZON_LOW, _SKY_HORIZON_HIGH, t)
 
         # Ground band recedes (shrinks) with altitude; gone near full scale.
         ground_frac = (1.0 - t) * 0.30
@@ -514,8 +533,8 @@ class Attitude3DOSD(QWidget):
         painter.fillRect(QRectF(0, 0, w, horizon_y), QBrush(sky))
 
         if ground_frac > 0.001:
-            ground_top = lerp(QColor(96, 120, 92), QColor(120, 150, 120), t)
-            ground_bot = lerp(QColor(58, 78, 56), QColor(96, 124, 100), t)
+            ground_top = lerp(_GROUND_TOP_LOW, _GROUND_TOP_HIGH, t)
+            ground_bot = lerp(_GROUND_BOT_LOW, _GROUND_BOT_HIGH, t)
             ground = QLinearGradient(0, horizon_y, 0, h)
             ground.setColorAt(0.0, ground_top)
             ground.setColorAt(1.0, ground_bot)
