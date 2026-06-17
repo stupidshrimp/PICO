@@ -113,6 +113,7 @@ from pico_modules.rollpitch_osd import RollPitchOSD
 from pico_modules.altitude_osd import AltitudeOSD
 from pico_modules.airspeed_osd import AirspeedOSD
 from pico_modules.compass_osd import CompassOSD
+from pico_modules.attitude3d_osd import Attitude3DOSD
 
 from config import (
     ALLOWED_ATTITUDE_PACKET_RATES_HZ,
@@ -1000,6 +1001,17 @@ class MainWindow(QMainWindow):
         flight_status_layout.setContentsMargins(12, 12, 12, 12)
         flight_status_layout.setSpacing(10)
 
+        # Arrange the four status indicators in a compact 2x2 grid rather than a
+        # 4x1 stack so the panel takes roughly half the height, leaving room for
+        # the attitude model below without scrolling the fixed-height sidebar.
+        status_inner_grid = QGridLayout()
+        status_inner_grid.setContentsMargins(0, 0, 0, 0)
+        status_inner_grid.setHorizontalSpacing(18)
+        status_inner_grid.setVerticalSpacing(8)
+        status_inner_grid.setColumnStretch(0, 1)
+        status_inner_grid.setColumnStretch(1, 1)
+        flight_status_layout.addLayout(status_inner_grid)
+
         flight_status_row = QHBoxLayout()
         flight_status_row.setContentsMargins(0, 0, 0, 0)
         flight_status_row.setSpacing(12)
@@ -1028,7 +1040,7 @@ class MainWindow(QMainWindow):
         flight_status_row.addWidget(
             self.airborne_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        flight_status_layout.addLayout(flight_status_row)
+        status_inner_grid.addLayout(flight_status_row, 0, 0)
 
         gps_fix_row = QHBoxLayout()
         gps_fix_row.setContentsMargins(0, 0, 0, 0)
@@ -1058,7 +1070,7 @@ class MainWindow(QMainWindow):
         gps_fix_row.addWidget(
             self.gps_fix_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        flight_status_layout.addLayout(gps_fix_row)
+        status_inner_grid.addLayout(gps_fix_row, 0, 1)
 
         blackbox_row = QHBoxLayout()
         blackbox_row.setContentsMargins(0, 0, 0, 0)
@@ -1088,7 +1100,7 @@ class MainWindow(QMainWindow):
         blackbox_row.addWidget(
             self.blackbox_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        flight_status_layout.addLayout(blackbox_row)
+        status_inner_grid.addLayout(blackbox_row, 1, 0)
 
         telemetry_status_row = QHBoxLayout()
         telemetry_status_row.setContentsMargins(0, 0, 0, 0)
@@ -1118,9 +1130,34 @@ class MainWindow(QMainWindow):
         telemetry_status_row.addWidget(
             self.telemetry_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        flight_status_layout.addLayout(telemetry_status_row)
+        status_inner_grid.addLayout(telemetry_status_row, 1, 1)
 
         column_layout.addWidget(flight_status_container)
+
+        attitude_container = QFrame(frame)
+        attitude_container.setObjectName("attitudeModelContainer")
+        attitude_container.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
+        attitude_container.setStyleSheet(panel_style)
+
+        attitude_layout = QVBoxLayout(attitude_container)
+        attitude_layout.setContentsMargins(12, 12, 12, 12)
+        attitude_layout.setSpacing(10)
+
+        attitude_title = QLabel("Attitude", attitude_container)
+        attitude_title.setObjectName("attitudeModelTitle")
+        attitude_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        attitude_title.setFont(signal_title.font())
+        style_section_header(attitude_title)
+        attitude_layout.addWidget(attitude_title)
+
+        self.attitude3d_osd = Attitude3DOSD(attitude_container)
+        self.attitude3d_osd.setFixedHeight(160)
+        self.attitude3d_osd.setStyleSheet("border: none; border-radius: 8px;")
+        attitude_layout.addWidget(self.attitude3d_osd)
+
+        column_layout.addWidget(attitude_container)
 
         autopilot_container = QFrame(frame)
         autopilot_container.setObjectName("autopilotContainer")
@@ -1719,6 +1756,9 @@ class MainWindow(QMainWindow):
             self.altitude_osd.setAltitude(self.current_altitude or 0.0)
             self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
             self.compass_osd.setYaw(self.telemetry_yaw or 0.0)
+            self.attitude3d_osd.setAttitude(0.0, 0.0, self.telemetry_yaw or 0.0)
+            self.attitude3d_osd.setAirspeed(self.current_airspeed or 0.0)
+            self.attitude3d_osd.setAltitude(self.current_altitude or 0.0)
             return
 
         self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
@@ -1728,6 +1768,14 @@ class MainWindow(QMainWindow):
             self.airspeed_osd.setAirspeed(self.current_airspeed)
         if self.telemetry_yaw is not None:
             self.compass_osd.setYaw(self.telemetry_yaw)
+
+        self.attitude3d_osd.setAttitude(
+            self.telemetry_roll, self.telemetry_pitch, self.telemetry_yaw or 0.0
+        )
+        if self.current_airspeed is not None:
+            self.attitude3d_osd.setAirspeed(self.current_airspeed)
+        if self.current_altitude is not None:
+            self.attitude3d_osd.setAltitude(self.current_altitude)
 
     def cut_throttle(self) -> None:
         """Immediately drop the throttle to zero and return to manual throttle."""
