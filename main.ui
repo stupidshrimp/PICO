@@ -3108,7 +3108,7 @@ background-repeat: no-repeat;</string>
                             <x>978</x>
                             <y>-1</y>
                             <width>600</width>
-                            <height>381</height>
+                            <height>270</height>
                            </rect>
                           </property>
                           <property name="frameShape">
@@ -3123,7 +3123,7 @@ background-repeat: no-repeat;</string>
                              <x>-1</x>
                              <y>-1</y>
                              <width>600</width>
-                             <height>381</height>
+                             <height>270</height>
                             </rect>
                            </property>
                            <property name="styleSheet">
@@ -3135,9 +3135,9 @@ background-repeat: no-repeat;</string>
                           <property name="geometry">
                            <rect>
                             <x>978</x>
-                            <y>381</y>
+                            <y>270</y>
                             <width>600</width>
-                            <height>520</height>
+                            <height>631</height>
                            </rect>
                           </property>
                          <property name="frameShape">

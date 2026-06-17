@@ -1,10 +1,14 @@
 """Compact pseudo-3D attitude model widget.
 
-This widget renders a small, low-poly aircraft that rotates with the incoming
+This widget renders a small, low-poly UAV that rotates with the incoming
 roll/pitch/yaw telemetry, giving the operator an at-a-glance 3D read on the
 airframe's orientation (similar to the model shown on a flight-controller
-setup screen).  Unlike the existing OSD overlays it is intended to live in the
-command sidebar *below* the status indicators rather than over the video feed.
+setup screen).  The silhouette borrows the cues of a medium-altitude UAV --
+a slender fuselage with a bulbous sensor nose and chin turret, long
+high-aspect wings, an inverted/upright V-tail and a rear pusher propeller --
+so it reads as an unmanned platform rather than a hobby aeroplane.  Unlike the
+existing OSD overlays it is intended to live in the command sidebar *below* the
+status indicators rather than over the video feed.
 
 Two ambient effects layer behind the model:
 
@@ -166,11 +170,16 @@ class Attitude3DOSD(QWidget):
         return v / n if n else v
 
     def _build_model(self):
-        """Return ``(vertices, faces)`` describing a low-poly aircraft.
+        """Return ``(vertices, faces)`` describing a low-poly UAV.
 
         Body frame: ``+x`` right wing (starboard), ``+y`` up, ``+z`` aft so the
         nose points toward ``-z``.  Each face is ``(indices, base_color)`` where
         ``indices`` reference rows of the returned ``vertices`` array.
+
+        The silhouette deliberately leans on medium-altitude UAV cues: a long
+        slender fuselage, a bulbous sensor nose with a chin EO/IR turret,
+        high-aspect-ratio wings, an upward V-tail (in place of a conventional
+        tailplane and fin) and a rear pusher propeller.
         """
 
         verts = []
@@ -186,28 +195,58 @@ class Attitude3DOSD(QWidget):
             (1, 2, 6, 5), (0, 1, 5, 4), (3, 7, 6, 2),
         ]
 
-        def add_box(center, half, color):
+        def add_box(center, half, color, rot=None):
+            """Add an axis-aligned box, optionally rotating its corners by ``rot``.
+
+            ``rot`` (a 3x3 matrix) lets a part be canted about its own centre,
+            which the V-tail surfaces use to splay outward and upward.
+            """
+
             base = len(verts)
-            cx, cy, cz = center
+            center = np.asarray(center, dtype=float)
             hx, hy, hz = half
             for sx, sy, sz in corner_signs:
-                verts.append((cx + sx * hx, cy + sy * hy, cz + sz * hz))
+                offset = np.array([sx * hx, sy * hy, sz * hz], dtype=float)
+                if rot is not None:
+                    offset = rot @ offset
+                verts.append(tuple(center + offset))
             for f in box_faces:
                 faces.append(((base + f[0], base + f[1], base + f[2], base + f[3]), color))
 
-        fuselage = QColor(214, 218, 226)
-        wing = QColor(226, 230, 236)
+        fuselage = QColor(200, 205, 213)
+        wing = QColor(210, 214, 221)
+        sensor = QColor(168, 174, 184)
         dark = QColor(44, 48, 58)
         red = QColor(232, 64, 58)
         green = QColor(58, 200, 92)
 
-        add_box((0.0, 0.0, 0.06), (0.075, 0.090, 0.62), fuselage)   # fuselage
-        add_box((0.0, -0.01, -0.62), (0.050, 0.060, 0.14), fuselage) # nose taper
-        add_box((0.0, 0.04, -0.06), (0.66, 0.020, 0.26), wing)      # main wing
-        add_box((0.0, 0.05, 0.58), (0.26, 0.016, 0.11), wing)       # h-stabilizer
-        add_box((0.0, 0.14, 0.58), (0.018, 0.13, 0.11), dark)       # vertical fin
-        add_box((-0.74, 0.04, -0.06), (0.085, 0.024, 0.20), red)    # port tip (red)
-        add_box((0.74, 0.04, -0.06), (0.085, 0.024, 0.20), green)   # starboard tip
+        # Slender fuselage running nose (-z) to tail (+z).
+        add_box((0.0, 0.0, 0.04), (0.058, 0.066, 0.60), fuselage)
+        # Bulbous sensor nose, raised slightly to suggest the SATCOM hump.
+        add_box((0.0, 0.020, -0.60), (0.080, 0.082, 0.14), sensor)
+        # Chin EO/IR sensor turret slung under the nose.
+        add_box((0.0, -0.085, -0.58), (0.052, 0.050, 0.060), dark)
+        # High-aspect-ratio main wing (long span, thin chord).
+        add_box((0.0, 0.030, -0.02), (0.80, 0.013, 0.135), wing)
+        # Port/starboard nav-light tips.
+        add_box((-0.835, 0.030, -0.02), (0.040, 0.018, 0.10), red)
+        add_box((0.835, 0.030, -0.02), (0.040, 0.018, 0.10), green)
+
+        # Upward V-tail: two thin surfaces splayed out and up from the tail.
+        # Each is built about a local inboard pivot, rotated about the fore-aft
+        # axis, then offset to the tail so the inner edges meet at the fuselage.
+        tail_dihedral = math.radians(42.0)
+        tail_half = (0.22, 0.012, 0.095)
+        tail_base = np.array([0.0, 0.050, 0.585])
+        rot_r = _rot_z(tail_dihedral)
+        rot_l = _rot_z(-tail_dihedral)
+        add_box(tail_base + rot_r @ np.array([0.22, 0.0, 0.0]), tail_half, fuselage, rot_r)
+        add_box(tail_base + rot_l @ np.array([-0.22, 0.0, 0.0]), tail_half, fuselage, rot_l)
+
+        # Rear pusher propeller: a spinner plus a crossed-blade disc behind it.
+        add_box((0.0, 0.020, 0.66), (0.035, 0.035, 0.050), dark)
+        add_box((0.0, 0.020, 0.70), (0.014, 0.150, 0.012), dark)
+        add_box((0.0, 0.020, 0.70), (0.150, 0.014, 0.012), dark)
 
         return np.array(verts, dtype=float), faces
 
