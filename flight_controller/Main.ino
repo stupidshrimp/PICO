@@ -236,6 +236,17 @@ Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
 float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
 Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
 
+// Two-rate EKF (high-rate prediction, decimated/averaged correction) state.
+// EKF_QSCALED holds the process noise scaled by the actual prediction step so
+// the filter tuning is invariant to the prediction rate.
+float_prec EKF_QSCALED_data[SS_X_LEN*SS_X_LEN] = {0};
+Matrix EKF_QSCALED(SS_X_LEN, SS_X_LEN, EKF_QSCALED_data);
+uint32_t lastEkfPredictUs = 0;
+uint16_t ekfCorrectDivider = 0;
+uint16_t ekfMeasAccumCount = 0;
+float ekfAccelAccumX = 0.0f, ekfAccelAccumY = 0.0f, ekfAccelAccumZ = 0.0f;
+float ekfMagAccumX = 0.0f, ekfMagAccumY = 0.0f, ekfMagAccumZ = 0.0f;
+
 // Nonlinear update and Jacobian functions (assumed implemented)
 bool Main_bUpdateNonlinearX(Matrix& X_Next, const Matrix& X, const Matrix& U);
 bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U);
@@ -253,6 +264,7 @@ EKF EKF_IMU(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT,
 
 // ----- Auxiliary Variables -----
 elapsedMicros timerEKF;
+elapsedMicros timerEKFPredict;
 uint64_t u64compuTime;
 char bufferTxSer[100];
 char cmd;
@@ -281,6 +293,21 @@ constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
 // watchdog immediately before emitting it, so a normal (host-reading) print
 // starts with a full 100 ms window and cannot trip the IWDG.
 constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
+
+// ===== Two-rate attitude EKF =====
+// Decouple the cheap, low-latency gyro prediction from the noisier accel/mag
+// correction. Prediction integrates the gyro every EKF_PREDICT_PERIOD_US for low
+// latency and a small integration step (better dynamic accuracy); the accel/mag
+// correction runs once every EKF_CORRECT_DECIMATION predictions, and the
+// accel/mag inputs are averaged across that window (a boxcar anti-alias filter)
+// so vibration is not folded into the attitude. Process noise is scaled with the
+// step so the predict/correct trust balance matches the original tuning at any
+// rate. FC_EKF_TWO_RATE (defined in konfig.h, default 1) is the master switch;
+// set it to 0 to fall back to the original single-rate 125 Hz predict+correct
+// cycle (and the original IMU DLPF bandwidth) exactly.
+constexpr uint32_t EKF_PREDICT_PERIOD_US = 2000UL;  // 500 Hz gyro prediction
+constexpr uint16_t EKF_CORRECT_DECIMATION = 8U;     // correct every 8th predict -> ~62.5 Hz
+
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
@@ -449,6 +476,119 @@ float vectorInnovationNorm(const Matrix& measurement, const Matrix& prediction, 
   const float dy = measurement[startIndex + 1][0] - prediction[startIndex + 1][0];
   const float dz = measurement[startIndex + 2][0] - prediction[startIndex + 2][0];
   return sqrtf(dx*dx + dy*dy + dz*dz);
+}
+
+#if FC_EKF_ADAPTIVE_R
+// Map a measurement deviation ratio (0 == perfect agreement with the prediction,
+// 1 == the hard-gate boundary) to an inflated measurement variance. The variance
+// ramps smoothly and monotonically from the base value (ratio 0) up to the
+// rejection floor R_REJECTED (ratio 1):
+//     R = base * (R_REJECTED/base)^(ratio^2)
+// Squaring the ratio keeps R close to the base for small, benign disturbances and
+// ramps it up steeply only as the deviation approaches the gate, so a noisy or
+// maneuvering measurement is de-weighted continuously instead of being switched
+// off in a single step (which previously produced a visible attitude "pop").
+static float ekfAdaptiveVariance(float baseVariance, float deviationRatio) {
+  const float s = clampFloat(deviationRatio, 0.0f, 1.0f);
+  return baseVariance * expf(s * s * logf(static_cast<float>(R_REJECTED) / baseVariance));
+}
+#endif
+
+// Apply the accelerometer gravity-reference gate to the global measurement Y.
+// Normalizes the accel sub-vector and sets EKF_RACTIVE[0..2]. The deviation that
+// drives the gate is the larger of (a) how far the specific-force magnitude is
+// from gravity and (b) the direction innovation versus the gyro-propagated
+// gravity prediction (the latter only after the warmup window). With
+// FC_EKF_ADAPTIVE_R the variance is inflated smoothly toward R_REJECTED as that
+// deviation grows; a deviation past the gate is hard-rejected in either mode.
+// predictedY is h(x) evaluated at the current (already-predicted) state.
+static void ekfApplyAccelGate(const Matrix& predictedY) {
+  const float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
+
+  // Degenerate magnitude: cannot normalize, reject outright.
+  if (normG <= NORM_EPSILON) {
+    Y[0][0] = predictedY[0][0];
+    Y[1][0] = predictedY[1][0];
+    Y[2][0] = predictedY[2][0];
+    EKF_RACTIVE[0][0] = R_REJECTED;
+    EKF_RACTIVE[1][1] = R_REJECTED;
+    EKF_RACTIVE[2][2] = R_REJECTED;
+    return;
+  }
+
+  Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
+
+  // Deviation ratios: 1.0 == the hard-gate boundary.
+  float deviation = fabsf(normG - GRAVITY_NOMINAL_MSS) /
+                    (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION);
+  if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+    const float innovationRatio = vectorInnovationNorm(Y, predictedY, 0) / ACCEL_INNOVATION_GATE;
+    if (innovationRatio > deviation) {
+      deviation = innovationRatio;
+    }
+  }
+
+  if (deviation > 1.0f) {
+    // Past the gate: full rejection (matches the original hard gate exactly).
+    Y[0][0] = predictedY[0][0];
+    Y[1][0] = predictedY[1][0];
+    Y[2][0] = predictedY[2][0];
+    EKF_RACTIVE[0][0] = R_REJECTED;
+    EKF_RACTIVE[1][1] = R_REJECTED;
+    EKF_RACTIVE[2][2] = R_REJECTED;
+    return;
+  }
+
+#if FC_EKF_ADAPTIVE_R
+  const float r = ekfAdaptiveVariance(R_INIT_ACC, deviation);
+  EKF_RACTIVE[0][0] = r;
+  EKF_RACTIVE[1][1] = r;
+  EKF_RACTIVE[2][2] = r;
+#endif
+  // FC_EKF_ADAPTIVE_R == 0: leave the base variance set by setEkfMeasurementNoise().
+}
+
+// Apply the magnetometer gate to the global measurement Y. Normalizes the mag
+// sub-vector and sets EKF_RACTIVE[3..5]. The mag has no magnitude reference, so
+// the deviation is purely the direction innovation versus the prediction (only
+// after the warmup window). See ekfApplyAccelGate() for the adaptive/hard modes.
+static void ekfApplyMagGate(const Matrix& predictedY) {
+  const float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
+
+  if (normM <= NORM_EPSILON) {
+    Y[3][0] = predictedY[3][0];
+    Y[4][0] = predictedY[4][0];
+    Y[5][0] = predictedY[5][0];
+    EKF_RACTIVE[3][3] = R_REJECTED;
+    EKF_RACTIVE[4][4] = R_REJECTED;
+    EKF_RACTIVE[5][5] = R_REJECTED;
+    return;
+  }
+
+  Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
+
+  float deviation = 0.0f;
+  if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+    deviation = vectorInnovationNorm(Y, predictedY, 3) / MAG_INNOVATION_GATE;
+  }
+
+  if (deviation > 1.0f) {
+    Y[3][0] = predictedY[3][0];
+    Y[4][0] = predictedY[4][0];
+    Y[5][0] = predictedY[5][0];
+    EKF_RACTIVE[3][3] = R_REJECTED;
+    EKF_RACTIVE[4][4] = R_REJECTED;
+    EKF_RACTIVE[5][5] = R_REJECTED;
+    return;
+  }
+
+#if FC_EKF_ADAPTIVE_R
+  const float r = ekfAdaptiveVariance(R_INIT_MAG, deviation);
+  EKF_RACTIVE[3][3] = r;
+  EKF_RACTIVE[4][4] = r;
+  EKF_RACTIVE[5][5] = r;
+#endif
+  // FC_EKF_ADAPTIVE_R == 0: leave the base variance set by setEkfMeasurementNoise().
 }
 
 void resetControlDebugCounters() {
@@ -1005,6 +1145,11 @@ int16_t latestAttitudeRoll = 0;
 int16_t latestAttitudePitch = 0;
 int16_t latestAttitudeYaw = 0;
 bool attitudeSampleValid = false;
+// Latest EKF attitude in float degrees, published by the high-rate prediction
+// loop so the control stage can consume it without int16 decidegree rounding.
+float gAttitudeRollDeg = 0.0f;
+float gAttitudePitchDeg = 0.0f;
+float gAttitudeYawDeg = 0.0f;
 
 void updateGpsCache() {
 #if FC_TIMING_INSTRUMENTATION
@@ -1192,6 +1337,12 @@ void resetPeriodicTimers() {
   barometerTimer = 0;
   airspeedTimer = 0;
   timerEKF = 0;
+  timerEKFPredict = 0;
+  lastEkfPredictUs = 0;
+  ekfCorrectDivider = 0;
+  ekfMeasAccumCount = 0;
+  ekfAccelAccumX = ekfAccelAccumY = ekfAccelAccumZ = 0.0f;
+  ekfMagAccumX = ekfMagAccumY = ekfMagAccumZ = 0.0f;
   barometerReadState = BAROMETER_IDLE;
   barometerTemperatureValid = false;
   lastBarometerTemperatureUs = 0;
@@ -2178,6 +2329,84 @@ void setup() {
 }
 
 
+#if FC_EKF_TWO_RATE
+// Scale the process-noise covariance with the actual prediction step. Q per step
+// is proportional to dt, so the noise injected per unit time -- and therefore the
+// predict/correct trust balance -- matches the original single-rate filter at any
+// prediction rate. At dt == SS_DT this reproduces the original Q exactly.
+static void ekfScaleProcessNoiseForDt(float_prec dt) {
+  const float_prec scale = dt / static_cast<float_prec>(SS_DT);
+  const float_prec qQuat = static_cast<float_prec>(Q_INIT_QUAT) * scale;
+  const float_prec qBias = static_cast<float_prec>(Q_INIT_GYRO_BIAS) * scale;
+  EKF_QSCALED.vSetToZero();
+  EKF_QSCALED[0][0] = qQuat; EKF_QSCALED[1][1] = qQuat;
+  EKF_QSCALED[2][2] = qQuat; EKF_QSCALED[3][3] = qQuat;
+  EKF_QSCALED[4][4] = qBias; EKF_QSCALED[5][5] = qBias; EKF_QSCALED[6][6] = qBias;
+  EKF_IMU.vSetProcessNoise(EKF_QSCALED);
+}
+
+// Convert the current EKF quaternion estimate to Euler angles and publish them to
+// the telemetry/control caches. Mirrors the original single-rate output stage.
+static void ekfRefreshAttitudeOutputs() {
+  quaternionData = EKF_IMU.GetX();
+  Main_bNormalizeState(quaternionData);
+  const float q0 = quaternionData[0][0];
+  const float q1 = quaternionData[1][0];
+  const float q2 = quaternionData[2][0];
+  const float q3 = quaternionData[3][0];
+  const float roll  = -atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
+  const float pitchArg = clampFloat(2.0f*(q0*q2 - q3*q1), -1.0f, 1.0f);
+  const float pitch = asinf(pitchArg) * (180.0f / (float)M_PI);
+  const float yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
+  gAttitudeRollDeg = roll;
+  gAttitudePitchDeg = pitch;
+  gAttitudeYawDeg = yaw;
+  latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
+  latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
+  latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
+  attitudeSampleValid = true;
+}
+
+// Apply magnetometer calibration, centripetal/transport-acceleration
+// compensation, vector normalization, and innovation gating to the global
+// measurement vector Y, configuring EKF_RACTIVE to reject outliers. predictedY is
+// h(x) evaluated at the current (already-predicted) state. This mirrors the
+// original single-rate measurement-preparation stage; the gyro-bias terms come
+// from the current state estimate (bias is held constant across a prediction step,
+// so this equals the original one-step-ahead predicted bias).
+static void ekfPrepareAndGate(const Matrix& predictedY, uint32_t nowUs) {
+  setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+
+  // Hard-iron / soft-iron magnetometer calibration.
+  const float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
+  const float magBiasY = Y[4][0] - HARD_IRON_BIAS[1][0];
+  const float magBiasZ = Y[5][0] - HARD_IRON_BIAS[2][0];
+  Y[3][0] = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
+  Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
+  Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+
+#if FC_ACCEL_CENTRIPETAL_COMPENSATION
+  updateAirborneState(nowUs);
+  if (airspeedInputFresh(nowUs) && gpsMotionConfirmed(nowUs) && aircraftAirborne) {
+    float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
+    if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
+      centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
+      const Matrix xEst = EKF_IMU.GetX();
+      const float pitchRate = U[1][0] - xEst[5][0];  // q minus est. pitch-gyro bias
+      const float yawRate   = U[2][0] - xEst[6][0];  // r minus est. yaw-gyro bias
+      Y[1][0] += yawRate   * centripetalAirspeedMps;   // remove the -r*V term
+      Y[2][0] -= pitchRate * centripetalAirspeedMps;   // remove the +q*V term
+    }
+  }
+#endif
+
+  // Accelerometer and magnetometer: normalize, then gate / adaptively scale R.
+  ekfApplyAccelGate(predictedY);
+  ekfApplyMagGate(predictedY);
+}
+#endif  // FC_EKF_TWO_RATE
+
+
 void loop() {
   ++controlDebugCounters.loopIterations;
   // Kick the watchdog once per iteration. Placed at the top so a hang anywhere
@@ -2209,6 +2438,106 @@ void loop() {
     serviceCrsfLink();
   }
 
+#if FC_EKF_TWO_RATE
+  // ----- High-rate attitude prediction (gyro), 500 Hz -----
+  // Integrate the bias-corrected gyro into the quaternion at EKF_PREDICT_PERIOD_US
+  // for low latency and a small integration step. Accel/mag are accumulated here
+  // and consumed by the decimated, averaged correction below so vibration is not
+  // folded into the attitude. The 125 Hz control block downstream consumes the
+  // attitude this loop publishes; it no longer runs the EKF itself.
+  if (timerEKFPredict >= EKF_PREDICT_PERIOD_US) {
+    timerEKFPredict -= EKF_PREDICT_PERIOD_US;
+    const uint32_t predictNowUs = micros();
+    float predictDt = (lastEkfPredictUs == 0)
+                        ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
+                        : static_cast<float>(predictNowUs - lastEkfPredictUs) * 1.0e-6f;
+    if (predictDt < 0.0005f || predictDt > 0.050f) {
+      predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+    }
+    lastEkfPredictUs = predictNowUs;
+    gEkfRuntimeDt = static_cast<float_prec>(predictDt);
+    ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
+
+    IMU.readSensor();
+    // Swap X/Y axes to align IMU frame with aircraft frame (matches the
+    // single-rate path: body X forward, Z up).
+    const float Ax = IMU.getAccelY_mss();
+    const float Ay = IMU.getAccelX_mss();
+    const float Az = IMU.getAccelZ_mss();
+    const float Bx = IMU.getMagY_uT();
+    const float By = IMU.getMagX_uT();
+    const float Bz = IMU.getMagZ_uT();
+    U[0][0] = IMU.getGyroY_rads();
+    U[1][0] = IMU.getGyroX_rads();
+    U[2][0] = IMU.getGyroZ_rads();
+
+    // Accumulate accel/mag across the decimation window (boxcar anti-alias).
+    ekfAccelAccumX += Ax; ekfAccelAccumY += Ay; ekfAccelAccumZ += Az;
+    ekfMagAccumX += Bx; ekfMagAccumY += By; ekfMagAccumZ += Bz;
+    ++ekfMeasAccumCount;
+
+    // Gyro prediction (Main_bUpdateNonlinearX normalizes the quaternion).
+    Matrix ekfPrePredictX = EKF_IMU.GetX();
+    Matrix ekfPrePredictP = EKF_IMU.GetP();
+    if (!EKF_IMU.bPredict(U)) {
+      // A failed prediction (quaternion norm collapse) is extremely unlikely at
+      // this step size; restore the last good state rather than advancing on it.
+      EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
+    }
+    ekfRefreshAttitudeOutputs();
+
+    // ----- Decimated accel/mag correction (~62.5 Hz) -----
+    if (++ekfCorrectDivider >= EKF_CORRECT_DECIMATION) {
+      ekfCorrectDivider = 0;
+      if (ekfMeasAccumCount > 0) {
+        const float invCount = 1.0f / static_cast<float>(ekfMeasAccumCount);
+        Y[0][0] = ekfAccelAccumX * invCount;
+        Y[1][0] = ekfAccelAccumY * invCount;
+        Y[2][0] = ekfAccelAccumZ * invCount;
+        Y[3][0] = ekfMagAccumX * invCount;
+        Y[4][0] = ekfMagAccumY * invCount;
+        Y[5][0] = ekfMagAccumZ * invCount;
+        ekfAccelAccumX = ekfAccelAccumY = ekfAccelAccumZ = 0.0f;
+        ekfMagAccumX = ekfMagAccumY = ekfMagAccumZ = 0.0f;
+        ekfMeasAccumCount = 0;
+
+        // Expected measurement for the current (already-predicted) state.
+        Matrix predictedY(SS_Z_LEN, 1);
+        Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
+
+        ekfPrepareAndGate(predictedY, predictNowUs);
+
+        Matrix ekfPreviousX = EKF_IMU.GetX();
+        Matrix ekfPreviousP = EKF_IMU.GetP();
+        EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
+        u64compuTime = micros();
+        if (!EKF_IMU.bCorrect(Y, U)) {
+          ++ekfConsecutiveFailures;
+          if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
+            quaternionData.vSetToZero();
+            quaternionData[0][0] = 1.0;
+            EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+            ekfConsecutiveFailures = 0;
+            ekfInnovationGateWarmupUpdates = 0;
+          } else {
+            EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
+          }
+        } else {
+          ekfConsecutiveFailures = 0;
+          if (ekfInnovationGateWarmupUpdates < EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+            ++ekfInnovationGateWarmupUpdates;
+          }
+        }
+#if FC_TIMING_INSTRUMENTATION
+        recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
+#endif
+        u64compuTime = micros() - u64compuTime;
+        ekfRefreshAttitudeOutputs();
+      }
+    }
+  }
+#endif  // FC_EKF_TWO_RATE
+
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= EKF_PERIOD_US) {
     timerEKF -= EKF_PERIOD_US;
@@ -2221,7 +2550,8 @@ void loop() {
       controlDt = static_cast<float>(SS_DT);
     }
     lastControlUpdateUs = controlUpdateUs;
-    
+
+#if !FC_EKF_TWO_RATE
     // Read sensor data from the IMU
     IMU.readSensor();
     // Swap X/Y axes to align IMU frame with aircraft frame
@@ -2285,42 +2615,9 @@ void loop() {
     }
 #endif
 
-    // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
-    float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    bool accelRejected = (normG <= NORM_EPSILON) ||
-                         (fabsf(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
-    if (!accelRejected) {
-      Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
-      }
-    }
-    if (accelRejected) {
-      Y[0][0] = predictedY[0][0];
-      Y[1][0] = predictedY[1][0];
-      Y[2][0] = predictedY[2][0];
-      EKF_RACTIVE[0][0] = R_REJECTED;
-      EKF_RACTIVE[1][1] = R_REJECTED;
-      EKF_RACTIVE[2][2] = R_REJECTED;
-    }
-
-    // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
-    float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    bool magRejected = (normM <= NORM_EPSILON);
-    if (!magRejected) {
-      Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
-      }
-    }
-    if (magRejected) {
-      Y[3][0] = predictedY[3][0];
-      Y[4][0] = predictedY[4][0];
-      Y[5][0] = predictedY[5][0];
-      EKF_RACTIVE[3][3] = R_REJECTED;
-      EKF_RACTIVE[4][4] = R_REJECTED;
-      EKF_RACTIVE[5][5] = R_REJECTED;
-    }
+    // Normalize and gate / adaptively scale R for the accel and mag measurements.
+    ekfApplyAccelGate(predictedY);
+    ekfApplyMagGate(predictedY);
 
     // Update the EKF and measure computation time
     Matrix ekfPreviousX = EKF_IMU.GetX();
@@ -2372,6 +2669,14 @@ void loop() {
     latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
     latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
     attitudeSampleValid = true;
+#else
+    // Two-rate mode: the high-rate prediction loop above already produced the
+    // latest attitude estimate. Consume the cached Euler angles so this 125 Hz
+    // block only runs RC/control/telemetry and never touches the EKF or the IMU.
+    float roll = gAttitudeRollDeg;
+    float pitch = gAttitudePitchDeg;
+    float yaw = gAttitudeYawDeg;
+#endif  // !FC_EKF_TWO_RATE
 
     serviceCrsfLink();
 
