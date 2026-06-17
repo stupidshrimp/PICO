@@ -1153,7 +1153,7 @@ class MainWindow(QMainWindow):
         attitude_layout.addWidget(attitude_title)
 
         self.attitude3d_osd = Attitude3DOSD(attitude_container)
-        self.attitude3d_osd.setFixedHeight(160)
+        self.attitude3d_osd.setFixedHeight(250)
         self.attitude3d_osd.setStyleSheet("border: none; border-radius: 8px;")
         attitude_layout.addWidget(self.attitude3d_osd)
 
