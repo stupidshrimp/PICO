@@ -5,6 +5,7 @@
 
 #include "Arduino.h"
 #include "Wire.h"       /* For I2C */
+#include "konfig.h"     /* For FC_EKF_TWO_RATE (selects the DLPF bandwidth) */
 
 class SimpleMPU9250
 {
@@ -168,11 +169,17 @@ public:
             
         setAccelRange(ACCEL_RANGE_2G);
         setGyroRange(GYRO_RANGE_2000DPS);
+#if FC_EKF_TWO_RATE
         // 92 Hz DLPF keeps the sensor bandwidth below the Nyquist frequency of
         // the 500 Hz attitude-prediction loop, so high-frequency vibration is
         // attenuated (instead of aliasing down into the motion band as jitter)
         // while adding only a small group delay to the gyro prediction path.
         setDlpfBandwidth(DLPF_BANDWIDTH_92HZ);
+#else
+        // Single-rate fallback: keep the original 184 Hz bandwidth so disabling
+        // the two-rate path restores the exact original sensor behavior.
+        setDlpfBandwidth(DLPF_BANDWIDTH_184HZ);
+#endif
         setSrd(0);
         // successful init, return 1
         return 1;

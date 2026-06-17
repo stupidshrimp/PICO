@@ -302,11 +302,9 @@ constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
 // accel/mag inputs are averaged across that window (a boxcar anti-alias filter)
 // so vibration is not folded into the attitude. Process noise is scaled with the
 // step so the predict/correct trust balance matches the original tuning at any
-// rate. Set FC_EKF_TWO_RATE to 0 to fall back to the original single-rate 125 Hz
-// predict+correct cycle exactly.
-#ifndef FC_EKF_TWO_RATE
-#define FC_EKF_TWO_RATE 1
-#endif
+// rate. FC_EKF_TWO_RATE (defined in konfig.h, default 1) is the master switch;
+// set it to 0 to fall back to the original single-rate 125 Hz predict+correct
+// cycle (and the original IMU DLPF bandwidth) exactly.
 constexpr uint32_t EKF_PREDICT_PERIOD_US = 2000UL;  // 500 Hz gyro prediction
 constexpr uint16_t EKF_CORRECT_DECIMATION = 8U;     // correct every 8th predict -> ~62.5 Hz
 
