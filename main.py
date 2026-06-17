@@ -1756,9 +1756,9 @@ class MainWindow(QMainWindow):
             self.altitude_osd.setAltitude(self.current_altitude or 0.0)
             self.airspeed_osd.setAirspeed(self.current_airspeed or 0.0)
             self.compass_osd.setYaw(self.telemetry_yaw or 0.0)
-            self.attitude3d_osd.setAttitude(0.0, 0.0, self.telemetry_yaw or 0.0)
-            self.attitude3d_osd.setAirspeed(self.current_airspeed or 0.0)
-            self.attitude3d_osd.setAltitude(self.current_altitude or 0.0)
+            # No live attitude yet: let the model free-run its built-in 60 Hz
+            # telemetry simulation so it previews instead of sitting level.
+            self.attitude3d_osd.set_simulation_enabled(True)
             return
 
         self.rollpitch_osd.setRollPitch(self.telemetry_roll, self.telemetry_pitch)
@@ -1769,6 +1769,8 @@ class MainWindow(QMainWindow):
         if self.telemetry_yaw is not None:
             self.compass_osd.setYaw(self.telemetry_yaw)
 
+        # Live attitude has arrived: hand the model over to real telemetry.
+        self.attitude3d_osd.set_simulation_enabled(False)
         self.attitude3d_osd.setAttitude(
             self.telemetry_roll, self.telemetry_pitch, self.telemetry_yaw or 0.0
         )

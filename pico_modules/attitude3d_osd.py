@@ -1,14 +1,18 @@
 """Compact pseudo-3D attitude model widget.
 
-This widget renders a small, low-poly UAV that rotates with the incoming
+This widget renders a small, smoothly-curved UAV that rotates with the incoming
 roll/pitch/yaw telemetry, giving the operator an at-a-glance 3D read on the
 airframe's orientation (similar to the model shown on a flight-controller
 setup screen).  The silhouette borrows the cues of a medium-altitude UAV --
-a slender fuselage with a bulbous sensor nose and chin turret, long
-high-aspect wings, an inverted/upright V-tail and a rear pusher propeller --
-so it reads as an unmanned platform rather than a hobby aeroplane.  Unlike the
-existing OSD overlays it is intended to live in the command sidebar *below* the
-status indicators rather than over the video feed.
+a rounded, lofted fuselage with a bulbous sensor nose and chin turret, long
+high-aspect swept wings with dihedral, an upward V-tail and a rear pusher
+propeller -- so it reads as an unmanned platform rather than a hobby aeroplane.
+Unlike the existing OSD overlays it is intended to live in the command sidebar
+*below* the status indicators rather than over the video feed.
+
+Rather than a faceted box airframe the model is built by *lofting* elliptical
+cross-section rings along each part's axis, so the fuselage and wings read as
+continuous curved surfaces once flat-shaded.
 
 Two ambient effects layer behind the model:
 
@@ -18,9 +22,14 @@ Two ambient effects layer behind the model:
   visible ground band shrinks as the barometric altitude climbs.
 
 The model is drawn entirely with :class:`QPainter` using a hand-rolled
-orthographic-ish perspective projection (NumPy is already a project
-dependency), keeping it consistent with the other custom OSD widgets and free
-of any extra 3D toolkit.
+perspective projection (NumPy is already a project dependency), keeping it
+consistent with the other custom OSD widgets and free of any extra 3D toolkit.
+
+A built-in **telemetry simulation** drives synthetic attitude/altitude/airspeed
+through a gentle, looping flight manoeuvre so the model can be previewed without
+a live link.  The simulation ticks at :data:`SIM_TLM_FREQUENCY_HZ` (60 Hz) to
+mimic a real telemetry stream and is automatically superseded by live data via
+:meth:`set_simulation_enabled`.
 """
 
 import math
@@ -54,12 +63,16 @@ AIRSPEED_FULL_SCALE_MPH = 45.0
 # Fixed chase-camera orientation (degrees) applied on top of the live attitude
 # so the neutral model is seen from behind and slightly above, like the
 # reference setup view.
-VIEW_PITCH_DEG = 34.0   # positive = look down onto the top of the airframe
-VIEW_YAW_DEG = -30.0    # positive = orbit to the right
+VIEW_PITCH_DEG = 32.0   # positive = look down onto the top of the airframe
+VIEW_YAW_DEG = -28.0    # positive = orbit to the right
 
 # Perspective projection constants.
 _CAM_DIST = 3.2
 _FOCAL = 2.6
+
+# Telemetry-simulation tick rate (Hz).  Matches a real 60 Hz telemetry stream so
+# the preview animation moves the way live data would.
+SIM_TLM_FREQUENCY_HZ = 60.0
 
 
 def _rot_x(theta: float) -> np.ndarray:
@@ -114,6 +127,16 @@ class Attitude3DOSD(QWidget):
         self._anim_timer.timeout.connect(self._animate)
         self._anim_timer.start()
 
+        # Built-in telemetry simulation: a 60 Hz timer that synthesises a gentle
+        # looping flight so the model previews without a live link.  Live data
+        # disables it via ``set_simulation_enabled(False)``.
+        self._sim_enabled = False
+        self._sim_time = 0.0
+        self._sim_timer = QTimer(self)
+        self._sim_timer.setInterval(int(round(1000.0 / SIM_TLM_FREQUENCY_HZ)))
+        self._sim_timer.timeout.connect(self._simulate_tick)
+        self.set_simulation_enabled(True)
+
     # ------------------------------------------------------------------ #
     # Public telemetry setters
     # ------------------------------------------------------------------ #
@@ -129,21 +152,7 @@ class Attitude3DOSD(QWidget):
             or not math.isfinite(yaw_deg)
         ):
             return
-
-        now = time.monotonic()
-        if not self._initialized:
-            self._roll = roll_deg
-            self._pitch = pitch_deg
-            self._yaw = yaw_deg % 360.0
-            self._initialized = True
-        else:
-            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
-            self._roll = self._roll * (1 - alpha) + roll_deg * alpha
-            self._pitch = self._pitch * (1 - alpha) + pitch_deg * alpha
-            # Smooth yaw along the shortest arc so it never spins through 0/360.
-            delta = (yaw_deg - self._yaw + 180.0) % 360.0 - 180.0
-            self._yaw = (self._yaw + delta * alpha) % 360.0
-        self._last_update_time = now
+        self._blend_attitude(roll_deg, pitch_deg, yaw_deg)
         self.update()
 
     def setAirspeed(self, airspeed_mph: float) -> None:
@@ -162,6 +171,71 @@ class Attitude3DOSD(QWidget):
         self.update()
 
     # ------------------------------------------------------------------ #
+    # Telemetry simulation
+    # ------------------------------------------------------------------ #
+    def set_simulation_enabled(self, enabled: bool) -> None:
+        """Enable/disable the built-in 60 Hz telemetry simulation.
+
+        When enabled the widget free-runs a synthetic flight so the model can be
+        previewed without a live link.  Callers should disable it as soon as real
+        telemetry is available so live data drives the model instead.
+        """
+
+        enabled = bool(enabled)
+        if enabled == self._sim_enabled:
+            return
+        self._sim_enabled = enabled
+        if enabled:
+            # Reset so the loop always restarts from a calm, level attitude.
+            self._sim_time = 0.0
+            self._sim_timer.start()
+        else:
+            self._sim_timer.stop()
+
+    def is_simulation_enabled(self) -> bool:
+        return self._sim_enabled
+
+    def _simulate_tick(self) -> None:
+        """Advance the synthetic flight by one 60 Hz telemetry frame."""
+
+        dt = 1.0 / SIM_TLM_FREQUENCY_HZ
+        self._sim_time += dt
+        t = self._sim_time
+
+        # A coordinated, looping manoeuvre: a slow heading change with the bank,
+        # pitch and speed that would accompany it, plus a long altitude drift.
+        # Independent, incommensurate periods keep the motion from looking like a
+        # short repeating loop.
+        yaw = (t * 9.0 + 26.0 * math.sin(t * 0.12)) % 360.0
+        roll = 26.0 * math.sin(t * 0.23) + 6.0 * math.sin(t * 0.71)
+        pitch = 7.0 * math.sin(t * 0.37) + 3.0 * math.sin(t * 0.17)
+        altitude = 150.0 + 70.0 * math.sin(t * 0.09) + 12.0 * math.sin(t * 0.41)
+        airspeed = 27.0 + 9.0 * math.sin(t * 0.27) + 3.0 * math.sin(t * 0.6)
+
+        self._blend_attitude(roll, pitch, yaw)
+        self._airspeed = max(0.0, airspeed)
+        self._altitude = max(0.0, altitude)
+        self.update()
+
+    def _blend_attitude(self, roll_deg: float, pitch_deg: float, yaw_deg: float) -> None:
+        """Smooth an attitude sample into the displayed state (EMA)."""
+
+        now = time.monotonic()
+        if not self._initialized:
+            self._roll = roll_deg
+            self._pitch = pitch_deg
+            self._yaw = yaw_deg % 360.0
+            self._initialized = True
+        else:
+            alpha = time_scaled_weight(self._smoothing, now - self._last_update_time)
+            self._roll = self._roll * (1 - alpha) + roll_deg * alpha
+            self._pitch = self._pitch * (1 - alpha) + pitch_deg * alpha
+            # Smooth yaw along the shortest arc so it never spins through 0/360.
+            delta = (yaw_deg - self._yaw + 180.0) % 360.0 - 180.0
+            self._yaw = (self._yaw + delta * alpha) % 360.0
+        self._last_update_time = now
+
+    # ------------------------------------------------------------------ #
     # Geometry
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -170,22 +244,65 @@ class Attitude3DOSD(QWidget):
         return v / n if n else v
 
     def _build_model(self):
-        """Return ``(vertices, faces)`` describing a low-poly UAV.
+        """Return ``(vertices, faces)`` describing a smoothly-curved UAV.
 
         Body frame: ``+x`` right wing (starboard), ``+y`` up, ``+z`` aft so the
         nose points toward ``-z``.  Each face is ``(indices, base_color)`` where
         ``indices`` reference rows of the returned ``vertices`` array.
 
-        The silhouette deliberately leans on medium-altitude UAV cues: a long
-        slender fuselage, a bulbous sensor nose with a chin EO/IR turret,
-        high-aspect-ratio wings, an upward V-tail (in place of a conventional
-        tailplane and fin) and a rear pusher propeller.
+        The airframe is assembled from *lofted* parts: a list of elliptical
+        cross-section rings is threaded along each part's axis and consecutive
+        rings are stitched with quads, giving continuous curved surfaces (a
+        rounded fuselage, tapered swept wings) rather than a faceted box jet.
         """
 
         verts = []
         faces = []
 
-        # Corner order for a unit box, reused by every part below.
+        def add_vert(p) -> int:
+            verts.append(tuple(np.asarray(p, dtype=float)))
+            return len(verts) - 1
+
+        def ellipse_ring(center, u_axis, v_axis, ru, rv, n):
+            """A ring of ``n`` points on an ellipse spanning ``u_axis``/``v_axis``."""
+
+            center = np.asarray(center, dtype=float)
+            u_axis = np.asarray(u_axis, dtype=float)
+            v_axis = np.asarray(v_axis, dtype=float)
+            ring = []
+            for k in range(n):
+                a = 2.0 * math.pi * k / n
+                ring.append(
+                    add_vert(center + u_axis * (ru * math.cos(a)) + v_axis * (rv * math.sin(a)))
+                )
+            return ring
+
+        def loft(rings, color, cap_start=None, cap_end=None):
+            """Stitch consecutive equal-length rings into a quad tube.
+
+            ``cap_start``/``cap_end`` optionally close the ends with a triangle
+            fan to the supplied apex point (its colour matches ``color``).
+            """
+
+            n = len(rings[0])
+            for r0, r1 in zip(rings[:-1], rings[1:]):
+                for i in range(n):
+                    j = (i + 1) % n
+                    faces.append(((r0[i], r0[j], r1[j], r1[i]), color))
+            if cap_start is not None:
+                apex = add_vert(cap_start)
+                r = rings[0]
+                for i in range(n):
+                    j = (i + 1) % n
+                    faces.append(((apex, r[j], r[i]), color))
+            if cap_end is not None:
+                apex = add_vert(cap_end)
+                r = rings[-1]
+                for i in range(n):
+                    j = (i + 1) % n
+                    faces.append(((apex, r[i], r[j]), color))
+
+        # Reusable box helper for small angular parts (turret, prop).
         corner_signs = [
             (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
             (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1),
@@ -196,12 +313,6 @@ class Attitude3DOSD(QWidget):
         ]
 
         def add_box(center, half, color, rot=None):
-            """Add an axis-aligned box, optionally rotating its corners by ``rot``.
-
-            ``rot`` (a 3x3 matrix) lets a part be canted about its own centre,
-            which the V-tail surfaces use to splay outward and upward.
-            """
-
             base = len(verts)
             center = np.asarray(center, dtype=float)
             hx, hy, hz = half
@@ -209,44 +320,111 @@ class Attitude3DOSD(QWidget):
                 offset = np.array([sx * hx, sy * hy, sz * hz], dtype=float)
                 if rot is not None:
                     offset = rot @ offset
-                verts.append(tuple(center + offset))
+                add_vert(center + offset)
             for f in box_faces:
                 faces.append(((base + f[0], base + f[1], base + f[2], base + f[3]), color))
 
-        fuselage = QColor(200, 205, 213)
-        wing = QColor(210, 214, 221)
-        sensor = QColor(168, 174, 184)
+        fuselage = QColor(206, 211, 219)
+        wing = QColor(214, 218, 225)
+        sensor = QColor(150, 157, 168)
         dark = QColor(44, 48, 58)
         red = QColor(232, 64, 58)
         green = QColor(58, 200, 92)
 
-        # Slender fuselage running nose (-z) to tail (+z).
-        add_box((0.0, 0.0, 0.04), (0.058, 0.066, 0.60), fuselage)
-        # Bulbous sensor nose, raised slightly to suggest the SATCOM hump.
-        add_box((0.0, 0.020, -0.60), (0.080, 0.082, 0.14), sensor)
-        # Chin EO/IR sensor turret slung under the nose.
-        add_box((0.0, -0.085, -0.58), (0.052, 0.050, 0.060), dark)
-        # High-aspect-ratio main wing (long span, thin chord).
-        add_box((0.0, 0.030, -0.02), (0.80, 0.013, 0.135), wing)
+        x_axis = np.array([1.0, 0.0, 0.0])
+        y_axis = np.array([0.0, 1.0, 0.0])
+        z_axis = np.array([0.0, 0.0, 1.0])
+
+        # ---- Fuselage: lofted along z from a rounded sensor nose to the tail.
+        # (station z, half-width, half-height, vertical centre offset)
+        fuse_stations = [
+            (-0.66, 0.020, 0.022, 0.012),   # nose tip
+            (-0.58, 0.072, 0.078, 0.018),   # bulbous EO/IR sensor ball
+            (-0.46, 0.082, 0.090, 0.020),   # SATCOM hump shoulder
+            (-0.28, 0.070, 0.082, 0.014),   # forward fuselage / avionics bay
+            (-0.05, 0.060, 0.072, 0.006),   # wing box
+            (0.22, 0.048, 0.058, 0.000),    # mid tail boom
+            (0.46, 0.034, 0.040, -0.004),   # aft boom
+            (0.62, 0.024, 0.028, -0.006),   # tail
+        ]
+        fuse_rings = [
+            ellipse_ring((0.0, cy, z), x_axis, y_axis, rx, ry, 14)
+            for (z, rx, ry, cy) in fuse_stations
+        ]
+        loft(
+            fuse_rings,
+            fuselage,
+            cap_start=(0.0, fuse_stations[0][3], fuse_stations[0][0] - 0.03),
+            cap_end=(0.0, fuse_stations[-1][3], fuse_stations[-1][0] + 0.02),
+        )
+
+        # Chin EO/IR sensor turret slung under the rounded nose.
+        add_box((0.0, -0.090, -0.55), (0.050, 0.048, 0.058), dark)
+
+        # ---- Main wing: a tapered, swept, dihedral surface lofted spanwise.
+        # Cross-sections live in the (chord=z, thickness=y) plane and march out
+        # along +x, sweeping aft and rising for dihedral toward the tip.
+        def wing_sections(sign):
+            # (span fraction, chord half, thickness half)
+            shape = [
+                (0.00, 0.150, 0.020),
+                (0.30, 0.140, 0.018),
+                (0.62, 0.110, 0.013),
+                (0.86, 0.072, 0.009),
+                (1.00, 0.030, 0.005),
+            ]
+            span = 0.86
+            rings = []
+            for frac, chord, thick in shape:
+                x = sign * (0.045 + frac * span)
+                z = -0.02 + frac * 0.10          # sweep aft toward the tip
+                y = 0.028 + frac * 0.055          # dihedral rise toward the tip
+                rings.append(
+                    ellipse_ring((x, y, z), z_axis, y_axis, chord, thick, 12)
+                )
+            return rings
+
+        for sign in (1.0, -1.0):
+            loft(wing_sections(sign), wing, cap_end=None)
+
         # Port/starboard nav-light tips.
-        add_box((-0.835, 0.030, -0.02), (0.040, 0.018, 0.10), red)
-        add_box((0.835, 0.030, -0.02), (0.040, 0.018, 0.10), green)
+        add_box((-0.930, 0.083, 0.064), (0.022, 0.010, 0.040), red)
+        add_box((0.930, 0.083, 0.064), (0.022, 0.010, 0.040), green)
 
-        # Upward V-tail: two thin surfaces splayed out and up from the tail.
-        # Each is built about a local inboard pivot, rotated about the fore-aft
-        # axis, then offset to the tail so the inner edges meet at the fuselage.
-        tail_dihedral = math.radians(42.0)
-        tail_half = (0.22, 0.012, 0.095)
-        tail_base = np.array([0.0, 0.050, 0.585])
-        rot_r = _rot_z(tail_dihedral)
-        rot_l = _rot_z(-tail_dihedral)
-        add_box(tail_base + rot_r @ np.array([0.22, 0.0, 0.0]), tail_half, fuselage, rot_r)
-        add_box(tail_base + rot_l @ np.array([-0.22, 0.0, 0.0]), tail_half, fuselage, rot_l)
+        # ---- Upward V-tail: two thin lofted surfaces splayed out and up.
+        tail_dihedral = math.radians(40.0)
+        tail_base = np.array([0.0, 0.030, 0.50])
 
-        # Rear pusher propeller: a spinner plus a crossed-blade disc behind it.
-        add_box((0.0, 0.020, 0.66), (0.035, 0.035, 0.050), dark)
-        add_box((0.0, 0.020, 0.70), (0.014, 0.150, 0.012), dark)
-        add_box((0.0, 0.020, 0.70), (0.150, 0.014, 0.012), dark)
+        def vtail(sign):
+            rot = _rot_z(sign * tail_dihedral)
+            shape = [
+                (0.00, 0.085, 0.010),
+                (0.45, 0.072, 0.008),
+                (0.78, 0.050, 0.006),
+                (1.00, 0.026, 0.004),
+            ]
+            length = 0.24
+            rings = []
+            for frac, chord, thick in shape:
+                local = np.array([sign * (0.01 + frac * length), 0.0, 0.0])
+                center = tail_base + rot @ local
+                u = rot @ z_axis
+                v = rot @ y_axis
+                rings.append(ellipse_ring(center, u, v, chord, thick, 10))
+            return rings
+
+        for sign in (1.0, -1.0):
+            loft(vtail(sign), fuselage)
+
+        # ---- Rear pusher propeller: a rounded spinner plus a crossed-blade disc.
+        spin_rings = [
+            ellipse_ring((0.0, 0.0, 0.60), x_axis, y_axis, 0.030, 0.030, 10),
+            ellipse_ring((0.0, 0.0, 0.64), x_axis, y_axis, 0.034, 0.034, 10),
+            ellipse_ring((0.0, 0.0, 0.69), x_axis, y_axis, 0.012, 0.012, 10),
+        ]
+        loft(spin_rings, dark, cap_end=(0.0, 0.0, 0.72))
+        add_box((0.0, 0.0, 0.70), (0.012, 0.150, 0.010), dark)
+        add_box((0.0, 0.0, 0.70), (0.150, 0.012, 0.010), dark)
 
         return np.array(verts, dtype=float), faces
 
@@ -412,7 +590,9 @@ class Attitude3DOSD(QWidget):
             )
             poly = QPolygonF([screen[i] for i in indices])
             painter.setBrush(QBrush(color))
-            painter.setPen(QPen(QColor(20, 24, 30, 160), 0.6))
+            # Match the outline to the fill so curved lofts read as smooth
+            # surfaces instead of a wireframe of quads.
+            painter.setPen(QPen(color, 0.4))
             painter.drawPolygon(poly)
 
     def _paint_readout(self, painter: QPainter, w: int, h: int) -> None:
@@ -434,3 +614,10 @@ class Attitude3DOSD(QWidget):
             Qt.AlignLeft | Qt.AlignVCenter,
             f"R {self._roll:+.0f}°  P {self._pitch:+.0f}°  Y {self._yaw:03.0f}°",
         )
+        if self._sim_enabled:
+            painter.setPen(QColor(255, 214, 120, 220))
+            painter.drawText(
+                QRectF(6, h - 18, w - 12, 14),
+                Qt.AlignRight | Qt.AlignVCenter,
+                "SIM 60Hz",
+            )
