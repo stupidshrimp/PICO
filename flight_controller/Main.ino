@@ -104,8 +104,11 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #ifndef FC_GPS_DIAGNOSTIC_MODE
 #define FC_GPS_DIAGNOSTIC_MODE 0
 #endif
+#ifndef FC_GPS_BAUD
+#define FC_GPS_BAUD 230400UL
+#endif
 #ifndef FC_GPS_DIAGNOSTIC_BAUD
-#define FC_GPS_DIAGNOSTIC_BAUD 9600UL
+#define FC_GPS_DIAGNOSTIC_BAUD FC_GPS_BAUD
 #endif
 #ifndef FC_GPS_DIAGNOSTIC_PING_PERIOD_MS
 #define FC_GPS_DIAGNOSTIC_PING_PERIOD_MS 5000UL
@@ -2145,8 +2148,8 @@ void setup() {
   }
 
   // ----- Initialize GPS (gpsSerial) -----
-  gpsSerial.begin(9600);
-  gps.begin(9600);  // Switch module to NMEA output; enable GGA + RMC on UART1.
+  gpsSerial.begin(FC_GPS_BAUD);
+  gps.begin(FC_GPS_BAUD);  // Switch module to NMEA output; enable GGA + RMC on UART1 at the flight GPS baud.
   delay(1000);
   Serial.println("GPS module initialized on USART6.");
 
