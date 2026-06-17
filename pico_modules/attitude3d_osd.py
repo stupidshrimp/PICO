@@ -135,7 +135,7 @@ class Attitude3DOSD(QWidget):
         self._sim_timer = QTimer(self)
         self._sim_timer.setInterval(int(round(1000.0 / SIM_TLM_FREQUENCY_HZ)))
         self._sim_timer.timeout.connect(self._simulate_tick)
-        self.set_simulation_enabled(True)
+        self.set_simulation_enabled(False)
 
     # ------------------------------------------------------------------ #
     # Public telemetry setters
@@ -357,9 +357,6 @@ class Attitude3DOSD(QWidget):
             cap_start=(0.0, fuse_stations[0][3], fuse_stations[0][0] - 0.03),
             cap_end=(0.0, fuse_stations[-1][3], fuse_stations[-1][0] + 0.02),
         )
-
-        # Chin EO/IR sensor turret slung under the rounded nose.
-        add_box((0.0, -0.090, -0.55), (0.050, 0.048, 0.058), dark)
 
         # ---- Main wing: a tapered, swept, dihedral surface lofted spanwise.
         # Cross-sections live in the (chord=z, thickness=y) plane and march out
