@@ -1358,7 +1358,12 @@ constexpr uint32_t GPS_DIAG_QUIET_SAMPLE_MS = 1500UL;
 // ever assemble, the module is almost always streaming at a baud other than
 // FC_GPS_DIAGNOSTIC_BAUD. Probe the common u-blox rates and lock onto the one
 // that yields real, checksum-valid NMEA. Ordered most-likely first.
-const uint32_t GPS_DIAG_BAUD_CANDIDATES[] = {9600UL, 38400UL, 115200UL, 57600UL, 19200UL, 4800UL};
+//
+// 230400/460800 are included because the raw-line GPIO timing probe regularly
+// measures ~4 us/bit (~230400, often reported as "~250000" by the coarse
+// sampler) on modules configured to a high rate -- without these entries the
+// scan can never lock such a module even though the link is perfectly healthy.
+const uint32_t GPS_DIAG_BAUD_CANDIDATES[] = {9600UL, 38400UL, 115200UL, 230400UL, 460800UL, 57600UL, 19200UL, 4800UL};
 constexpr size_t GPS_DIAG_BAUD_CANDIDATE_COUNT =
     sizeof(GPS_DIAG_BAUD_CANDIDATES) / sizeof(GPS_DIAG_BAUD_CANDIDATES[0]);
 constexpr uint32_t GPS_DIAG_BAUD_LISTEN_MS = 2500UL;
@@ -1853,7 +1858,7 @@ void gpsDiagMeasureLinePulses() {
   Serial.print(" us ("); Serial.print(support);
   Serial.print(" samples) -> implied baud ~"); Serial.println(impliedBaud);
 
-  const uint32_t commonBauds[] = {4800UL, 9600UL, 19200UL, 38400UL, 57600UL, 115200UL};
+  const uint32_t commonBauds[] = {4800UL, 9600UL, 19200UL, 38400UL, 57600UL, 115200UL, 230400UL, 460800UL};
   uint32_t nearest = commonBauds[0];
   uint32_t bestErr = 0xFFFFFFFFUL;
   for (size_t i = 0; i < sizeof(commonBauds) / sizeof(commonBauds[0]); ++i) {
