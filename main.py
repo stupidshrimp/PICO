@@ -829,11 +829,10 @@ class MainWindow(QMainWindow):
         widgets.bottomMenu.hide()
         widgets.extraLeftBox.hide()
 
-        # TOP BUTTONS (Close, Minimize, Maximize)
-        widgets.closeAppBtn.clicked.connect(self.close)
-        widgets.minimizeAppBtn.clicked.connect(self.showMinimized)
-        widgets.maximizeRestoreAppBtn.clicked.connect(lambda: UIFunctions.maximize_restore(self))
-        widgets.fullScreenAppBtn.clicked.connect(lambda: UIFunctions.full_screen(self))
+        # TOP BUTTONS (Close, Minimize, Maximize, Full Screen) are already wired
+        # in UIFunctions.uiDefinitions() above. Re-connecting them here would fire
+        # the maximize/full-screen toggles twice per click, cancelling each other
+        # out so the window flashes and stays put.
 
         # SET HOME PAGE AND SELECT MENU
         widgets.stackedWidget.setCurrentWidget(widgets.home)
