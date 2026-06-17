@@ -168,7 +168,11 @@ public:
             
         setAccelRange(ACCEL_RANGE_2G);
         setGyroRange(GYRO_RANGE_2000DPS);
-        setDlpfBandwidth(DLPF_BANDWIDTH_184HZ);
+        // 92 Hz DLPF keeps the sensor bandwidth below the Nyquist frequency of
+        // the 500 Hz attitude-prediction loop, so high-frequency vibration is
+        // attenuated (instead of aliasing down into the motion band as jitter)
+        // while adding only a small group delay to the gyro prediction path.
+        setDlpfBandwidth(DLPF_BANDWIDTH_92HZ);
         setSrd(0);
         // successful init, return 1
         return 1;
