@@ -288,9 +288,9 @@ class DocumentationPage:
                 "While the checklist is being worked through, the GCS monitors live link "
                 "statistics (RSSI, link quality, SNR) and colour-codes them, so the operator "
                 "can see weak RF conditions rather than relying on a single pass/fail moment.",
-                "Attitude, GPS, and battery streams are validated for freshness and sane "
-                "numeric ranges before they are trusted, so the UI does not treat a stale or "
-                "nonsensical reading as a valid flight state.",
+                "Telemetry freshness is tracked per stream, and GPS fixes are only treated as "
+                "position-valid after finite, non-zero latitude/longitude are received, so stale "
+                "or no-fix position data does not masquerade as a usable map location.",
                 "Sortie recording is locked out until fresh telemetry is present, ensuring a "
                 "flight is never logged against a dead link.",
             ),
@@ -621,8 +621,8 @@ class DocumentationPage:
                 "valid frame arrives, and timestamp it for failsafe detection.",
                 "Read channels with the library's helpers and translate them to servo "
                 "microseconds for the control logic.",
-                "Use the telemetry writers (attitude, GPS, battery) to queue outbound frames; "
-                "the library sequences them into the ELRS telemetry windows for you.",
+                "Use the attitude and GPS telemetry writers to queue outbound frames; the "
+                "library sequences them into the ELRS telemetry windows for you.",
             ),
         )
 
