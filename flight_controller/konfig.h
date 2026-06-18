@@ -21,6 +21,31 @@
 #define SS_DT       float_prec(SS_DT_MILIS/1000.)   /* Sampling time */
 
 
+/* High-rate gyro prediction for the attitude EKF.
+ *   0 (default) = the proven single-rate predict+correct cycle at 125 Hz.
+ *   1           = run the cheap gyro PREDICTION at EKF_PREDICT_PERIOD_US (lower
+ *                 output latency and a smaller integration step) while the
+ *                 noisier accel/mag CORRECTION still runs at the original 125 Hz,
+ *                 on the latest sample and through the identical gates.
+ *
+ * Unlike the reverted two-rate change (PR #582), this deliberately does NOT
+ * average accel/mag across the prediction window (averaging body-frame vectors
+ * smears and shrinks them while rotating, which both lags the estimate and trips
+ * the magnitude/innovation gates -> the correction gets rejected mid-rotation and
+ * the filter periodically snaps back when it re-acquires). It also does NOT move
+ * the correction off 125 Hz and does NOT change the IMU DLPF bandwidth, so every
+ * correction-side behavior (gates, innovation-gate warmup, failure handling)
+ * stays identical to the proven filter.
+ *
+ * Defaults OFF so the normal build keeps the proven single-rate behavior exactly.
+ * ENABLE ONLY AFTER BENCH VERIFICATION: with the flag on, confirm CPU/I2C
+ * headroom at the prediction rate, the IWDG watchdog stays happy, and attitude
+ * tracks correctly (no lag or periodic snap) while rotating before flying it. */
+#ifndef FC_EKF_FAST_PREDICT
+#define FC_EKF_FAST_PREDICT 0
+#endif
+
+
 /* Change this size based on the biggest matrix you will use */
 #define MATRIX_MAXIMUM_SIZE     (7)
 

@@ -21,7 +21,10 @@ public:
         bool (*bNormalizeState)(Matrix&) = nullptr);
     void vReset(const Matrix& XInit, const Matrix& P, const Matrix& Q, const Matrix& R);
     void vSetMeasurementNoise(const Matrix& R);
+    void vSetProcessNoise(const Matrix& Q);
     bool bUpdate(const Matrix& Y, const Matrix& U);
+    bool bPredict(const Matrix& U);
+    bool bCorrect(const Matrix& Y, const Matrix& U);
     const Matrix GetX()   const { return X_Est; }
     const Matrix GetY()   const { return Y_Est; }
     const Matrix GetP()   const { return P; }
