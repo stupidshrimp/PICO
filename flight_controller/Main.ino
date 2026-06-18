@@ -2294,41 +2294,47 @@ void loop() {
     // leave a backlog that re-enters this block on the next iterations with
     // near-zero real deltas -- which the dt floor below would inflate back to a
     // full step, integrating gyro motion for time that never elapsed and
-    // over-rotating the estimate right after the stall. Clearing it instead means
-    // the true elapsed interval is integrated once, in the dt computed below.
+    // over-rotating the estimate right after the stall. Clearing it integrates the
+    // true elapsed interval once (in the dt below) and, on a failed read, paces the
+    // retry at one period instead of every loop.
     timerEKFPredict = 0;
-    const uint32_t predictNowUs = micros();
-    float predictDt = (lastEkfPredictUs == 0)
-                        ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
-                        : static_cast<float>(predictNowUs - lastEkfPredictUs) * 1.0e-6f;
-    // Sanity guard only (the timer is now cleared, so dt is the real
-    // inter-prediction interval, >= one period in steady state): floor a
-    // glitched/zero/negative delta and cap an extreme post-stall gap.
-    if (predictDt < 0.0005f || predictDt > 0.050f) {
-      predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+
+    // Guard the read: the driver returns <0 on a short I2C read WITHOUT refreshing
+    // its cached gyro, so on failure skip the step entirely -- don't integrate a
+    // stale sample and don't advance lastEkfPredictUs, so the next good predict
+    // (or the 125 Hz correction) integrates the true elapsed time. Default-on path.
+    if (IMU.readSensor() >= 0) {
+      const uint32_t predictNowUs = micros();
+      float predictDt = (lastEkfPredictUs == 0)
+                          ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
+                          : static_cast<float>(predictNowUs - lastEkfPredictUs) * 1.0e-6f;
+      // Sanity guard only (the timer is cleared, so dt is the real inter-prediction
+      // interval, >= one period in steady state): floor a glitched/zero/negative
+      // delta and cap an extreme post-stall gap.
+      if (predictDt < 0.0005f || predictDt > 0.050f) {
+        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+      }
+      lastEkfPredictUs = predictNowUs;
+
+      // Bias-corrected gyro, X/Y swapped to align the IMU frame with the aircraft
+      // frame (body X forward, Z up). Only the gyro is used here; the 125 Hz
+      // correction reads its own fresh accel/mag at the correction instant.
+      U[0][0] = IMU.getGyroY_rads();
+      U[1][0] = IMU.getGyroX_rads();
+      U[2][0] = IMU.getGyroZ_rads();
+
+      gEkfRuntimeDt = static_cast<float_prec>(predictDt);
+      ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
+
+      const Matrix ekfPrePredictX = EKF_IMU.GetX();
+      const Matrix ekfPrePredictP = EKF_IMU.GetP();
+      if (!EKF_IMU.bPredict(U)) {
+        // A quaternion-norm collapse is extremely unlikely at this step size;
+        // restore the last good state rather than advancing on a bad one.
+        EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
+      }
+      ekfRefreshAttitudeCache();
     }
-    lastEkfPredictUs = predictNowUs;
-
-    // Fresh gyro for the prediction; the accel/mag from this same read are cached
-    // in the IMU driver and consumed by the 125 Hz correction below (latest
-    // sample, no body-frame averaging).
-    IMU.readSensor();
-    // Swap X/Y axes to align IMU frame with aircraft frame (body X forward, Z up).
-    U[0][0] = IMU.getGyroY_rads();
-    U[1][0] = IMU.getGyroX_rads();
-    U[2][0] = IMU.getGyroZ_rads();
-
-    gEkfRuntimeDt = static_cast<float_prec>(predictDt);
-    ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
-
-    const Matrix ekfPrePredictX = EKF_IMU.GetX();
-    const Matrix ekfPrePredictP = EKF_IMU.GetP();
-    if (!EKF_IMU.bPredict(U)) {
-      // A quaternion-norm collapse is extremely unlikely at this step size;
-      // restore the last good state rather than advancing on a bad one.
-      EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
-    }
-    ekfRefreshAttitudeCache();
     serviceCrsfLink();
   }
 #endif  // FC_EKF_FAST_PREDICT
