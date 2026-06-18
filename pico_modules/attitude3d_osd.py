@@ -127,8 +127,8 @@ class Attitude3DOSD(QWidget):
 
         # Pre-built model geometry and the fixed view transform.
         self._vertices, self._faces = self._build_model()
-        self._view = _rot_x(math.radians(VIEW_PITCH_DEG)) @ _rot_y(
-            math.radians(VIEW_YAW_DEG)
+        self._view = _rot_y(math.radians(VIEW_YAW_DEG)) @ _rot_x(
+            math.radians(VIEW_PITCH_DEG)
         )
         self._light_dir = self._normalize(np.array([-0.35, 0.82, 0.45]))
 
