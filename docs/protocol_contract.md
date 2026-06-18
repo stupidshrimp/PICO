@@ -56,7 +56,7 @@ axes to servo PWM `1000..2000 us` only after receiving the CRSF packet.
 | FC FBW roll/pitch hard limit | `80 deg` | `flight_controller/Main.ino` (`FBW_MAX_ROLL_ANGLE_DEG`, `FBW_MAX_PITCH_ANGLE_DEG`) |
 | FC FBW PID gains | Roll `Kp=5.0`, `Ki=0.25`, `Kd=0.9`; Pitch `Kp=6.0`, `Ki=0.30`, `Kd=1.1` | `flight_controller/Main.ino` |
 | FC FBW PID output limit | `±400 us` | `flight_controller/Main.ino` (`FBW_PID_OUTPUT_LIMIT_US`) |
-| FC FBW attitude filter | `5 Hz` | `flight_controller/Main.ino` (`FBW_ATTITUDE_FILTER_CUTOFF_HZ`) |
+| FC FBW attitude filter | _none_ | EKF attitude is fed straight into the FBW PID; no output low-pass (removed to minimize control-loop latency) |
 | FC auto-throttle target range | `0..100 mph` | `flight_controller/Main.ino` (`AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH`) |
 | FC auto-throttle default target | `20 mph` | `flight_controller/Main.ino` (`AUTO_THROTTLE_DEFAULT_TARGET_MPH`); GS default `throttle.target_airspeed_mph` is also `20.0` |
 | FC auto-throttle PID gains | `Kp=0.8`, `Ki=0.04`, `Kd=0.15` | `flight_controller/Main.ino` |
