@@ -2211,8 +2211,9 @@ void loop() {
 
   if (gpsDrainTimer >= GPS_DRAIN_PERIOD_US) {
     gpsDrainTimer = 0;
-    // Drain the 9600-baud GPS UART at the old 50 Hz cadence to avoid RX
-    // buffer overflow; telemetry below only reuses the latest parsed cache.
+    // Drain the GPS UART at the 50 Hz cadence to avoid RX buffer overflow;
+    // telemetry below only reuses the latest parsed cache. At 230400 baud the
+    // module streams GGA+RMC at 5 Hz, so 50 Hz draining stays well ahead.
     updateGpsCache();
     serviceCrsfLink();
   }
