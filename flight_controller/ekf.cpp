@@ -101,18 +101,33 @@ void EKF::vSetMeasurementNoise(const Matrix& R)
     this->R = R;
 }
 
+void EKF::vSetProcessNoise(const Matrix& Q)
+{
+    this->Q = Q;
+}
+
 bool EKF::bUpdate(const Matrix& Y, const Matrix& U)
 {
-    /* Run once every sampling time */
-    
-    
+    /* Run once every sampling time. Prediction and correction are split into
+     * bPredict()/bCorrect() so a caller can run the cheap, low-latency gyro
+     * prediction at a higher rate than the noisier accel/mag correction. This
+     * combined call preserves the original single-rate predict+correct cycle
+     * (and is bit-for-bit identical to the previous monolithic bUpdate). */
+    if (!bPredict(U)) {
+        return false;
+    }
+    return bCorrect(Y, U);
+}
+
+bool EKF::bPredict(const Matrix& U)
+{
     /* =============== Calculate the Jacobian matrix of f (i.e. F) =============== */
     /* F = d(f(..))/dx |x(k-1|k-1),u(k-1)                               ...{EKF_1} */
     if (!bCalcJacobianF(F, X_Est, U)) {
         return false;
     }
-    
-    
+
+
     /* =========================== Prediction of x & P =========================== */
     /* x(k|k-1) = f[x(k-1|k-1), u(k-1)]                                 ...{EKF_2} */
     if (!bNonlinearUpdateX(X_Est, X_Est, U)) {
@@ -121,9 +136,12 @@ bool EKF::bUpdate(const Matrix& Y, const Matrix& U)
 
     /* P(k|k-1)  = F*P(k-1|k-1)*F' + Q                                  ...{EKF_3} */
     P = F*P*(F.Transpose()) + Q;
-    
-    
-    
+
+    return true;
+}
+
+bool EKF::bCorrect(const Matrix& Y, const Matrix& U)
+{
     /* =============== Calculate the Jacobian matrix of h (i.e. H) =============== */
     /* H = d(h(..))/dx |x(k|k-1)                                        ...{EKF_4} */
     if (!bCalcJacobianH(H, X_Est, U)) {

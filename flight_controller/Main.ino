@@ -239,6 +239,16 @@ Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
 float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
 Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
 
+#if FC_EKF_FAST_PREDICT
+// High-rate gyro-prediction state (see FC_EKF_FAST_PREDICT in konfig.h).
+// EKF_QSCALED holds the process noise scaled by the actual prediction step so the
+// predict/correct trust balance is invariant to the prediction rate (it equals
+// the original Q at dt == SS_DT).
+float_prec EKF_QSCALED_data[SS_X_LEN*SS_X_LEN] = {0};
+Matrix EKF_QSCALED(SS_X_LEN, SS_X_LEN, EKF_QSCALED_data);
+uint32_t lastEkfPredictUs = 0;
+#endif
+
 // Nonlinear update and Jacobian functions (assumed implemented)
 bool Main_bUpdateNonlinearX(Matrix& X_Next, const Matrix& X, const Matrix& U);
 bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U);
@@ -256,6 +266,9 @@ EKF EKF_IMU(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT,
 
 // ----- Auxiliary Variables -----
 elapsedMicros timerEKF;
+#if FC_EKF_FAST_PREDICT
+elapsedMicros timerEKFPredict;
+#endif
 uint64_t u64compuTime;
 char bufferTxSer[100];
 char cmd;
@@ -269,6 +282,13 @@ char cmd;
 #endif
 
 constexpr uint32_t EKF_PERIOD_US = SS_DT_MILIS * 1000UL;
+#if FC_EKF_FAST_PREDICT
+// Gyro-only attitude prediction period for FC_EKF_FAST_PREDICT. 4000 us = 250 Hz
+// (2x the 125 Hz control rate): halves the worst-case attitude output latency and
+// the integration step at ~2x the IMU-read + predict cost. Tunable -- verify
+// CPU/I2C headroom on the target MCU (and the watchdog margin) before raising it.
+constexpr uint32_t EKF_PREDICT_PERIOD_US = 4000UL;
+#endif
 // Independent hardware watchdog (IWDG) timeout. The main loop services many
 // tasks per attitude period (8 ms) and the longest blocking call is now bounded
 // by the 25 ms I2C timeout, so 100 ms leaves ample margin against false resets
@@ -1009,6 +1029,44 @@ int16_t latestAttitudePitch = 0;
 int16_t latestAttitudeYaw = 0;
 bool attitudeSampleValid = false;
 
+#if FC_EKF_FAST_PREDICT
+// Scale the process-noise covariance with the actual prediction step. Q per step
+// is proportional to dt, so the noise injected per unit time -- and therefore the
+// predict/correct trust balance -- matches the original single-rate filter at any
+// prediction rate. At dt == SS_DT this reproduces the original Q exactly.
+void ekfScaleProcessNoiseForDt(float_prec dt) {
+  const float_prec scale = dt / static_cast<float_prec>(SS_DT);
+  const float_prec qQuat = static_cast<float_prec>(Q_INIT_QUAT) * scale;
+  const float_prec qBias = static_cast<float_prec>(Q_INIT_GYRO_BIAS) * scale;
+  EKF_QSCALED.vSetToZero();
+  EKF_QSCALED[0][0] = qQuat; EKF_QSCALED[1][1] = qQuat;
+  EKF_QSCALED[2][2] = qQuat; EKF_QSCALED[3][3] = qQuat;
+  EKF_QSCALED[4][4] = qBias; EKF_QSCALED[5][5] = qBias; EKF_QSCALED[6][6] = qBias;
+  EKF_IMU.vSetProcessNoise(EKF_QSCALED);
+}
+
+// Convert the current EKF quaternion estimate to Euler decidegrees and publish it
+// to the telemetry attitude cache, so the high-rate prediction keeps
+// latestAttitude* fresh between the 125 Hz corrections. Mirrors the Euler
+// conversion in the 125 Hz control block exactly.
+void ekfRefreshAttitudeCache() {
+  Matrix q = EKF_IMU.GetX();
+  Main_bNormalizeState(q);
+  const float q0 = q[0][0];
+  const float q1 = q[1][0];
+  const float q2 = q[2][0];
+  const float q3 = q[3][0];
+  const float roll  = -atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
+  const float pitchArg = clampFloat(2.0f*(q0*q2 - q3*q1), -1.0f, 1.0f);
+  const float pitch = asinf(pitchArg) * (180.0f / (float)M_PI);
+  const float yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
+  latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
+  latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
+  latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
+  attitudeSampleValid = true;
+}
+#endif  // FC_EKF_FAST_PREDICT
+
 void updateGpsCache() {
 #if FC_TIMING_INSTRUMENTATION
   uint32_t timingStartUs = micros();
@@ -1195,6 +1253,10 @@ void resetPeriodicTimers() {
   barometerTimer = 0;
   airspeedTimer = 0;
   timerEKF = 0;
+#if FC_EKF_FAST_PREDICT
+  timerEKFPredict = 0;
+  lastEkfPredictUs = 0;
+#endif
   barometerReadState = BAROMETER_IDLE;
   barometerTemperatureValid = false;
   lastBarometerTemperatureUs = 0;
@@ -2218,9 +2280,79 @@ void loop() {
     serviceCrsfLink();
   }
 
+#if FC_EKF_FAST_PREDICT
+  // ----- High-rate gyro attitude prediction -----
+  // Between the 125 Hz corrections, integrate the bias-corrected gyro into the
+  // quaternion every EKF_PREDICT_PERIOD_US: this publishes attitude to telemetry
+  // at the higher rate and keeps the integration step small (better dynamic
+  // accuracy in fast rotations). The accel/mag CORRECTION runs in the 125 Hz block
+  // below, which reads its own fresh sample and does the full predict+correct
+  // through the identical gates, so correction-side behavior matches the proven
+  // single-rate filter.
+  if (timerEKFPredict >= EKF_PREDICT_PERIOD_US) {
+    // Clear the timer rather than subtracting one period. If a transient stall
+    // (I2C/serial/GPS) delayed the loop past several periods, subtracting would
+    // leave a backlog that re-enters this block on the next iterations with
+    // near-zero real deltas -- which the dt floor below would inflate back to a
+    // full step, integrating gyro motion for time that never elapsed and
+    // over-rotating the estimate right after the stall. Clearing it integrates the
+    // true elapsed interval once (in the dt below) and, on a failed read, paces the
+    // retry at one period instead of every loop.
+    timerEKFPredict = 0;
+
+    // Guard the read: the driver returns <0 on a short I2C read WITHOUT refreshing
+    // its cached gyro, so on failure skip the step entirely -- don't integrate a
+    // stale sample and don't advance lastEkfPredictUs, so the next good predict
+    // (or the 125 Hz correction) integrates the true elapsed time. Default-on path.
+    if (IMU.readSensor() >= 0) {
+      const uint32_t predictNowUs = micros();
+      float predictDt = (lastEkfPredictUs == 0)
+                          ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
+                          : static_cast<float>(predictNowUs - lastEkfPredictUs) * 1.0e-6f;
+      // Sanity guard only (the timer is cleared, so dt is the real inter-prediction
+      // interval, >= one period in steady state): floor a glitched/zero/negative
+      // delta and cap an extreme post-stall gap.
+      if (predictDt < 0.0005f || predictDt > 0.050f) {
+        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+      }
+      lastEkfPredictUs = predictNowUs;
+
+      // Bias-corrected gyro, X/Y swapped to align the IMU frame with the aircraft
+      // frame (body X forward, Z up). Only the gyro is used here; the 125 Hz
+      // correction reads its own fresh accel/mag at the correction instant.
+      U[0][0] = IMU.getGyroY_rads();
+      U[1][0] = IMU.getGyroX_rads();
+      U[2][0] = IMU.getGyroZ_rads();
+
+      gEkfRuntimeDt = static_cast<float_prec>(predictDt);
+      ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
+
+      const Matrix ekfPrePredictX = EKF_IMU.GetX();
+      const Matrix ekfPrePredictP = EKF_IMU.GetP();
+      if (!EKF_IMU.bPredict(U)) {
+        // A quaternion-norm collapse is extremely unlikely at this step size;
+        // restore the last good state rather than advancing on a bad one.
+        EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
+      }
+      ekfRefreshAttitudeCache();
+    }
+    serviceCrsfLink();
+  }
+#endif  // FC_EKF_FAST_PREDICT
+
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= EKF_PERIOD_US) {
+#if FC_EKF_FAST_PREDICT
+    // Clear (don't subtract) in fast mode. Carrying an EKF backlog here would let
+    // a post-stall catch-up iteration re-run the predict+correct again a few
+    // microseconds later -- with near-zero elapsed time since the prediction just
+    // done, so it would apply a second accel/mag correction on an essentially
+    // unchanged state, double-weighting one measurement. Clearing runs a single
+    // correction per recovery instead.
+    timerEKF = 0;
+#else
     timerEKF -= EKF_PERIOD_US;
+#endif
     ++controlDebugCounters.ekfUpdates;
     const uint32_t controlUpdateUs = micros();
     float controlDt = (lastControlUpdateUs == 0)
@@ -2231,7 +2363,10 @@ void loop() {
     }
     lastControlUpdateUs = controlUpdateUs;
     
-    // Read sensor data from the IMU
+    // Read sensor data from the IMU. In fast mode this is a fresh read at the
+    // correction instant (independent of the high-rate predictor's own reads) so
+    // the accel/mag gate, centripetal compensation, and control attitude are never
+    // based on a stale sample.
     IMU.readSensor();
     // Swap X/Y axes to align IMU frame with aircraft frame
     float Ax = IMU.getAccelY_mss();
@@ -2250,7 +2385,29 @@ void loop() {
     Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
 
     setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+#if FC_EKF_FAST_PREDICT
+    // Propagate the state to this correction instant, then predict+correct here
+    // (not correct-only). The high-rate predictor may have already advanced the
+    // state partway, so integrate only the time since the most recent prediction
+    // (the predictor or a previous correction): the state is always brought up to
+    // "now" with the fresh sample read above before correcting, and Q is scaled by
+    // that step. Resetting timerEKFPredict stops the predictor from firing again
+    // immediately and double-propagating.
+    float predictDt = (lastEkfPredictUs == 0)
+                        ? controlDt
+                        : static_cast<float>(controlUpdateUs - lastEkfPredictUs) * 1.0e-6f;
+    if (predictDt < 0.0f) {
+      predictDt = 0.0f;                       // clock guard; a 0 step is a no-op predict
+    } else if (predictDt > 0.050f) {
+      predictDt = static_cast<float>(SS_DT);  // cap an extreme post-stall gap
+    }
+    gEkfRuntimeDt = static_cast<float_prec>(predictDt);
+    ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
+    lastEkfPredictUs = controlUpdateUs;
+    timerEKFPredict = 0;
+#else
     gEkfRuntimeDt = static_cast<float_prec>(controlDt);
+#endif
     Matrix predictedX = EKF_IMU.GetX();
     Matrix predictedY(SS_Z_LEN, 1);
     if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
@@ -2336,7 +2493,11 @@ void loop() {
     Matrix ekfPreviousP = EKF_IMU.GetP();
     EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
     u64compuTime = micros();
-    if (!EKF_IMU.bUpdate(Y, U)) {
+    // bUpdate = predict (the dt-scaled step configured above) + correct. In fast
+    // mode the predict brings the state from the last high-rate prediction up to
+    // this correction instant; in single-rate mode it is the full control step.
+    const bool ekfUpdateOk = EKF_IMU.bUpdate(Y, U);
+    if (!ekfUpdateOk) {
       ++ekfConsecutiveFailures;
       if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
         quaternionData.vSetToZero();
