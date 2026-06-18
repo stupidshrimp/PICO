@@ -2281,11 +2281,13 @@ void loop() {
 
 #if FC_EKF_FAST_PREDICT
   // ----- High-rate gyro attitude prediction -----
-  // Integrate the bias-corrected gyro into the quaternion every
-  // EKF_PREDICT_PERIOD_US for lower output latency and a smaller integration step.
-  // The accel/mag CORRECTION still runs in the 125 Hz block below, on the latest
-  // (un-averaged) sample and through the identical gates, so every correction-side
-  // behavior matches the proven single-rate filter exactly.
+  // Between the 125 Hz corrections, integrate the bias-corrected gyro into the
+  // quaternion every EKF_PREDICT_PERIOD_US: this publishes attitude to telemetry
+  // at the higher rate and keeps the integration step small (better dynamic
+  // accuracy in fast rotations). The accel/mag CORRECTION runs in the 125 Hz block
+  // below, which reads its own fresh sample and does the full predict+correct
+  // through the identical gates, so correction-side behavior matches the proven
+  // single-rate filter.
   if (timerEKFPredict >= EKF_PREDICT_PERIOD_US) {
     // Clear the timer rather than subtracting one period. If a transient stall
     // (I2C/serial/GPS) delayed the loop past several periods, subtracting would
@@ -2334,14 +2336,12 @@ void loop() {
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= EKF_PERIOD_US) {
 #if FC_EKF_FAST_PREDICT
-    // Clear (don't subtract) in fast mode. The high-rate predictor also clears its
-    // timer, so carrying an EKF backlog here would let a post-stall catch-up
-    // iteration re-enter the bCorrect() path while the predictor is still dormant
-    // (< one predict period since its clear) -- applying a second accel/mag
-    // correction on the same cached IMU sample with no fresh prediction in
-    // between, which double-weights a stale measurement and skips propagation.
-    // Clearing runs one correction per recovery; the predictor (which runs first
-    // in the loop) refreshes the sample and advances the state before each one.
+    // Clear (don't subtract) in fast mode. Carrying an EKF backlog here would let
+    // a post-stall catch-up iteration re-run the predict+correct again a few
+    // microseconds later -- with near-zero elapsed time since the prediction just
+    // done, so it would apply a second accel/mag correction on an essentially
+    // unchanged state, double-weighting one measurement. Clearing runs a single
+    // correction per recovery instead.
     timerEKF = 0;
 #else
     timerEKF -= EKF_PERIOD_US;
@@ -2356,12 +2356,11 @@ void loop() {
     }
     lastControlUpdateUs = controlUpdateUs;
     
-#if !FC_EKF_FAST_PREDICT
-    // Read sensor data from the IMU. With FC_EKF_FAST_PREDICT the high-rate
-    // prediction loop above already refreshed the IMU this cycle, so the getters
-    // below reuse that latest sample (no second I2C burst, no averaging).
+    // Read sensor data from the IMU. In fast mode this is a fresh read at the
+    // correction instant (independent of the high-rate predictor's own reads) so
+    // the accel/mag gate, centripetal compensation, and control attitude are never
+    // based on a stale sample.
     IMU.readSensor();
-#endif
     // Swap X/Y axes to align IMU frame with aircraft frame
     float Ax = IMU.getAccelY_mss();
     float Ay = IMU.getAccelX_mss();
@@ -2380,14 +2379,28 @@ void loop() {
 
     setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
 #if FC_EKF_FAST_PREDICT
-    // The high-rate loop already advanced the state this cycle. Evaluate the
-    // measurement model at the current (already-predicted) state for gating; the
-    // correction below runs bCorrect() only (no second prediction step here).
-    Matrix predictedX = EKF_IMU.GetX();
-    Matrix predictedY(SS_Z_LEN, 1);
-    Main_bUpdateNonlinearY(predictedY, predictedX, U);
+    // Propagate the state to this correction instant, then predict+correct here
+    // (not correct-only). The high-rate predictor may have already advanced the
+    // state partway, so integrate only the time since the most recent prediction
+    // (the predictor or a previous correction): the state is always brought up to
+    // "now" with the fresh sample read above before correcting, and Q is scaled by
+    // that step. Resetting timerEKFPredict stops the predictor from firing again
+    // immediately and double-propagating.
+    float predictDt = (lastEkfPredictUs == 0)
+                        ? controlDt
+                        : static_cast<float>(controlUpdateUs - lastEkfPredictUs) * 1.0e-6f;
+    if (predictDt < 0.0f) {
+      predictDt = 0.0f;                       // clock guard; a 0 step is a no-op predict
+    } else if (predictDt > 0.050f) {
+      predictDt = static_cast<float>(SS_DT);  // cap an extreme post-stall gap
+    }
+    gEkfRuntimeDt = static_cast<float_prec>(predictDt);
+    ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
+    lastEkfPredictUs = controlUpdateUs;
+    timerEKFPredict = 0;
 #else
     gEkfRuntimeDt = static_cast<float_prec>(controlDt);
+#endif
     Matrix predictedX = EKF_IMU.GetX();
     Matrix predictedY(SS_Z_LEN, 1);
     if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
@@ -2395,7 +2408,6 @@ void loop() {
     } else {
       Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
     }
-#endif
 
     // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
     float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
@@ -2474,12 +2486,10 @@ void loop() {
     Matrix ekfPreviousP = EKF_IMU.GetP();
     EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
     u64compuTime = micros();
-#if FC_EKF_FAST_PREDICT
-    // Correction only -- the high-rate loop already ran the prediction this cycle.
-    const bool ekfUpdateOk = EKF_IMU.bCorrect(Y, U);
-#else
+    // bUpdate = predict (the dt-scaled step configured above) + correct. In fast
+    // mode the predict brings the state from the last high-rate prediction up to
+    // this correction instant; in single-rate mode it is the full control step.
     const bool ekfUpdateOk = EKF_IMU.bUpdate(Y, U);
-#endif
     if (!ekfUpdateOk) {
       ++ekfConsecutiveFailures;
       if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
