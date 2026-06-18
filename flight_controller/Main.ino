@@ -554,7 +554,6 @@ const float FBW_MAX_ROLL_ANGLE_DEG = 80.0f;
 const float FBW_MAX_PITCH_ANGLE_DEG = 80.0f;
 const float FBW_PID_OUTPUT_LIMIT_US = 400.0f;
 const float FBW_PID_INTEGRAL_LIMIT = 100.0f;
-const float FBW_ATTITUDE_FILTER_CUTOFF_HZ = 5.0f;
 const float FBW_PID_ERROR_DEADBAND_DEG = 0.5f;
 
 // PID gains (servo microseconds per degree / degree-second) tuned for the Aeroscout airframe.
@@ -574,45 +573,6 @@ const float AUTO_THROTTLE_KD = 0.15f;
 const float AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S = 100.0f;
 const float AUTO_THROTTLE_INTEGRAL_LIMIT = 100.0f;
 const float AUTO_THROTTLE_ERROR_DEADBAND_MPH = 0.2f;
-
-struct LowPassFilter {
-  float cutoffHz;
-  float alpha;
-  float state;
-  bool hasState;
-
-  LowPassFilter(float cutoffHz, float dt)
-    : cutoffHz(cutoffHz), alpha(computeAlpha(cutoffHz, dt)), state(0.0f), hasState(false) {}
-
-  static float computeAlpha(float cutoffHz, float dt) {
-    if (cutoffHz <= 0.0f || dt <= 0.0f) {
-      return 1.0f;
-    }
-    float rc = 1.0f / (2.0f * M_PI * cutoffHz);
-    float alpha = dt / (rc + dt);
-    if (alpha < 0.0f) {
-      alpha = 0.0f;
-    } else if (alpha > 1.0f) {
-      alpha = 1.0f;
-    }
-    return alpha;
-  }
-
-  float update(float input, float dt) {
-    alpha = computeAlpha(cutoffHz, dt);
-    if (!hasState) {
-      state = input;
-      hasState = true;
-      return state;
-    }
-    state += alpha * (input - state);
-    return state;
-  }
-
-  void reset() {
-    hasState = false;
-  }
-};
 
 struct PIDController {
   float kp;
@@ -699,9 +659,6 @@ float autoThrottlePercent = 0.0f;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
 uint32_t lastAirspeedUpdateUs = 0;
 bool latestAirspeedValid = false;
-
-LowPassFilter rollAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>(SS_DT));
-LowPassFilter pitchAngleFilter(FBW_ATTITUDE_FILTER_CUTOFF_HZ, static_cast<float>(SS_DT));
 
 // Callback to capture incoming RC channel packets.
 void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
@@ -871,8 +828,6 @@ void setControlMode(ControlMode newMode) {
     controlMode = newMode;
     rollPid.reset();
     pitchPid.reset();
-    rollAngleFilter.reset();
-    pitchAngleFilter.reset();
   }
 }
 
@@ -2568,8 +2523,6 @@ void loop() {
         rollPid.reset();
         pitchPid.reset();
         throttlePid.reset();
-        rollAngleFilter.reset();
-        pitchAngleFilter.reset();
       }
       autoThrottlePercent = 0.0f;
       rcFailsafeActive = true;
@@ -2608,16 +2561,17 @@ void loop() {
         yawCommandUs = SERVO_CENTER_US;
       }
     } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE) {
-      const float filteredRoll = rollAngleFilter.update(roll, controlDt);
-      const float filteredPitch = pitchAngleFilter.update(pitch, controlDt);
+      // Feed the EKF attitude estimate straight into the PID loop. The EKF
+      // output is already smooth, so an extra output low-pass here would only
+      // add latency to what the control loop sees.
       const float rollCommandNorm = mapRcToNormalized(rcRollRaw);
       const float pitchCommandNorm = mapRcToNormalized(rcPitchRaw);
 
       const float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
       const float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
 
-      const float rollPidOutput = rollPid.update(desiredRoll, filteredRoll, controlDt);
-      const float pitchPidOutput = pitchPid.update(desiredPitch, filteredPitch, controlDt);
+      const float rollPidOutput = rollPid.update(desiredRoll, roll, controlDt);
+      const float pitchPidOutput = pitchPid.update(desiredPitch, pitch, controlDt);
 
       rollCommandUs = static_cast<uint16_t>(constrain(SERVO_CENTER_US + rollPidOutput,
                                                       static_cast<float>(SERVO_MIN_US),
@@ -2631,8 +2585,6 @@ void loop() {
       // never bleed into the commanded aileron/elevator outputs.
       rollPid.reset();
       pitchPid.reset();
-      rollAngleFilter.reset();
-      pitchAngleFilter.reset();
       rollCommandUs = mapRcToUs(rcRollRaw);
       pitchCommandUs = mapRcToUs(rcPitchRaw);
     }
