@@ -48,29 +48,31 @@ void M8N::begin(uint32_t baud) {
     cfgPrt[17] = static_cast<uint8_t>((baud >> 24) & 0xFF);
     ubxAppendChecksum(cfgPrt, sizeof(cfgPrt));
 
-    // UBX-CFG-MSG (8-byte payload): enable GGA on UART1 at 1 Hz.
+    // UBX-CFG-MSG (8-byte payload): enable GGA on UART1 (once per nav solution -> 5 Hz).
     static const uint8_t cfgMsgGga[] = {
         0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
         0xF0, 0x00,                          // NMEA-GGA
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // rate=1 on UART1 only
         0x00, 0x28
     };
-    // UBX-CFG-MSG (8-byte payload): enable RMC on UART1 at 1 Hz.
+    // UBX-CFG-MSG (8-byte payload): enable RMC on UART1 (once per nav solution -> 5 Hz).
     static const uint8_t cfgMsgRmc[] = {
         0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
         0xF0, 0x04,                          // NMEA-RMC
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // rate=1 on UART1 only
         0x04, 0x44
     };
-    // UBX-CFG-RATE: measRate=1000ms, navRate=1, timeRef=GPS.
+    // UBX-CFG-RATE: measRate=200ms (5 Hz), navRate=1, timeRef=GPS.
     // CFG-MSG rate bytes are "once per nav solution", so this must be sent
-    // before CFG-MSG to guarantee 1 Hz output regardless of any saved nav rate.
+    // before CFG-MSG to guarantee 5 Hz output regardless of any saved nav rate.
+    // The higher rate relies on the 230400 baud link to carry GGA+RMC at 5 Hz
+    // without saturating the GPS UART.
     static const uint8_t cfgRate[] = {
         0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
-        0xE8, 0x03,                          // measRate: 1000 ms
+        0xC8, 0x00,                          // measRate: 200 ms (5 Hz)
         0x01, 0x00,                          // navRate: 1 solution per measurement
         0x01, 0x00,                          // timeRef: GPS time
-        0x01, 0x39
+        0xDE, 0x6A
     };
 
     uart.write(cfgPrt, sizeof(cfgPrt));
