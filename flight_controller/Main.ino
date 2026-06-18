@@ -2333,7 +2333,19 @@ void loop() {
 
   // ----- Sensor Fusion, EKF, and Control Update (125 Hz) -----
   if (timerEKF >= EKF_PERIOD_US) {
+#if FC_EKF_FAST_PREDICT
+    // Clear (don't subtract) in fast mode. The high-rate predictor also clears its
+    // timer, so carrying an EKF backlog here would let a post-stall catch-up
+    // iteration re-enter the bCorrect() path while the predictor is still dormant
+    // (< one predict period since its clear) -- applying a second accel/mag
+    // correction on the same cached IMU sample with no fresh prediction in
+    // between, which double-weights a stale measurement and skips propagation.
+    // Clearing runs one correction per recovery; the predictor (which runs first
+    // in the loop) refreshes the sample and advances the state before each one.
+    timerEKF = 0;
+#else
     timerEKF -= EKF_PERIOD_US;
+#endif
     ++controlDebugCounters.ekfUpdates;
     const uint32_t controlUpdateUs = micros();
     float controlDt = (lastControlUpdateUs == 0)
