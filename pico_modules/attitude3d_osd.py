@@ -80,9 +80,16 @@ _GROUND_BOT_LOW = QColor(24, 64, 30)     # deeper green underfoot
 _GROUND_BOT_HIGH = QColor(46, 110, 52)
 
 # Fixed chase-camera orientation (degrees) applied on top of the live attitude
-# so the neutral model is seen from behind and slightly above, like the
-# reference setup view.
-VIEW_PITCH_DEG = 32.0   # positive = look down onto the top of the airframe
+# so the neutral model is seen from behind at a rear three-quarter angle, like
+# the reference setup view.
+#
+# The view pitch is held at 0 so a level airframe (roll/pitch = 0) actually
+# reads as level on screen.  A non-zero downward look raises the far nose in the
+# projection -- the nose's on-screen height is sin(VIEW_PITCH) regardless of yaw
+# -- which made a zero-attitude model appear permanently pitched up.  All of the
+# three-dimensional read therefore comes from the yaw orbit plus perspective
+# rather than a top-down tilt.
+VIEW_PITCH_DEG = 0.0    # positive = look down onto the top of the airframe
 VIEW_YAW_DEG = -28.0    # positive = orbit to the right
 
 # Perspective projection constants.
