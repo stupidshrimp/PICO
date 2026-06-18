@@ -202,6 +202,11 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define MAG_INNOVATION_GATE   (0.55f)
 #define EKF_INNOVATION_GATE_WARMUP_UPDATES (250U)
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
+#ifndef FC_CENTRIPETAL_ACCEL_COMPENSATION
+#define FC_CENTRIPETAL_ACCEL_COMPENSATION 1
+#endif
+#define AIRSPEED_MPH_TO_MPS (0.44704f)
+#define CENTRIPETAL_COMP_MAX_ACCEL_MSS (GRAVITY_NOMINAL_MSS * 3.0f)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
@@ -808,6 +813,50 @@ bool airspeedInputFresh(uint32_t nowUs) {
   return latestAirspeedValid &&
          lastAirspeedUpdateUs != 0 &&
          (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
+}
+
+void applyCentripetalAccelCompensation(float& ax, float& ay, float& az,
+                                       float p, float q, float r,
+                                       uint32_t nowUs) {
+#if FC_CENTRIPETAL_ACCEL_COMPENSATION
+  (void)p;  // Roll rate does not contribute when airspeed is modeled as body +X only.
+  if (!airspeedInputFresh(nowUs) || !isfinite(latestAirspeedMph) || latestAirspeedMph <= 0.0f) {
+    return;
+  }
+
+  // For fixed-wing flight, approximate velocity as airspeed along aircraft +X.
+  // Translational acceleration in body axes is omega_body x v_body, not
+  // v_body x omega_body. With v_body = [V, 0, 0], a_body = [0, V*r, -V*q].
+  // Subtract it so the accelerometer measurement presented to the EKF is
+  // closer to the gravity-only specific-force vector.
+  const float airspeedMps = latestAirspeedMph * AIRSPEED_MPH_TO_MPS;
+  float accelX = 0.0f;
+  float accelY = airspeedMps * r;
+  float accelZ = -airspeedMps * q;
+
+  const float accelNorm = sqrtf(accelX*accelX + accelY*accelY + accelZ*accelZ);
+  if (!isfinite(accelNorm)) {
+    return;
+  }
+  if (accelNorm > CENTRIPETAL_COMP_MAX_ACCEL_MSS) {
+    const float scale = CENTRIPETAL_COMP_MAX_ACCEL_MSS / accelNorm;
+    accelX *= scale;
+    accelY *= scale;
+    accelZ *= scale;
+  }
+
+  ax -= accelX;
+  ay -= accelY;
+  az -= accelZ;
+#else
+  (void)ax;
+  (void)ay;
+  (void)az;
+  (void)p;
+  (void)q;
+  (void)r;
+  (void)nowUs;
+#endif
 }
 
 float mapRcToNormalized(uint16_t value) {
@@ -2333,6 +2382,8 @@ void loop() {
     float p  = IMU.getGyroY_rads();
     float q  = IMU.getGyroX_rads();
     float r  = IMU.getGyroZ_rads();
+
+    applyCentripetalAccelCompensation(Ax, Ay, Az, p, q, r, controlUpdateUs);
     
     // Populate matrices for EKF update
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
