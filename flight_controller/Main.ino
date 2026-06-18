@@ -2287,11 +2287,21 @@ void loop() {
   // (un-averaged) sample and through the identical gates, so every correction-side
   // behavior matches the proven single-rate filter exactly.
   if (timerEKFPredict >= EKF_PREDICT_PERIOD_US) {
-    timerEKFPredict -= EKF_PREDICT_PERIOD_US;
+    // Clear the timer rather than subtracting one period. If a transient stall
+    // (I2C/serial/GPS) delayed the loop past several periods, subtracting would
+    // leave a backlog that re-enters this block on the next iterations with
+    // near-zero real deltas -- which the dt floor below would inflate back to a
+    // full step, integrating gyro motion for time that never elapsed and
+    // over-rotating the estimate right after the stall. Clearing it instead means
+    // the true elapsed interval is integrated once, in the dt computed below.
+    timerEKFPredict = 0;
     const uint32_t predictNowUs = micros();
     float predictDt = (lastEkfPredictUs == 0)
                         ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
                         : static_cast<float>(predictNowUs - lastEkfPredictUs) * 1.0e-6f;
+    // Sanity guard only (the timer is now cleared, so dt is the real
+    // inter-prediction interval, >= one period in steady state): floor a
+    // glitched/zero/negative delta and cap an extreme post-stall gap.
     if (predictDt < 0.0005f || predictDt > 0.050f) {
       predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
     }
