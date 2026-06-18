@@ -5,8 +5,8 @@ roll/pitch/yaw telemetry, giving the operator an at-a-glance 3D read on the
 airframe's orientation (similar to the model shown on a flight-controller
 setup screen).  The silhouette borrows the cues of a medium-altitude UAV --
 a rounded, lofted fuselage with a bulbous sensor nose and chin turret, long
-high-aspect swept wings with dihedral, an upward V-tail and a rear pusher
-propeller -- so it reads as an unmanned platform rather than a hobby aeroplane.
+high-aspect swept wings with dihedral and an upward V-tail -- so it reads as
+an unmanned platform rather than a hobby aeroplane.
 Unlike the existing OSD overlays it is intended to live in the command sidebar
 *below* the status indicators rather than over the video feed.
 
@@ -353,7 +353,6 @@ class Attitude3DOSD(QWidget):
         fuselage = QColor(206, 211, 219)
         wing = QColor(214, 218, 225)
         sensor = QColor(150, 157, 168)
-        dark = QColor(44, 48, 58)
         red = QColor(232, 64, 58)
         green = QColor(58, 200, 92)
 
@@ -438,16 +437,6 @@ class Attitude3DOSD(QWidget):
 
         for sign in (1.0, -1.0):
             loft(vtail(sign), fuselage)
-
-        # ---- Rear pusher propeller: a rounded spinner plus a crossed-blade disc.
-        spin_rings = [
-            ellipse_ring((0.0, 0.0, 0.60), x_axis, y_axis, 0.030, 0.030, 10),
-            ellipse_ring((0.0, 0.0, 0.64), x_axis, y_axis, 0.034, 0.034, 10),
-            ellipse_ring((0.0, 0.0, 0.69), x_axis, y_axis, 0.012, 0.012, 10),
-        ]
-        loft(spin_rings, dark, cap_end=(0.0, 0.0, 0.72))
-        add_box((0.0, 0.0, 0.70), (0.012, 0.150, 0.010), dark)
-        add_box((0.0, 0.0, 0.70), (0.150, 0.012, 0.010), dark)
 
         return np.array(verts, dtype=float), faces
 
