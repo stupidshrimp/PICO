@@ -37,12 +37,15 @@
  * correction-side behavior (gates, innovation-gate warmup, failure handling)
  * stays identical to the proven filter.
  *
- * Defaults OFF so the normal build keeps the proven single-rate behavior exactly.
- * ENABLE ONLY AFTER BENCH VERIFICATION: with the flag on, confirm CPU/I2C
- * headroom at the prediction rate, the IWDG watchdog stays happy, and attitude
- * tracks correctly (no lag or periodic snap) while rotating before flying it. */
+ * Default ON. Set to 0 for a one-line rollback to the proven single-rate filter;
+ * that path is bit-for-bit identical to the previous behavior.
+ *
+ * NOT YET BENCH-VERIFIED: this has not been compiled with the Arduino toolchain
+ * or flight-tested. Before flying, confirm CPU/I2C headroom at the prediction
+ * rate (~2x the IMU reads/predicts), that the IWDG watchdog stays happy, and
+ * that attitude tracks correctly (no lag, no periodic snap) while rotating. */
 #ifndef FC_EKF_FAST_PREDICT
-#define FC_EKF_FAST_PREDICT 0
+#define FC_EKF_FAST_PREDICT 1
 #endif
 
 
