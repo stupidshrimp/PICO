@@ -2185,6 +2185,7 @@ const float    VIBE_BAND_PCT  = 7.0f;     // +/- band around a target step
 const uint32_t VIBE_STABLE_MS = 700UL;    // continuous dwell in band before measuring
 const uint32_t VIBE_ABORT_MS  = 8000UL;   // sustained idle during an up-step = operator abort
 const uint32_t VIBE_DWELL_MS  = (uint32_t)FC_VIBE_SURVEY_DWELL_MS;
+const uint32_t VIBE_WINDOW_BAND_GRACE_MS = 200UL;  // out-of-band tolerance before a window is discarded
 
 const float VIBE_TARGETS[] = { 25.0f, 50.0f, 75.0f, 100.0f };
 constexpr int VIBE_NTARGETS = (int)(sizeof(VIBE_TARGETS) / sizeof(VIBE_TARGETS[0]));
@@ -2370,21 +2371,40 @@ float vibeWaitForBand(float targetPct, bool &aborted) {
   }
 }
 
-// Collect one dwell window at the current throttle, sampling the gyro at the
-// survey rate while continuing to service the link and pass throttle through.
-// Returns false (re-prompt) if the link drops mid-window. Reports the averaged
-// throttle and its min/max spread.
-bool vibeMeasureWindow(float &actualAvg, float &actualMin, float &actualMax) {
+// Collect one dwell window at the held throttle, sampling the gyro at the survey
+// rate while continuing to service the link and pass throttle through. Returns
+// false (discard + re-prompt) if the link drops OR the operator lets throttle
+// leave the held band (|pct - targetPct| > VIBE_BAND_PCT) for more than a brief
+// debounce. Without that guard a chop-to-idle or a drift to another step during
+// the dwell would feed spin-up/spin-down and several RPMs into one Goertzel
+// window, corrupting the scheduling point; the debounce ignores a lone stray RC
+// frame. Reports the averaged throttle and its min/max spread.
+bool vibeMeasureWindow(float targetPct, float &actualAvg, float &actualMin, float &actualMax) {
   vibeResetAccumulators();
   double pctSum = 0.0; uint32_t pctN = 0;
   actualMin = 1000.0f; actualMax = -1000.0f;
   uint32_t endMs = millis() + VIBE_DWELL_MS;
   uint32_t nextSampleUs = micros();
+  uint32_t outOfBandMs = 0;
   while ((int32_t)(millis() - endMs) < 0) {
     serviceCrsfLink();
     uint32_t nowUs = micros();
     float pct = vibePassThrottle(nowUs);
     if (pct < 0.0f) { Serial.println("VIBE  RC link lost mid-measurement -- discarding."); return false; }
+    // Discard the window if throttle wanders out of the held band: mixing RPMs
+    // (or spinning down toward idle) would corrupt this scheduling point.
+    uint32_t nowMs = millis();
+    if (fabsf(pct - targetPct) > VIBE_BAND_PCT) {
+      if (outOfBandMs == 0) outOfBandMs = nowMs;
+      else if ((uint32_t)(nowMs - outOfBandMs) >= VIBE_WINDOW_BAND_GRACE_MS) {
+        Serial.print("VIBE  Throttle left the band ("); Serial.print(pct, 0);
+        Serial.print("% vs ~"); Serial.print((int)targetPct);
+        Serial.println("%) -- discarding window.");
+        return false;
+      }
+    } else {
+      outOfBandMs = 0;
+    }
     if ((int32_t)(nowUs - nextSampleUs) >= 0) {
       nextSampleUs += VIBE_SAMPLE_PERIOD_US;
       IMU.readSensor();
@@ -2508,11 +2528,18 @@ void runVibrationSurveyDebug() {
   // ---- Baseline: motor off, noise floor ----
   Serial.println("VIBE  Measuring 0% baseline -- keep throttle at 0%...");
   {
-    float avg, lo, hi;
-    if (vibeMeasureWindow(avg, lo, hi)) {
-      vibeAnalyzeStep(stepIdx, 0.0f, avg, true);
-      vibePrintStepLive(stepIdx, true);
-      ++stepIdx;
+    bool baseMeasured = false;
+    while (!baseMeasured) {
+      float avg, lo, hi;
+      if (vibeMeasureWindow(0.0f, avg, lo, hi)) {
+        vibeAnalyzeStep(stepIdx, 0.0f, avg, true);
+        vibePrintStepLive(stepIdx, true);
+        ++stepIdx;
+        baseMeasured = true;
+      } else {
+        Serial.println("VIBE  Hold throttle at 0% and re-measuring baseline...");
+        vibeWaitForIdle(0);
+      }
     }
   }
 
@@ -2534,7 +2561,7 @@ void runVibrationSurveyDebug() {
       Serial.print("VIBE  Holding ~"); Serial.print(held, 0);
       Serial.println("% -- measuring, keep steady...");
       float avg, lo, hi;
-      if (vibeMeasureWindow(avg, lo, hi)) {
+      if (vibeMeasureWindow(target, avg, lo, hi)) {
         vibeAnalyzeStep(stepIdx, target, avg, false);
         if ((hi - lo) > (2.0f * VIBE_BAND_PCT)) {
           Serial.print("VIBE  (note: throttle wandered "); Serial.print(lo, 0);
