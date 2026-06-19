@@ -154,6 +154,10 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define Q_INIT_GYRO_BIAS (1e-8)
 #define R_INIT_ACC       (0.0015/10.)
 #define R_INIT_MAG       (0.0015/10.)
+// Measurement noise (variance, rad^2) for the decoupled tilt-compensated heading.
+// sigma ~= 0.05 rad (~2.9 deg). Roughly matches the legacy per-axis mag trust
+// mapped through the horizontal field magnitude cos(inclination); TUNE in flight.
+#define R_INIT_YAW       (0.0025)
 #define R_REJECTED       (1.0e3)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
@@ -200,6 +204,10 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // physically unlikely orientation after the short startup convergence window.
 #define ACCEL_INNOVATION_GATE (0.65f)
 #define MAG_INNOVATION_GATE   (0.55f)
+// Reject the decoupled magnetometer heading when it disagrees with the
+// gyro-propagated yaw by more than this (rad). ~0.6 rad (~34 deg) mirrors the
+// legacy 3-axis mag direction gate.
+#define MAG_YAW_INNOVATION_GATE (0.6f)
 #define EKF_INNOVATION_GATE_WARMUP_UPDATES (250U)
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
@@ -227,6 +235,14 @@ float_prec EKF_QINIT_data[SS_X_LEN*SS_X_LEN] = {
   0, 0, 0, 0, 0, 0, Q_INIT_GYRO_BIAS
 };
 Matrix EKF_QINIT(SS_X_LEN, SS_X_LEN, EKF_QINIT_data);
+#if FC_EKF_DECOUPLE_MAG
+float_prec EKF_RINIT_data[SS_Z_LEN*SS_Z_LEN] = {
+  R_INIT_ACC, 0, 0, 0,
+  0, R_INIT_ACC, 0, 0,
+  0, 0, R_INIT_ACC, 0,
+  0, 0, 0, R_INIT_YAW
+};
+#else
 float_prec EKF_RINIT_data[SS_Z_LEN*SS_Z_LEN] = {
   R_INIT_ACC, 0, 0, 0, 0, 0,
   0, R_INIT_ACC, 0, 0, 0, 0,
@@ -235,6 +251,7 @@ float_prec EKF_RINIT_data[SS_Z_LEN*SS_Z_LEN] = {
   0, 0, 0, 0, R_INIT_MAG, 0,
   0, 0, 0, 0, 0, R_INIT_MAG
 };
+#endif
 Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
 float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
 Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
@@ -447,14 +464,31 @@ struct ControlDebugCounters {
 ControlDebugCounters controlDebugCounters = {0};
 elapsedMillis controlDebugPrintTimer;
 
+#if FC_EKF_DECOUPLE_MAG
+// Wrap an angle (rad) into [-pi, pi]. Used to form the decoupled magnetometer
+// heading innovation without an atan2 wrap discontinuity.
+static inline float wrapToPi(float a) {
+  const float twoPi = 6.28318530717958647692f;
+  const float pi    = 3.14159265358979323846f;
+  while (a >  pi) a -= twoPi;
+  while (a < -pi) a += twoPi;
+  return a;
+}
+#endif
+
+// magVariance carries the magnetometer measurement noise: per-axis field
+// variance for the legacy 3-axis model, or the scalar heading variance (rad^2)
+// when the magnetometer is decoupled to a tilt-compensated yaw.
 void setEkfMeasurementNoise(float_prec accVariance, float_prec magVariance) {
   EKF_RACTIVE.vSetToZero();
   EKF_RACTIVE[0][0] = accVariance;
   EKF_RACTIVE[1][1] = accVariance;
   EKF_RACTIVE[2][2] = accVariance;
   EKF_RACTIVE[3][3] = magVariance;
+#if !FC_EKF_DECOUPLE_MAG
   EKF_RACTIVE[4][4] = magVariance;
   EKF_RACTIVE[5][5] = magVariance;
+#endif
 }
 
 float clampFloat(float value, float minValue, float maxValue) {
@@ -2337,9 +2371,15 @@ void loop() {
     // Populate matrices for EKF update
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
     Y[0][0] = Ax; Y[1][0] = Ay; Y[2][0] = Az;
+#if !FC_EKF_DECOUPLE_MAG
     Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
+#endif
 
+#if FC_EKF_DECOUPLE_MAG
+    setEkfMeasurementNoise(R_INIT_ACC, R_INIT_YAW);
+#else
     setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+#endif
 #if FC_EKF_FAST_PREDICT
     // Propagate the state to this correction instant, then predict+correct here
     // (not correct-only). The high-rate predictor may have already advanced the
@@ -2372,12 +2412,17 @@ void loop() {
     }
 
     // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
-    float magBiasX = Y[3][0] - HARD_IRON_BIAS[0][0];
-    float magBiasY = Y[4][0] - HARD_IRON_BIAS[1][0];
-    float magBiasZ = Y[5][0] - HARD_IRON_BIAS[2][0];
-    Y[3][0] = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
-    Y[4][0] = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
-    Y[5][0] = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+    float magBiasX = Bx - HARD_IRON_BIAS[0][0];
+    float magBiasY = By - HARD_IRON_BIAS[1][0];
+    float magBiasZ = Bz - HARD_IRON_BIAS[2][0];
+    float magCalX = SOFT_IRON_MATRIX[0][0]*magBiasX + SOFT_IRON_MATRIX[0][1]*magBiasY + SOFT_IRON_MATRIX[0][2]*magBiasZ;
+    float magCalY = SOFT_IRON_MATRIX[1][0]*magBiasX + SOFT_IRON_MATRIX[1][1]*magBiasY + SOFT_IRON_MATRIX[1][2]*magBiasZ;
+    float magCalZ = SOFT_IRON_MATRIX[2][0]*magBiasX + SOFT_IRON_MATRIX[2][1]*magBiasY + SOFT_IRON_MATRIX[2][2]*magBiasZ;
+#if !FC_EKF_DECOUPLE_MAG
+    Y[3][0] = magCalX;
+    Y[4][0] = magCalY;
+    Y[5][0] = magCalZ;
+#endif
 
 #if FC_ACCEL_CENTRIPETAL_COMPENSATION
     // Subtract the centripetal/transport acceleration (a ~= omega x V) from the
@@ -2449,6 +2494,43 @@ void loop() {
       EKF_RACTIVE[2][2] = rAcc;
     }
 
+#if FC_EKF_DECOUPLE_MAG
+    // Decoupled magnetometer: fuse ONLY a tilt-compensated heading so magnetic
+    // error cannot reach roll/pitch. Rotate the calibrated field into the earth
+    // frame with the predicted attitude, take its horizontal heading, and compare
+    // against the reference declination. The wrapped error becomes the yaw
+    // measurement. predictedY[3] is the EKF's own h(x)[3] at this same predicted
+    // state, so the filter's Err = Y[3] - h(x)[3] equals headingErr exactly and
+    // is immune to the +-pi atan2 wrap.
+    float normM = sqrtf(magCalX*magCalX + magCalY*magCalY + magCalZ*magCalZ);
+    bool magRejected = (normM <= NORM_EPSILON);
+    if (!magRejected) {
+      float pq0 = predictedX[0][0], pq1 = predictedX[1][0], pq2 = predictedX[2][0], pq3 = predictedX[3][0];
+      // m_e = R_eb^T * m_b : only the earth-horizontal (X,Y) components are needed.
+      float meX = (pq0*pq0+pq1*pq1-pq2*pq2-pq3*pq3)*magCalX
+                + (2*(pq1*pq2-pq0*pq3))*magCalY
+                + (2*(pq1*pq3+pq0*pq2))*magCalZ;
+      float meY = (2*(pq1*pq2+pq0*pq3))*magCalX
+                + (pq0*pq0-pq1*pq1+pq2*pq2-pq3*pq3)*magCalY
+                + (2*(pq2*pq3-pq0*pq1))*magCalZ;
+      if ((meX*meX + meY*meY) <= NORM_EPSILON) {
+        magRejected = true;                 // horizontal field vanished (near-vertical / degenerate)
+      } else {
+        float declRef    = atan2f(IMU_MAG_B0[1][0], IMU_MAG_B0[0][0]);
+        float headingErr = wrapToPi(declRef - atan2f(meY, meX));
+        if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES &&
+            fabsf(headingErr) > MAG_YAW_INNOVATION_GATE) {
+          magRejected = true;
+        } else {
+          Y[3][0] = predictedY[3][0] + headingErr;
+        }
+      }
+    }
+    if (magRejected) {
+      Y[3][0] = predictedY[3][0];           // zero innovation
+      EKF_RACTIVE[3][3] = R_REJECTED;
+    }
+#else
     // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
     float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
     bool magRejected = (normM <= NORM_EPSILON);
@@ -2466,6 +2548,7 @@ void loop() {
       EKF_RACTIVE[4][4] = R_REJECTED;
       EKF_RACTIVE[5][5] = R_REJECTED;
     }
+#endif
 
     // Update the EKF and measure computation time
     Matrix ekfPreviousX = EKF_IMU.GetX();
@@ -2809,6 +2892,14 @@ bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U)
     Y[1][0] = (2*q2*q3 +2*q0*q1) * IMU_ACC_Z0;
     Y[2][0] = (+(q0_2) -(q1_2) -(q2_2) +(q3_2)) * IMU_ACC_Z0;
 
+#if FC_EKF_DECOUPLE_MAG
+    /* Decoupled: row 3 is the yaw Euler angle psi(q) = atan2(M01, M00), the pure
+     * rotation about earth-up. It is independent of roll & pitch, so its Jacobian
+     * (Main_bCalcJacobianH) only senses the yaw DOF and the magnetometer cannot
+     * reach roll/pitch. The measured side of this row is built from the
+     * tilt-compensated magnetometer heading in the correction block. */
+    Y[3][0] = atan2(2*(q1*q2 + q0*q3), (q0_2) + (q1_2) - (q2_2) - (q3_2));
+#else
     Y[3][0] = (+(q0_2)+(q1_2)-(q2_2)-(q3_2)) * IMU_MAG_B0[0][0]
              +(2*(q1*q2+q0*q3)) * IMU_MAG_B0[1][0]
              +(2*(q1*q3-q0*q2)) * IMU_MAG_B0[2][0];
@@ -2820,6 +2911,7 @@ bool Main_bUpdateNonlinearY(Matrix& Y, const Matrix& X, const Matrix& U)
     Y[5][0] = (2*(q1*q3+q0*q2)) * IMU_MAG_B0[0][0]
              +(2*(q2*q3-q0*q1)) * IMU_MAG_B0[1][0]
              +(+(q0_2)-(q1_2)-(q2_2)+(q3_2)) * IMU_MAG_B0[2][0];
+#endif
 
     return true;
 }
@@ -2890,30 +2982,57 @@ bool Main_bCalcJacobianH(Matrix& H, const Matrix& X, const Matrix& U)
     H[0][0] = -2*q2 * IMU_ACC_Z0;
     H[1][0] = +2*q1 * IMU_ACC_Z0;
     H[2][0] = +2*q0 * IMU_ACC_Z0;
-    H[3][0] =  2*q0*IMU_MAG_B0[0][0] + 2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
-    H[4][0] = -2*q3*IMU_MAG_B0[0][0] + 2*q0*IMU_MAG_B0[1][0] + 2*q1*IMU_MAG_B0[2][0];
-    H[5][0] =  2*q2*IMU_MAG_B0[0][0] - 2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
 
     H[0][1] = +2*q3 * IMU_ACC_Z0;
     H[1][1] = +2*q0 * IMU_ACC_Z0;
     H[2][1] = -2*q1 * IMU_ACC_Z0;
-    H[3][1] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
-    H[4][1] =  2*q2*IMU_MAG_B0[0][0]-2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
-    H[5][1] =  2*q3*IMU_MAG_B0[0][0]-2*q0*IMU_MAG_B0[1][0] - 2*q1*IMU_MAG_B0[2][0];
 
     H[0][2] = -2*q0 * IMU_ACC_Z0;
     H[1][2] = +2*q3 * IMU_ACC_Z0;
     H[2][2] = -2*q2 * IMU_ACC_Z0;
-    H[3][2] = -2*q2*IMU_MAG_B0[0][0]+2*q1*IMU_MAG_B0[1][0] - 2*q0*IMU_MAG_B0[2][0];
-    H[4][2] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
-    H[5][2] =  2*q0*IMU_MAG_B0[0][0]+2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
 
     H[0][3] = +2*q1 * IMU_ACC_Z0;
     H[1][3] = +2*q2 * IMU_ACC_Z0;
     H[2][3] = +2*q3 * IMU_ACC_Z0;
+
+#if FC_EKF_DECOUPLE_MAG
+    /* Jacobian of the yaw measurement psi(q) = atan2(N, D) with
+     *   N = M01 = 2(q1 q2 + q0 q3),  D = M00 = q0^2 + q1^2 - q2^2 - q3^2.
+     * d(atan2(N,D))/dq = (D dN - N dD) / (N^2 + D^2), and N^2 + D^2 = cos^2(pitch).
+     * Verified against finite difference in tests/ekf_decouple_mag_test.cpp.
+     * Near gimbal lock (pitch -> +-90 deg) the denominator vanishes; drop the
+     * yaw correction for that step rather than divide by ~0. Columns 4..6
+     * (gyro bias) are zero: yaw does not depend on bias. */
+    {
+        float_prec N   = 2*(q1*q2 + q0*q3);
+        float_prec D   = q0*q0 + q1*q1 - q2*q2 - q3*q3;
+        float_prec den = N*N + D*D;
+        if (den < (float_prec)1e-6) {
+            H[3][0] = H[3][1] = H[3][2] = H[3][3] = 0;
+        } else {
+            H[3][0] = (D*( 2*q3) - N*( 2*q0)) / den;
+            H[3][1] = (D*( 2*q2) - N*( 2*q1)) / den;
+            H[3][2] = (D*( 2*q1) + N*( 2*q2)) / den;
+            H[3][3] = (D*( 2*q0) + N*( 2*q3)) / den;
+        }
+    }
+#else
+    H[3][0] =  2*q0*IMU_MAG_B0[0][0] + 2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
+    H[4][0] = -2*q3*IMU_MAG_B0[0][0] + 2*q0*IMU_MAG_B0[1][0] + 2*q1*IMU_MAG_B0[2][0];
+    H[5][0] =  2*q2*IMU_MAG_B0[0][0] - 2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
+
+    H[3][1] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
+    H[4][1] =  2*q2*IMU_MAG_B0[0][0]-2*q1*IMU_MAG_B0[1][0] + 2*q0*IMU_MAG_B0[2][0];
+    H[5][1] =  2*q3*IMU_MAG_B0[0][0]-2*q0*IMU_MAG_B0[1][0] - 2*q1*IMU_MAG_B0[2][0];
+
+    H[3][2] = -2*q2*IMU_MAG_B0[0][0]+2*q1*IMU_MAG_B0[1][0] - 2*q0*IMU_MAG_B0[2][0];
+    H[4][2] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
+    H[5][2] =  2*q0*IMU_MAG_B0[0][0]+2*q3*IMU_MAG_B0[1][0] - 2*q2*IMU_MAG_B0[2][0];
+
     H[3][3] = -2*q3*IMU_MAG_B0[0][0]+2*q0*IMU_MAG_B0[1][0] + 2*q1*IMU_MAG_B0[2][0];
     H[4][3] = -2*q0*IMU_MAG_B0[0][0]-2*q3*IMU_MAG_B0[1][0] + 2*q2*IMU_MAG_B0[2][0];
     H[5][3] =  2*q1*IMU_MAG_B0[0][0]+2*q2*IMU_MAG_B0[1][0] + 2*q3*IMU_MAG_B0[2][0];
+#endif
 
     return true;
 }
