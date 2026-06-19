@@ -211,7 +211,14 @@ public:
         _hx =  _hyAK8963;
         _hy =  _hxAK8963;
         _hz = -_hzAK8963;
-        
+
+        /* The 7th AK8963 byte streamed through the MPU9250 I2C master is ST2,
+         * whose HOFL bit (0x08) flags a magnetic-sensor overflow. Earth's field
+         * never trips it, so a set bit means this sample saturated against a
+         * strong local field and the reported field is invalid -- record it so
+         * the fusion step can drop the sample instead of trusting a bad heading. */
+        _magOverflow = (_buffer[20] & 0x08) != 0;
+
         return 1;
     }
     
@@ -232,16 +239,26 @@ public:
         _gxbD = 0;
         _gybD = 0;
         _gzbD = 0;
+        size_t validSamples = 0;
         for (size_t i=0; i < _numSamples; i++) {
-            readSensor();
-            _gxbD += (getGyroX_rads() + _gxb)/((double)_numSamples);
-            _gybD += (getGyroY_rads() + _gyb)/((double)_numSamples);
-            _gzbD += (getGyroZ_rads() + _gzb)/((double)_numSamples);
+            // A failed read leaves the cached gyro at its previous value. Folding
+            // that stale sample into the average would skew the zero-rate bias,
+            // which feeds straight into attitude accuracy, so only accumulate
+            // successful reads and divide by the count that actually contributed.
+            if (readSensor() > 0) {
+                _gxbD += (double)(getGyroX_rads() + _gxb);
+                _gybD += (double)(getGyroY_rads() + _gyb);
+                _gzbD += (double)(getGyroZ_rads() + _gzb);
+                ++validSamples;
+            }
             delay(20);
         }
-        _gxb = (float)_gxbD;
-        _gyb = (float)_gybD;
-        _gzb = (float)_gzbD;
+        if (validSamples == 0) {
+            return -7;  // could not read any valid gyro samples to estimate bias
+        }
+        _gxb = (float)(_gxbD / (double)validSamples);
+        _gyb = (float)(_gybD / (double)validSamples);
+        _gzb = (float)(_gzbD / (double)validSamples);
 
         // set the range, bandwidth, and srd back to what they were
         if (setGyroRange(_gyroRange) < 0) {
@@ -483,8 +500,15 @@ public:
     float getMagZ_uT() {
         return _hz;
     }
-    
-    
+
+    /* true when the most recent readSensor() saw the AK8963 magnetic overflow
+     * (HOFL) flag set. The magnetometer sample is then invalid and must not be
+     * fused as a heading reference. */
+    bool magnetometerOverflow() {
+        return _magOverflow;
+    }
+
+
 private:
     uint8_t _address;
     TwoWire *_i2c;
@@ -504,6 +528,7 @@ private:
     float _ax, _ay, _az;
     float _gx, _gy, _gz;
     float _hx, _hy, _hz;
+    bool _magOverflow = false;  // AK8963 HOFL flag from the most recent read
     float _t;
     // wake on motion
     uint8_t _womThreshold;

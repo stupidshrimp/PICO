@@ -2364,6 +2364,9 @@ void loop() {
     float Bx = IMU.getMagY_uT();
     float By = IMU.getMagX_uT();
     float Bz = IMU.getMagZ_uT();
+    // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
+    // sample below rather than fusing it as a heading reference.
+    const bool magOverflow = IMU.magnetometerOverflow();
     float p  = IMU.getGyroY_rads();
     float q  = IMU.getGyroX_rads();
     float r  = IMU.getGyroZ_rads();
@@ -2503,7 +2506,7 @@ void loop() {
     // state, so the filter's Err = Y[3] - h(x)[3] equals headingErr exactly and
     // is immune to the +-pi atan2 wrap.
     float normM = sqrtf(magCalX*magCalX + magCalY*magCalY + magCalZ*magCalZ);
-    bool magRejected = (normM <= NORM_EPSILON);
+    bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
     if (!magRejected) {
       float pq0 = predictedX[0][0], pq1 = predictedX[1][0], pq2 = predictedX[2][0], pq3 = predictedX[3][0];
       // m_e = R_eb^T * m_b : only the earth-horizontal (X,Y) components are needed.
@@ -2533,7 +2536,7 @@ void loop() {
 #else
     // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
     float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    bool magRejected = (normM <= NORM_EPSILON);
+    bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
     if (!magRejected) {
       Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
       if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
