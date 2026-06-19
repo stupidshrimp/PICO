@@ -2406,10 +2406,24 @@ void loop() {
     }
 #endif
 
-    // Normalize accelerometer vector, but reject it when magnitude indicates non-gravity acceleration.
+    // Normalize the accelerometer vector and weight it as a gravity reference by
+    // how far its magnitude departs from 1 g. Vibration adds broadband specific
+    // force that pushes |a| off gravity, so rather than a single hard accept/
+    // reject cliff the measurement noise is scaled up *smoothly* with the norm
+    // error: a lightly disturbed sample is only mildly de-weighted (it still
+    // contributes) while a heavily disturbed one fades toward negligible. This
+    // degrades gracefully under sustained vibration instead of dropping to
+    // gyro-only coasting (and its drift) the instant a threshold is crossed.
+    //
+    // Two hard backstops remain for genuinely unusable samples and fall back to
+    // the gyro-predicted reference at R_REJECTED: a near-zero norm, and a
+    // magnitude more than ACCEL_NORM_GATE_FRACTION off 1 g. The post-warmup
+    // innovation gate (direction disagreement) is likewise kept as a hard reject.
     float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    bool accelRejected = (normG <= NORM_EPSILON) ||
-                         (fabsf(normG - GRAVITY_NOMINAL_MSS) > (GRAVITY_NOMINAL_MSS * ACCEL_NORM_GATE_FRACTION));
+    float normErrFrac = (normG > NORM_EPSILON)
+                          ? fabsf(normG - GRAVITY_NOMINAL_MSS) / GRAVITY_NOMINAL_MSS
+                          : (ACCEL_NORM_GATE_FRACTION + 1.0f);  // force hard reject
+    bool accelRejected = normErrFrac > ACCEL_NORM_GATE_FRACTION;
     if (!accelRejected) {
       Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
       if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
@@ -2423,6 +2437,16 @@ void loop() {
       EKF_RACTIVE[0][0] = R_REJECTED;
       EKF_RACTIVE[1][1] = R_REJECTED;
       EKF_RACTIVE[2][2] = R_REJECTED;
+    } else {
+      // Geometric ramp from R_INIT_ACC (at |a| == 1 g) to R_REJECTED (at the
+      // gate edge): each increment of norm error multiplies the noise by a
+      // constant factor, so trust falls off smoothly across orders of magnitude.
+      // At zero norm error this reduces exactly to the base R_INIT_ACC set above.
+      float gateFrac = normErrFrac / ACCEL_NORM_GATE_FRACTION;   // [0, 1]
+      float rAcc = R_INIT_ACC * powf(R_REJECTED / R_INIT_ACC, gateFrac);
+      EKF_RACTIVE[0][0] = rAcc;
+      EKF_RACTIVE[1][1] = rAcc;
+      EKF_RACTIVE[2][2] = rAcc;
     }
 
     // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.

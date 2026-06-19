@@ -168,7 +168,14 @@ public:
             
         setAccelRange(ACCEL_RANGE_2G);
         setGyroRange(GYRO_RANGE_2000DPS);
-        setDlpfBandwidth(DLPF_BANDWIDTH_184HZ);
+        // Effective runtime DLPF bandwidth (this call, after gyro calibration,
+        // is what persists once begin() returns -- the 184Hz writes earlier in
+        // begin() are transient and the calibration step overrides them). 92Hz
+        // attenuates motor/prop vibration well above real airframe attitude
+        // dynamics before it reaches the EKF, at a cost of only ~1ms of extra
+        // group delay over 184Hz -- negligible against the 8ms (125Hz) EKF
+        // correction step. Drop to 41Hz if vibration is still leaking through.
+        setDlpfBandwidth(DLPF_BANDWIDTH_92HZ);
         setSrd(0);
         // successful init, return 1
         return 1;
