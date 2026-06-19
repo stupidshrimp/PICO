@@ -120,6 +120,43 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #define FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS 3000UL
 #endif
 
+// Set to 1 for a bench-only motor-vibration frequency survey. This helper blocks
+// normal flight startup after the IMU and CRSF link are up. With the PROPELLER
+// ON and the aircraft firmly restrained, it walks the operator through a 0%
+// (motor-off) baseline and 25/50/75/100% throttle steps -- throttle is commanded
+// from the operator's own TX stick, never by the FC -- and at each step runs a
+// Goertzel band-scan over the gyro to find the dominant vibration tone. It prints
+// a copy-paste summary used to schedule the gyro notch filter's center frequency,
+// then halts startup so the survey can never be active in flight (same pattern as
+// GPSDIAG/MAGCAL). Default OFF; flight builds are bit-for-bit unchanged.
+#ifndef FC_VIBE_SURVEY_MODE
+#define FC_VIBE_SURVEY_MODE 0
+#endif
+// Gyro sample rate for the survey. 500 Hz gives a 250 Hz Nyquist -- comfortably
+// above the scan band -- while leaving ample time per sample to service the link
+// and pass throttle through between IMU reads.
+#ifndef FC_VIBE_SURVEY_SAMPLE_HZ
+#define FC_VIBE_SURVEY_SAMPLE_HZ 500UL
+#endif
+// Per-step measurement window. 3 s at 500 Hz = 1500 samples, ample for a clean
+// peak at the 2 Hz bin spacing below.
+#ifndef FC_VIBE_SURVEY_DWELL_MS
+#define FC_VIBE_SURVEY_DWELL_MS 3000UL
+#endif
+// Scan band and resolution. The floor (20 Hz) sits above real airframe attitude
+// dynamics; the ceiling (150 Hz) runs past the 92 Hz IMU DLPF so a high,
+// DLPF-attenuated fundamental still shows up (which itself tells us a notch can't
+// reach it and the DLPF is the better lever). 2 Hz steps -> 66 bins.
+#ifndef FC_VIBE_SURVEY_FREQ_MIN_HZ
+#define FC_VIBE_SURVEY_FREQ_MIN_HZ 20.0f
+#endif
+#ifndef FC_VIBE_SURVEY_FREQ_MAX_HZ
+#define FC_VIBE_SURVEY_FREQ_MAX_HZ 150.0f
+#endif
+#ifndef FC_VIBE_SURVEY_FREQ_STEP_HZ
+#define FC_VIBE_SURVEY_FREQ_STEP_HZ 2.0f
+#endif
+
 // Set to 1 to print the raw per-loop sensor values (roll/pitch/yaw, altitude,
 // airspeed, longitude/latitude, RC inputs, EKF compute time, and which
 // telemetry frames were sent) as one human-readable line. This is the
@@ -2108,6 +2145,419 @@ void maybePrintControlDebugStats() {
 
 
 
+#if FC_VIBE_SURVEY_MODE
+// ===========================================================================
+//  Motor-vibration frequency survey (bench-only; FC_VIBE_SURVEY_MODE == 1)
+//
+//  Finds the dominant gyro vibration frequency as a function of throttle so the
+//  gyro notch filter's center frequency can be scheduled by throttle. Goertzel
+//  is used instead of an FFT because we only need the peak inside a known band:
+//  a bank of single-frequency detectors needs no sample buffer or windowing, and
+//  the STM32F405 hardware FPU makes the per-sample cost trivial at 500 Hz.
+//
+//  Throttle is ALWAYS commanded from the operator's TX stick (passed straight to
+//  the ESC here, honoring failsafe); the FC never spins the motor on its own.
+// ===========================================================================
+
+constexpr float    VIBE_SAMPLE_HZ        = (float)FC_VIBE_SURVEY_SAMPLE_HZ;
+constexpr uint32_t VIBE_SAMPLE_PERIOD_US = (uint32_t)(1000000UL / FC_VIBE_SURVEY_SAMPLE_HZ);
+constexpr int      VIBE_NBINS = (int)((FC_VIBE_SURVEY_FREQ_MAX_HZ - FC_VIBE_SURVEY_FREQ_MIN_HZ)
+                                      / FC_VIBE_SURVEY_FREQ_STEP_HZ) + 1;
+// Welch block length, chosen so the scan bins ARE exact DFT bins of each block
+// (block resolution fs/L == bin spacing). A single long DFT over the whole dwell
+// would have far finer resolution than the 2 Hz bins and scallop hard -- a tone
+// landing between bins falls in a near-null and almost vanishes. Instead the
+// dwell is processed as floor(samples/L) Hann-windowed blocks whose power spectra
+// are averaged, which puts every bin on a real DFT bin and tames noise variance.
+constexpr int VIBE_BLOCK_LEN = (int)(VIBE_SAMPLE_HZ / FC_VIBE_SURVEY_FREQ_STEP_HZ + 0.5f);
+const float VIBE_RAD2DEG = 57.295779513f;
+// Hann coherent gain (window mean); rescales bin power back to ~physical amplitude.
+const float VIBE_HANN_CG = 0.5f;
+
+// One-pole high-pass (~8 Hz corner at 500 Hz) strips gravity bias and slow
+// airframe rotation so the Goertzel bank sees only AC vibration. Its corner sits
+// well below the 20 Hz scan floor, so it does not touch the band of interest.
+const float VIBE_HP_ALPHA = 0.10f;
+
+// Throttle-step control thresholds.
+const float    VIBE_IDLE_PCT  = 5.0f;     // "at idle" threshold
+const float    VIBE_BAND_PCT  = 7.0f;     // +/- band around a target step
+const uint32_t VIBE_STABLE_MS = 700UL;    // continuous dwell in band before measuring
+const uint32_t VIBE_ABORT_MS  = 8000UL;   // sustained idle during an up-step = operator abort
+const uint32_t VIBE_DWELL_MS  = (uint32_t)FC_VIBE_SURVEY_DWELL_MS;
+
+const float VIBE_TARGETS[] = { 25.0f, 50.0f, 75.0f, 100.0f };
+constexpr int VIBE_NTARGETS = (int)(sizeof(VIBE_TARGETS) / sizeof(VIBE_TARGETS[0]));
+
+// Goertzel bank state, per gyro axis (0=p/roll-rate, 1=q/pitch-rate, 2=r/yaw-rate).
+float    vibeFreqHz[VIBE_NBINS];
+float    vibeCoeff[VIBE_NBINS];
+float    vibeHann[VIBE_BLOCK_LEN];
+float    vibeS1[3][VIBE_NBINS];       // current-block Goertzel state
+float    vibeS2[3][VIBE_NBINS];
+double   vibePowAcc[3][VIBE_NBINS];   // summed block power (Welch-average numerator)
+float    vibeHpLpf[3];
+bool     vibeHpSeeded[3];
+double   vibeSumSq[3];
+int      vibeBlockIdx;                // sample index within the current block
+uint32_t vibeBlockCount;             // completed blocks this window
+uint32_t vibeSampleCount;
+
+struct VibeStepResult {
+  float targetPct;
+  float actualPct;
+  int   domAxis;          // -1 = baseline / no tone
+  float f1Hz, m1;         // strongest peak on the dominant axis (Hz, deg/s)
+  float f2Hz, m2;         // second peak (catches a fundamental + harmonic)
+  float rms[3];           // per-axis broadband vibration, deg/s
+};
+VibeStepResult vibeResults[1 + VIBE_NTARGETS];
+
+void vibeBuildBank() {
+  for (int k = 0; k < VIBE_NBINS; ++k) {
+    float f = FC_VIBE_SURVEY_FREQ_MIN_HZ + (float)k * FC_VIBE_SURVEY_FREQ_STEP_HZ;
+    vibeFreqHz[k] = f;
+    vibeCoeff[k]  = 2.0f * cosf(2.0f * (float)M_PI * f / VIBE_SAMPLE_HZ);
+  }
+  for (int i = 0; i < VIBE_BLOCK_LEN; ++i) {
+    vibeHann[i] = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * (float)i / (float)(VIBE_BLOCK_LEN - 1));
+  }
+}
+
+void vibeResetAccumulators() {
+  for (int a = 0; a < 3; ++a) {
+    for (int k = 0; k < VIBE_NBINS; ++k) { vibeS1[a][k] = 0.0f; vibeS2[a][k] = 0.0f; vibePowAcc[a][k] = 0.0; }
+    vibeSumSq[a] = 0.0;
+    vibeHpSeeded[a] = false;
+  }
+  vibeBlockIdx = 0;
+  vibeBlockCount = 0;
+  vibeSampleCount = 0;
+}
+
+void vibeFeedSample(float p, float q, float r) {
+  float x[3] = { p, q, r };
+  float w = vibeHann[vibeBlockIdx];
+  for (int a = 0; a < 3; ++a) {
+    if (!vibeHpSeeded[a]) { vibeHpLpf[a] = x[a]; vibeHpSeeded[a] = true; }
+    float hp = x[a] - vibeHpLpf[a];           // x - lpf(old): ~8 Hz high-pass
+    vibeHpLpf[a] += VIBE_HP_ALPHA * hp;       // advance the low-pass estimate
+    vibeSumSq[a] += (double)hp * (double)hp;  // RMS uses the raw (unwindowed) AC signal
+    float xw = hp * w;                        // Hann-windowed sample for the bank
+    for (int k = 0; k < VIBE_NBINS; ++k) {
+      float s0 = xw + vibeCoeff[k] * vibeS1[a][k] - vibeS2[a][k];
+      vibeS2[a][k] = vibeS1[a][k];
+      vibeS1[a][k] = s0;
+    }
+  }
+  ++vibeSampleCount;
+  if (++vibeBlockIdx >= VIBE_BLOCK_LEN) {
+    // Finalize this block: fold its per-bin power into the Welch accumulator and
+    // restart the bank for the next block.
+    for (int a = 0; a < 3; ++a) {
+      for (int k = 0; k < VIBE_NBINS; ++k) {
+        float power = vibeS1[a][k] * vibeS1[a][k] + vibeS2[a][k] * vibeS2[a][k]
+                    - vibeCoeff[k] * vibeS1[a][k] * vibeS2[a][k];
+        if (power < 0.0f) power = 0.0f;
+        vibePowAcc[a][k] += (double)power;
+        vibeS1[a][k] = 0.0f;
+        vibeS2[a][k] = 0.0f;
+      }
+    }
+    ++vibeBlockCount;
+    vibeBlockIdx = 0;
+  }
+}
+
+// Approx amplitude (deg/s) of bin k on axis a, from the Welch-averaged power.
+float vibeBinMag(int a, int k) {
+  if (vibeBlockCount == 0) return 0.0f;
+  double pAvg = vibePowAcc[a][k] / (double)vibeBlockCount;
+  if (pAvg < 0.0) pAvg = 0.0;
+  // For a tone of amplitude A: |X| = A*L*CG/2, so A = 2*sqrt(P)/(L*CG).
+  return VIBE_RAD2DEG * 2.0f * (float)sqrt(pAvg) / ((float)VIBE_BLOCK_LEN * VIBE_HANN_CG);
+}
+
+// Two strongest, non-adjacent peaks on an axis.
+void vibeTopTwo(int a, float &f1, float &m1, float &f2, float &m2) {
+  int b1 = -1; float p1 = -1.0f;
+  for (int k = 0; k < VIBE_NBINS; ++k) {
+    float m = vibeBinMag(a, k);
+    if (m > p1) { p1 = m; b1 = k; }
+  }
+  int b2 = -1; float p2 = -1.0f;
+  for (int k = 0; k < VIBE_NBINS; ++k) {
+    if (b1 >= 0 && abs(k - b1) <= 1) continue;   // skip the winner's skirt
+    float m = vibeBinMag(a, k);
+    if (m > p2) { p2 = m; b2 = k; }
+  }
+  f1 = (b1 >= 0) ? vibeFreqHz[b1] : 0.0f;  m1 = (p1 > 0.0f) ? p1 : 0.0f;
+  f2 = (b2 >= 0) ? vibeFreqHz[b2] : 0.0f;  m2 = (p2 > 0.0f) ? p2 : 0.0f;
+}
+
+float vibeAxisRms(int a) {
+  if (vibeSampleCount == 0) return 0.0f;
+  return VIBE_RAD2DEG * (float)sqrt(vibeSumSq[a] / (double)vibeSampleCount);
+}
+
+const char *vibeAxisName(int a) {
+  return (a == 0) ? "p" : (a == 1) ? "q" : (a == 2) ? "r" : "-";
+}
+
+// Pass the operator's TX throttle straight to the ESC, honoring failsafe.
+// Returns commanded throttle percent, or -1 on RC failsafe (throttle cut).
+float vibePassThrottle(uint32_t nowUs) {
+  if (!rcInputFresh(nowUs)) {
+    servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
+    return -1.0f;
+  }
+  float pct = mapRcToPercent(latestRcChannels.value[2]);
+  servoThrottle.writeMicroseconds(mapPercentToThrottleUs(pct));
+  return pct;
+}
+
+// Block until throttle is held at idle (<= VIBE_IDLE_PCT) continuously for 0.8 s.
+// Returns false on timeout (0 = wait forever).
+bool vibeWaitForIdle(uint32_t timeoutMs) {
+  uint32_t startMs = millis();
+  uint32_t stableMs = 0;
+  while (true) {
+    serviceCrsfLink();
+    float pct = vibePassThrottle(micros());
+    uint32_t nowMs = millis();
+    if (pct >= 0.0f && pct <= VIBE_IDLE_PCT) {
+      if (stableMs == 0) stableMs = nowMs;
+      else if ((uint32_t)(nowMs - stableMs) >= 800UL) return true;
+    } else {
+      stableMs = 0;
+    }
+    if (timeoutMs != 0 && (uint32_t)(nowMs - startMs) >= timeoutMs) return false;
+  }
+}
+
+// Block until throttle is held within +/-VIBE_BAND_PCT of targetPct continuously
+// for VIBE_STABLE_MS. Sets aborted=true if the link drops or the operator holds
+// idle for VIBE_ABORT_MS. Returns the in-band percent.
+float vibeWaitForBand(float targetPct, bool &aborted) {
+  aborted = false;
+  uint32_t inBandMs = 0, idleMs = 0, lastHintMs = millis();
+  while (true) {
+    serviceCrsfLink();
+    float pct = vibePassThrottle(micros());
+    uint32_t nowMs = millis();
+    if (pct < 0.0f) {
+      Serial.println("VIBE  RC link lost -- throttle cut. Ending survey.");
+      aborted = true;
+      return 0.0f;
+    }
+    if (pct <= VIBE_IDLE_PCT) {
+      if (idleMs == 0) idleMs = nowMs;
+      else if ((uint32_t)(nowMs - idleMs) >= VIBE_ABORT_MS) { aborted = true; return pct; }
+    } else {
+      idleMs = 0;
+    }
+    if (fabsf(pct - targetPct) <= VIBE_BAND_PCT) {
+      if (inBandMs == 0) inBandMs = nowMs;
+      else if ((uint32_t)(nowMs - inBandMs) >= VIBE_STABLE_MS) return pct;
+    } else {
+      inBandMs = 0;
+    }
+    if ((uint32_t)(nowMs - lastHintMs) >= 1200UL) {
+      lastHintMs = nowMs;
+      Serial.print("VIBE  target "); Serial.print((int)targetPct);
+      Serial.print("%  now "); Serial.print(pct, 0); Serial.println("%");
+    }
+  }
+}
+
+// Collect one dwell window at the current throttle, sampling the gyro at the
+// survey rate while continuing to service the link and pass throttle through.
+// Returns false (re-prompt) if the link drops mid-window. Reports the averaged
+// throttle and its min/max spread.
+bool vibeMeasureWindow(float &actualAvg, float &actualMin, float &actualMax) {
+  vibeResetAccumulators();
+  double pctSum = 0.0; uint32_t pctN = 0;
+  actualMin = 1000.0f; actualMax = -1000.0f;
+  uint32_t endMs = millis() + VIBE_DWELL_MS;
+  uint32_t nextSampleUs = micros();
+  while ((int32_t)(millis() - endMs) < 0) {
+    serviceCrsfLink();
+    uint32_t nowUs = micros();
+    float pct = vibePassThrottle(nowUs);
+    if (pct < 0.0f) { Serial.println("VIBE  RC link lost mid-measurement -- discarding."); return false; }
+    if ((int32_t)(nowUs - nextSampleUs) >= 0) {
+      nextSampleUs += VIBE_SAMPLE_PERIOD_US;
+      IMU.readSensor();
+      // Aircraft-frame gyro (X/Y swapped to match the flight loop), in rad/s.
+      vibeFeedSample(IMU.getGyroY_rads(), IMU.getGyroX_rads(), IMU.getGyroZ_rads());
+      pctSum += pct; ++pctN;
+      if (pct < actualMin) actualMin = pct;
+      if (pct > actualMax) actualMax = pct;
+    }
+  }
+  actualAvg = (pctN > 0) ? (float)(pctSum / (double)pctN) : 0.0f;
+  return true;
+}
+
+// Takes an index into vibeResults[] rather than a reference so the Arduino
+// auto-prototype pass never puts VibeStepResult in a hoisted signature.
+void vibeAnalyzeStep(int idx, float targetPct, float actualPct, bool baseline) {
+  VibeStepResult &res = vibeResults[idx];
+  res.targetPct = targetPct;
+  res.actualPct = actualPct;
+  for (int a = 0; a < 3; ++a) res.rms[a] = vibeAxisRms(a);
+  if (baseline) { res.domAxis = -1; res.f1Hz = res.m1 = res.f2Hz = res.m2 = 0.0f; return; }
+  int domAxis = 0; float domMag = -1.0f, df1 = 0, dm1 = 0, df2 = 0, dm2 = 0;
+  for (int a = 0; a < 3; ++a) {
+    float f1, m1, f2, m2; vibeTopTwo(a, f1, m1, f2, m2);
+    if (m1 > domMag) { domMag = m1; domAxis = a; df1 = f1; dm1 = m1; df2 = f2; dm2 = m2; }
+  }
+  res.domAxis = domAxis; res.f1Hz = df1; res.m1 = dm1; res.f2Hz = df2; res.m2 = dm2;
+}
+
+void vibePrintStepLive(int idx, bool baseline) {
+  const VibeStepResult &res = vibeResults[idx];
+  if (baseline) {
+    Serial.print("VIBE  [baseline 0%] floor rms deg/s  p="); Serial.print(res.rms[0], 1);
+    Serial.print(" q="); Serial.print(res.rms[1], 1);
+    Serial.print(" r="); Serial.println(res.rms[2], 1);
+    return;
+  }
+  Serial.print("VIBE  ["); Serial.print((int)res.targetPct);
+  Serial.print("% act "); Serial.print(res.actualPct, 0);
+  Serial.print("%]  dom "); Serial.print(vibeAxisName(res.domAxis));
+  Serial.print("  peak1 "); Serial.print(res.f1Hz, 0); Serial.print("Hz(");
+  Serial.print(res.m1, 1); Serial.print(")  peak2 "); Serial.print(res.f2Hz, 0);
+  Serial.print("Hz("); Serial.print(res.m2, 1); Serial.print(")  rms p/q/r ");
+  Serial.print(res.rms[0], 1); Serial.print("/"); Serial.print(res.rms[1], 1);
+  Serial.print("/"); Serial.println(res.rms[2], 1);
+}
+
+void vibePrintSummary(int nSteps) {
+  Serial.println();
+  Serial.println("=== COPY EVERYTHING BELOW BACK TO CLAUDE ===");
+  Serial.print("VIBE_SURVEY v1 fs="); Serial.print((int)VIBE_SAMPLE_HZ);
+  Serial.print("Hz dwell="); Serial.print((int)VIBE_DWELL_MS);
+  Serial.print("ms band="); Serial.print((int)FC_VIBE_SURVEY_FREQ_MIN_HZ);
+  Serial.print("-"); Serial.print((int)FC_VIBE_SURVEY_FREQ_MAX_HZ);
+  Serial.print("Hz step="); Serial.print((int)FC_VIBE_SURVEY_FREQ_STEP_HZ);
+  Serial.println("Hz | f in Hz, m/rms in deg/s | p=roll-rate q=pitch-rate r=yaw-rate");
+  Serial.println("thr\tact\taxis\tf1\tm1\tf2\tm2\trms_p\trms_q\trms_r");
+  for (int i = 0; i < nSteps; ++i) {
+    VibeStepResult &r = vibeResults[i];
+    Serial.print((int)r.targetPct); Serial.print('\t');
+    Serial.print(r.actualPct, 0);   Serial.print('\t');
+    if (r.domAxis < 0) {
+      Serial.print("-\t-\t-\t-\t-\t");
+    } else {
+      Serial.print(vibeAxisName(r.domAxis)); Serial.print('\t');
+      Serial.print(r.f1Hz, 0); Serial.print('\t');
+      Serial.print(r.m1, 2);   Serial.print('\t');
+      Serial.print(r.f2Hz, 0); Serial.print('\t');
+      Serial.print(r.m2, 2);   Serial.print('\t');
+    }
+    Serial.print(r.rms[0], 2); Serial.print('\t');
+    Serial.print(r.rms[1], 2); Serial.print('\t');
+    Serial.println(r.rms[2], 2);
+  }
+  Serial.println("=== END ===");
+  Serial.println();
+}
+
+// Hold throttle cut and surfaces neutral forever; never return to flight code.
+void vibeHalt() {
+  uint32_t lastMs = 0;
+  while (1) {
+    serviceCrsfLink();
+    servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
+    servoRoll.writeMicroseconds(SERVO_CENTER_US);
+    servoPitch.writeMicroseconds(SERVO_CENTER_US);
+    servoYaw.writeMicroseconds(SERVO_CENTER_US);
+    if ((uint32_t)(millis() - lastMs) >= 5000UL) {
+      lastMs = millis();
+      Serial.println("VIBE  Survey done. Set FC_VIBE_SURVEY_MODE=0 and reflash to fly.");
+    }
+  }
+}
+
+void runVibrationSurveyDebug() {
+  Serial.println();
+  Serial.println("============== MOTOR VIBRATION SURVEY (BENCH ONLY) ==============");
+  Serial.println("VIBE  WARNING: the PROPELLER WILL SPIN. Restrain the aircraft");
+  Serial.println("VIBE  firmly and keep clear of the prop arc. Throttle is commanded");
+  Serial.println("VIBE  from YOUR TX stick the whole time -- chop to 0% to pause/abort.");
+  Serial.println("VIBE  Startup halts after the survey; reflash with");
+  Serial.println("VIBE  FC_VIBE_SURVEY_MODE=0 to fly.");
+  Serial.println();
+
+  // Keep aerodynamic surfaces neutral; only throttle is exercised.
+  servoRoll.writeMicroseconds(SERVO_CENTER_US);
+  servoPitch.writeMicroseconds(SERVO_CENTER_US);
+  servoYaw.writeMicroseconds(SERVO_CENTER_US);
+  servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
+
+  vibeBuildBank();
+
+  Serial.println("VIBE  Waiting for RC link (turn on your TX, throttle at 0%)...");
+  while (!rcInputFresh(micros())) { serviceCrsfLink(); }
+  Serial.println("VIBE  RC link up. Hold throttle at 0% to begin the baseline...");
+  vibeWaitForIdle(0);
+
+  int stepIdx = 0;
+
+  // ---- Baseline: motor off, noise floor ----
+  Serial.println("VIBE  Measuring 0% baseline -- keep throttle at 0%...");
+  {
+    float avg, lo, hi;
+    if (vibeMeasureWindow(avg, lo, hi)) {
+      vibeAnalyzeStep(stepIdx, 0.0f, avg, true);
+      vibePrintStepLive(stepIdx, true);
+      ++stepIdx;
+    }
+  }
+
+  // ---- Throttle steps ----
+  for (int t = 0; t < VIBE_NTARGETS; ++t) {
+    float target = VIBE_TARGETS[t];
+    Serial.print("VIBE  Advance throttle to ~"); Serial.print((int)target);
+    Serial.println("% and hold steady...");
+    bool measured = false;
+    while (!measured) {
+      bool aborted = false;
+      float held = vibeWaitForBand(target, aborted);
+      if (aborted) {
+        Serial.println("VIBE  Aborted -- cutting throttle and printing partial results.");
+        servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
+        vibePrintSummary(stepIdx);
+        vibeHalt();
+      }
+      Serial.print("VIBE  Holding ~"); Serial.print(held, 0);
+      Serial.println("% -- measuring, keep steady...");
+      float avg, lo, hi;
+      if (vibeMeasureWindow(avg, lo, hi)) {
+        vibeAnalyzeStep(stepIdx, target, avg, false);
+        if ((hi - lo) > (2.0f * VIBE_BAND_PCT)) {
+          Serial.print("VIBE  (note: throttle wandered "); Serial.print(lo, 0);
+          Serial.print("-"); Serial.print(hi, 0); Serial.println("% during measure)");
+        }
+        vibePrintStepLive(stepIdx, false);
+        ++stepIdx;
+        measured = true;
+      } else {
+        Serial.println("VIBE  Re-acquire the target and hold again...");
+      }
+    }
+  }
+
+  // Measurements done -- cut the motor before printing the summary.
+  Serial.println("VIBE  Survey complete -- cutting throttle. Return your stick to 0%.");
+  servoThrottle.writeMicroseconds(THROTTLE_CUT_US);
+  vibePrintSummary(stepIdx);
+  vibeHalt();
+}
+#endif  // FC_VIBE_SURVEY_MODE
+
+
 void setup() {
   // ----- Initialize Debug Serial -----
   Serial.begin(115200);
@@ -2217,6 +2667,13 @@ void setup() {
     haltStartupWithNeutralServos();
   }
   crsf.setRcChannelsCallback(rcChannelsCallback);
+
+  // Bench-only motor-vibration survey. Runs after the IMU and CRSF link are up
+  // (it needs live gyro and a live throttle channel) and never returns -- it
+  // halts startup like GPSDIAG/MAGCAL so it can't be active in flight.
+#if FC_VIBE_SURVEY_MODE
+  runVibrationSurveyDebug();
+#endif
 
   // Sweep the ailerons and elevator through full travel once after all startup
   // initialization is complete, then return them to neutral for normal servo
