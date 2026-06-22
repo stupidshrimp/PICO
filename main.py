@@ -120,6 +120,7 @@ from config import (
     packet_interval_ms_from_rate,
     packet_rate_hz_from_interval,
     load_config,
+    resolve_port_selection,
     save_config,
 )
 
@@ -4244,6 +4245,11 @@ class MainWindow(QMainWindow):
         self.elrs_port_combo.setCurrentText(
             self.crsf_cfg.get("port", "Not connected")
         )
+        # Remember the operator's desired ports so an unplug followed by a
+        # re-plug of the joystick or transmitter reconnects automatically,
+        # instead of forcing a trip back to the config page to reselect.
+        self._joystick_desired_port = self.joystick_cfg.get("port", "Not connected")
+        self._crsf_desired_port = self.crsf_cfg.get("port", "Not connected")
         self.battery_type_combo.setCurrentText(
             self.aircraft_cfg.get("battery_cells", "3s")
         )
@@ -4856,24 +4862,45 @@ class MainWindow(QMainWindow):
         self.update_port_lists()
 
     def update_port_lists(self):
-        """Refresh available serial ports and update the dropdowns."""
+        """Refresh available serial ports and update the dropdowns.
+
+        When a previously selected port disappears (the joystick or transmitter
+        USB is unplugged) the live link is dropped, but the desired port is
+        remembered rather than wiped to "Not connected".  When that same port
+        reappears the connection is re-established automatically, so the
+        operator does not have to revisit the config page and reselect it.
+        """
         available_ports = self._available_serial_port_devices()
         self._serial_port_devices = set(available_ports)
         ports = ["Not connected"] + available_ports
 
-        def refresh(combo, handler):
+        def refresh(combo, handler, desired_attr):
+            desired = getattr(self, desired_attr, "Not connected")
             current = combo.currentText()
-            selected_port_available = current in ports
+            action, target = resolve_port_selection(
+                current, desired, available_ports
+            )
+
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(ports)
-            combo.setCurrentText(current if selected_port_available else "Not connected")
+            combo.setCurrentText(target if action != "disconnect" else "Not connected")
             combo.blockSignals(False)
-            if not selected_port_available:
-                handler("Not connected")
 
-        refresh(self.control_port_combo, self.on_control_port_selected)
-        refresh(self.elrs_port_combo, self.on_elrs_port_selected)
+            if action == "reconnect" and current != target:
+                # The remembered port (back) online -- reconnect automatically.
+                handler(target)
+            elif action == "disconnect" and current != "Not connected":
+                # Device unplugged -- drop the link but keep the remembered port
+                # so the next re-plug reconnects without a config-page round trip.
+                handler("Not connected", preserve_preference=True)
+
+        refresh(
+            self.control_port_combo,
+            self.on_control_port_selected,
+            "_joystick_desired_port",
+        )
+        refresh(self.elrs_port_combo, self.on_elrs_port_selected, "_crsf_desired_port")
         # Video receiver uses a fixed device index; no port list to refresh
 
     def reinitialize_serial_ports(self):
@@ -4885,11 +4912,25 @@ class MainWindow(QMainWindow):
             (self.control_port_combo, self.on_control_port_selected),
             (self.elrs_port_combo, self.on_elrs_port_selected),
         ):
-            handler(combo.currentText())
+            current = combo.currentText()
+            # Force-restart active links.  Skip "Not connected" so re-scanning
+            # while a device is unplugged does not clear the remembered port
+            # that drives automatic reconnection on re-plug.
+            if current != "Not connected":
+                handler(current)
 
-    def on_control_port_selected(self, port: str):
-        """Handle selection of control system port."""
-        self.joystick_cfg["port"] = port
+    def on_control_port_selected(self, port: str, preserve_preference: bool = False):
+        """Handle selection of control system port.
+
+        ``preserve_preference`` is set when the port monitor drops the link
+        because the device was unplugged.  In that case the live joystick is
+        closed but the remembered (desired) port and saved config are left
+        intact, so a later re-plug reconnects to the same device automatically
+        instead of the saved port being overwritten with "Not connected".
+        """
+        if not preserve_preference:
+            self.joystick_cfg["port"] = port
+            self._joystick_desired_port = port
         if self.joystick:
             try:
                 self.joystick.close()
@@ -4912,7 +4953,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         self.update_connection_status(self.control_status, self.joystick is not None)
-        save_config(self.config)
+        if not preserve_preference:
+            save_config(self.config)
 
     def on_map_enabled_toggled(self, checked: bool):
         self.map_cfg["enabled"] = bool(checked)
@@ -4944,9 +4986,18 @@ class MainWindow(QMainWindow):
             self._apply_initial_map_view()
         save_config(self.config)
 
-    def on_elrs_port_selected(self, port: str):
-        """Handle selection of ELRS transmitter port."""
-        self.crsf_cfg["port"] = port
+    def on_elrs_port_selected(self, port: str, preserve_preference: bool = False):
+        """Handle selection of ELRS transmitter port.
+
+        ``preserve_preference`` is set when the port monitor drops the link
+        because the transmitter was unplugged.  In that case the CRSF worker is
+        stopped but the remembered (desired) port and saved config are left
+        intact, so a later re-plug reconnects to the same device automatically
+        instead of the saved port being overwritten with "Not connected".
+        """
+        if not preserve_preference:
+            self.crsf_cfg["port"] = port
+            self._crsf_desired_port = port
         was_transmitting = self.transmission_active
         if self.crsf_processor:
             try:
@@ -5007,7 +5058,8 @@ class MainWindow(QMainWindow):
         self.update_connection_status(self.rf_status, self.crsf_processor is not None)
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
-        save_config(self.config)
+        if not preserve_preference:
+            save_config(self.config)
 
     def on_packet_rate_changed(self, *_):
         rate_hz = self.packet_rate_combo.currentData()
