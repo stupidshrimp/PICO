@@ -4899,6 +4899,18 @@ class MainWindow(QMainWindow):
 
         self._retry_pending_reconnects(current_ports)
 
+    def _crsf_serial_link_up(self) -> bool:
+        """Whether the CRSF worker has actually opened its serial port.
+
+        The processor object exists before its worker thread opens the port and
+        survives an open failure (which only clears its ``serial``), so mere
+        object existence overstates success.  Confirm the link via the worker's
+        thread-safe flag so an idle transmitter that was enumerated just before
+        it became openable is still retried instead of being declared connected.
+        """
+        processor = self.crsf_processor
+        return processor is not None and processor.has_open_serial()
+
     def _retry_pending_reconnects(self, available_ports) -> None:
         """Re-attempt a failed auto-reconnect a bounded number of times."""
 
@@ -4913,7 +4925,7 @@ class MainWindow(QMainWindow):
             (
                 self.elrs_port_combo,
                 self.on_elrs_port_selected,
-                lambda: self.crsf_processor is not None,
+                self._crsf_serial_link_up,
                 "_crsf_reconnect_retries_left",
             ),
         ):
@@ -4984,7 +4996,7 @@ class MainWindow(QMainWindow):
             self.elrs_port_combo,
             self.on_elrs_port_selected,
             "_crsf_desired_port",
-            lambda: self.crsf_processor is not None,
+            self._crsf_serial_link_up,
             "_crsf_reconnect_retries_left",
         )
         # Video receiver uses a fixed device index; no port list to refresh
@@ -5109,12 +5121,13 @@ class MainWindow(QMainWindow):
             self._crsf_resume_transmission = was_transmitting
         else:
             # Manual reselect or automatic reconnect: restore a transmission
-            # session that an unplug interrupted.  The flag is cleared further
-            # below only once the reconnect actually succeeds (or the operator
-            # explicitly disconnects), so a bounded retry after a failed open
-            # can still resume transmission on a later attempt.
+            # session an unplug interrupted, then clear the one-shot flag.  Once
+            # this runs, ``transmission_active`` (set below and not reset by an
+            # async open failure) carries the intent forward, so a bounded retry
+            # after a failed open still resumes transmission on a later attempt.
             if getattr(self, "_crsf_resume_transmission", False):
                 was_transmitting = True
+            self._crsf_resume_transmission = False
         if self.crsf_processor:
             try:
                 thread = self.crsf_processor._thread
@@ -5180,12 +5193,6 @@ class MainWindow(QMainWindow):
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
         if not preserve_preference:
-            # Consume the pending transmission resume only once we know the
-            # outcome: clear it on a successful (re)connect or an explicit
-            # "Not connected" choice, but keep it if a real-port open failed so a
-            # bounded retry can still resume transmission later.
-            if self.crsf_processor is not None or port == "Not connected":
-                self._crsf_resume_transmission = False
             save_config(self.config)
 
     def on_packet_rate_changed(self, *_):
