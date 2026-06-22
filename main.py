@@ -178,6 +178,10 @@ class MainWindow(QMainWindow):
     SINK_RATE_WINDOW_S = 1.5
     SINK_RATE_MIN_WINDOW_S = 0.75
     SINK_RATE_MIN_SAMPLE_INTERVAL_S = 0.01
+    # Bounded retries (one per ~1 s monitor tick) for an auto-reconnect whose
+    # first open fails because the port was enumerated just before it could be
+    # opened.  After this the GS waits for a manual re-initialize.
+    _MAX_RECONNECT_RETRIES = 3
 
 
     def __init__(self):
@@ -4253,6 +4257,10 @@ class MainWindow(QMainWindow):
         # Whether an unplug interrupted an active transmission session, so the
         # automatic reconnect on re-plug can resume RC packet output.
         self._crsf_resume_transmission = False
+        # Bounded retry budget for an auto-reconnect whose first open fails
+        # because the port was enumerated a moment before it became openable.
+        self._joystick_reconnect_retries_left = 0
+        self._crsf_reconnect_retries_left = 0
         self.battery_type_combo.setCurrentText(
             self.aircraft_cfg.get("battery_cells", "3s")
         )
@@ -4870,14 +4878,58 @@ class MainWindow(QMainWindow):
         self._serial_port_monitor_timer.start()
 
     def _refresh_port_lists_if_serial_ports_changed(self) -> None:
-        """Refresh the dropdowns only when the OS serial-port list changes."""
+        """Refresh the dropdowns when the OS list changes, and drive retries.
+
+        ``update_port_lists`` (re)connects when a remembered port appears, but a
+        port can be enumerated by the OS a moment before it is actually
+        openable.  A single attempt would then fail and never be retried, since
+        the now-present port reads as "keep" on later ticks.  When the OS list is
+        unchanged we instead give any armed bounded retry one more attempt, one
+        monitor tick (~1 s) apart, so a briefly-busy port still recovers without
+        a manual re-initialize.
+        """
 
         current_ports = set(self._available_serial_port_devices())
-        if current_ports == getattr(self, "_serial_port_devices", set()):
+        if current_ports != getattr(self, "_serial_port_devices", set()):
+            self._serial_port_devices = current_ports
+            # Arming happens here; the first retry waits for the next tick so
+            # attempts stay spaced out instead of firing back-to-back.
+            self.update_port_lists()
             return
 
-        self._serial_port_devices = current_ports
-        self.update_port_lists()
+        self._retry_pending_reconnects(current_ports)
+
+    def _retry_pending_reconnects(self, available_ports) -> None:
+        """Re-attempt a failed auto-reconnect a bounded number of times."""
+
+        available = set(available_ports)
+        for combo, handler, is_connected, retry_attr in (
+            (
+                self.control_port_combo,
+                self.on_control_port_selected,
+                lambda: self.joystick is not None,
+                "_joystick_reconnect_retries_left",
+            ),
+            (
+                self.elrs_port_combo,
+                self.on_elrs_port_selected,
+                lambda: self.crsf_processor is not None,
+                "_crsf_reconnect_retries_left",
+            ),
+        ):
+            retries_left = getattr(self, retry_attr, 0)
+            if retries_left <= 0:
+                continue
+            port = combo.currentText()
+            # Stop retrying once the link is up, or the selection/port no longer
+            # applies (operator changed it, or the device went away again).
+            if port == "Not connected" or port not in available or is_connected():
+                setattr(self, retry_attr, 0)
+                continue
+            setattr(self, retry_attr, retries_left - 1)
+            handler(port)
+            if is_connected():
+                setattr(self, retry_attr, 0)
 
     def update_port_lists(self):
         """Refresh available serial ports and update the dropdowns.
@@ -4892,7 +4944,7 @@ class MainWindow(QMainWindow):
         self._serial_port_devices = set(available_ports)
         ports = ["Not connected"] + available_ports
 
-        def refresh(combo, handler, desired_attr):
+        def refresh(combo, handler, desired_attr, is_connected, retry_attr):
             desired = getattr(self, desired_attr, "Not connected")
             current = combo.currentText()
             action, target = resolve_port_selection(
@@ -4908,17 +4960,33 @@ class MainWindow(QMainWindow):
             if action == "reconnect" and current != target:
                 # The remembered port (back) online -- reconnect automatically.
                 handler(target)
+                # If the port was enumerated but not yet openable, arm a bounded
+                # retry; clear it when the first attempt already succeeded.
+                setattr(
+                    self,
+                    retry_attr,
+                    0 if is_connected() else self._MAX_RECONNECT_RETRIES,
+                )
             elif action == "disconnect" and current != "Not connected":
                 # Device unplugged -- drop the link but keep the remembered port
                 # so the next re-plug reconnects without a config-page round trip.
                 handler("Not connected", preserve_preference=True)
+                setattr(self, retry_attr, 0)
 
         refresh(
             self.control_port_combo,
             self.on_control_port_selected,
             "_joystick_desired_port",
+            lambda: self.joystick is not None,
+            "_joystick_reconnect_retries_left",
         )
-        refresh(self.elrs_port_combo, self.on_elrs_port_selected, "_crsf_desired_port")
+        refresh(
+            self.elrs_port_combo,
+            self.on_elrs_port_selected,
+            "_crsf_desired_port",
+            lambda: self.crsf_processor is not None,
+            "_crsf_reconnect_retries_left",
+        )
         # Video receiver uses a fixed device index; no port list to refresh
 
     def reinitialize_serial_ports(self):
@@ -5041,10 +5109,12 @@ class MainWindow(QMainWindow):
             self._crsf_resume_transmission = was_transmitting
         else:
             # Manual reselect or automatic reconnect: restore a transmission
-            # session that an unplug interrupted, then clear the pending flag.
+            # session that an unplug interrupted.  The flag is cleared further
+            # below only once the reconnect actually succeeds (or the operator
+            # explicitly disconnects), so a bounded retry after a failed open
+            # can still resume transmission on a later attempt.
             if getattr(self, "_crsf_resume_transmission", False):
                 was_transmitting = True
-            self._crsf_resume_transmission = False
         if self.crsf_processor:
             try:
                 thread = self.crsf_processor._thread
@@ -5110,6 +5180,12 @@ class MainWindow(QMainWindow):
         self._update_parameter_query_button_state()
         self._update_link_diagnostics_button_state()
         if not preserve_preference:
+            # Consume the pending transmission resume only once we know the
+            # outcome: clear it on a successful (re)connect or an explicit
+            # "Not connected" choice, but keep it if a real-port open failed so a
+            # bounded retry can still resume transmission later.
+            if self.crsf_processor is not None or port == "Not connected":
+                self._crsf_resume_transmission = False
             save_config(self.config)
 
     def on_packet_rate_changed(self, *_):
