@@ -4259,6 +4259,21 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.control_port_combo.currentTextChanged.connect(self.on_control_port_selected)
         self.elrs_port_combo.currentTextChanged.connect(self.on_elrs_port_selected)
+        # currentTextChanged does not fire when the operator re-selects the
+        # already-shown "Not connected" entry that an unplug left behind, so an
+        # explicit "disconnect" would otherwise leave the remembered port set and
+        # silently auto-reconnect on the next re-plug.  textActivated fires on any
+        # user choice (even an unchanged one), letting us honour that intent.
+        self.control_port_combo.textActivated.connect(
+            lambda text: self._clear_remembered_port_if_disconnected(
+                self.on_control_port_selected, "_joystick_desired_port", text
+            )
+        )
+        self.elrs_port_combo.textActivated.connect(
+            lambda text: self._clear_remembered_port_if_disconnected(
+                self.on_elrs_port_selected, "_crsf_desired_port", text
+            )
+        )
         self.packet_rate_combo.currentIndexChanged.connect(self.on_packet_rate_changed)
         self.channel_update_interval_spin.valueChanged.connect(
             self.on_channel_update_interval_changed
@@ -4921,6 +4936,23 @@ class MainWindow(QMainWindow):
             # that drives automatic reconnection on re-plug.
             if current != "Not connected":
                 handler(current)
+
+    def _clear_remembered_port_if_disconnected(self, handler, desired_attr, text):
+        """Honour an explicit "Not connected" choice made via the dropdown.
+
+        After an unplug the combo is programmatically reset to "Not connected"
+        while the desired port is kept for automatic reconnection.  If the
+        operator then deliberately re-selects that already-shown "Not connected"
+        entry, ``currentTextChanged`` stays silent, so this ``textActivated``
+        path runs the handler to clear the remembered port (and, for CRSF, the
+        pending transmission resume) only when there is in fact something to
+        clear.  Real-port selections are left to ``currentTextChanged`` so an
+        unchanged active port is not needlessly torn down and rebuilt.
+        """
+        if text == "Not connected" and getattr(
+            self, desired_attr, "Not connected"
+        ) != "Not connected":
+            handler("Not connected")
 
     def on_control_port_selected(self, port: str, preserve_preference: bool = False):
         """Handle selection of control system port.
