@@ -50,17 +50,42 @@ class _SerialReader(QThread):
     def run(self):
         try:
             while not self._stop.is_set():
-                if self.serial_connection.is_open and self.serial_connection.in_waiting > 0:
-                    try:
-                        raw = self.serial_connection.readline().decode("utf-8").strip()
-                    except (serial.SerialException, OSError) as exc:
-                        self.error.emit(f"Serial connection error: {exc}")
-                        break
-                    self._queue_raw_line(raw)
-                else:
+                # Poll AND read inside the same try so a disconnect raised by any
+                # serial call -- ``is_open``/``in_waiting`` as well as
+                # ``readline`` -- is reported as a "Serial connection error". On a
+                # USB unplug pyserial typically raises from ``in_waiting``; when
+                # that escaped to the generic handler below it surfaced under a
+                # different message, so the GUI's joystick-loss failsafe (centre
+                # roll/pitch, cut throttle) never engaged and the FC kept seeing
+                # frozen stick commands on a healthy-looking link.
+                # ``errors="replace"`` keeps a stray non-UTF-8 byte from tearing
+                # the reader down on an otherwise healthy link.
+                try:
+                    has_data = (
+                        self.serial_connection.is_open
+                        and self.serial_connection.in_waiting > 0
+                    )
+                    raw = (
+                        self.serial_connection.readline()
+                        .decode("utf-8", "replace")
+                        .strip()
+                        if has_data
+                        else None
+                    )
+                except (serial.SerialException, OSError) as exc:
+                    self.error.emit(f"Serial connection error: {exc}")
+                    break
+
+                if raw is None:
                     self.msleep(5)
+                    continue
+                self._queue_raw_line(raw)
         except Exception as exc:  # pragma: no cover - serial read errors
-            self.error.emit(f"Error reading serial data: {exc}")
+            # Any unexpected failure in the joystick read pipeline means the
+            # joystick link is broken; report it as a serial connection error so
+            # the joystick-loss failsafe engages instead of leaving the last
+            # stick command frozen in flight.
+            self.error.emit(f"Serial connection error: {exc}")
 
 
 class JoystickRawHandler(QObject):

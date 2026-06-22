@@ -59,7 +59,7 @@ axes to servo PWM `1000..2000 us` only after receiving the CRSF packet.
 | FC FBW attitude filter | _none_ | EKF attitude is fed straight into the FBW PID; no output low-pass (removed to minimize control-loop latency) |
 | FC auto-throttle target range | `0..100 mph` | `flight_controller/Main.ino` (`AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH`) |
 | FC auto-throttle default target | `20 mph` | `flight_controller/Main.ino` (`AUTO_THROTTLE_DEFAULT_TARGET_MPH`); GS default `throttle.target_airspeed_mph` is also `20.0` |
-| FC auto-throttle PID gains | `Kp=0.8`, `Ki=0.04`, `Kd=0.15` | `flight_controller/Main.ino` |
+| FC auto-throttle PID gains | `Kp=0.8`, `Ki=0.0`, `Kd=0.15` | `flight_controller/Main.ino`; output is integrated into `autoThrottlePercent` (velocity form), so the P term already provides integral action — `Ki` is `0` to avoid a double integrator |
 | FC auto-throttle output limit | `±100 percent/s` | `flight_controller/Main.ino` (`AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S`) |
 | FC auto-throttle stale decay | `50 percent/s` | `flight_controller/Main.ino` (`AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S`) |
 

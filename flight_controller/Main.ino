@@ -636,10 +636,19 @@ const float FBW_PITCH_KP = 6.0f;
 const float FBW_PITCH_KI = 0.30f;
 const float FBW_PITCH_KD = 1.1f;
 
-// Airspeed-hold throttle PID. Output is interpreted as percent-per-second and
-// integrated into the current auto-throttle command at the control-loop rate.
+// Airspeed-hold throttle controller. The controller output is interpreted as
+// percent-per-second and integrated into autoThrottlePercent at the control-loop
+// rate (a velocity / incremental form). Because the output is integrated, the
+// proportional term ALREADY supplies the integral action that drives steady-state
+// airspeed error to zero: each cycle it adds Kp*error percent-per-second to the
+// standing throttle. A non-zero Ki here would integrate the error a SECOND time
+// (a double integrator on throttle), adding phase lag that invites overshoot and
+// limit-cycling around the target airspeed, so Ki is held at 0. After
+// integration the derivative term behaves like a proportional (rate-damping)
+// term on airspeed. (The PID's internal integrator/AUTO_THROTTLE_INTEGRAL_LIMIT
+// are therefore inert for throttle but stay wired for the shared controller.)
 const float AUTO_THROTTLE_KP = 0.8f;
-const float AUTO_THROTTLE_KI = 0.04f;
+const float AUTO_THROTTLE_KI = 0.0f;
 const float AUTO_THROTTLE_KD = 0.15f;
 const float AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S = 100.0f;
 const float AUTO_THROTTLE_INTEGRAL_LIMIT = 100.0f;
@@ -1019,6 +1028,10 @@ float airSpeedCms      = 0.0f; // Airspeed from sensor in centimeters per second
 float sensorAltitudeCm = 0.0f; // Altitude from barometer in centimeters
 float latestAirspeedMph = 0.0f;
 float latestAltitudeFeet = 0.0f;
+// Latest barometric ambient (static) pressure in Pascals, cached for the pitot's
+// air-density calculation. 0 until the first valid barometer reading, which the
+// airspeed driver treats as "use the sea-level 1.225 kg/m^3 default".
+float latestAmbientPressurePa = 0.0f;
 
 // Airborne detection for the centripetal feed-forward (see thresholds above).
 float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
@@ -1162,6 +1175,13 @@ void applyBarometerPressure(float baroPressure) {
   if (!isfinite(baroPressure) || baroPressure <= 0.0f) {
     return;
   }
+  // baroPressure is the absolute ambient (static) pressure in mbar/hPa. Cache it
+  // in Pascals (1 mbar = 100 Pa) so the pitot computes airspeed against the real
+  // local air density instead of a fixed sea-level 1.225 kg/m^3. At ground level
+  // this is ~101325 Pa and reproduces the old 1.225 density, so low-altitude
+  // behaviour is unchanged; as density falls with altitude the reported airspeed
+  // tracks true airspeed more closely.
+  latestAmbientPressurePa = baroPressure * 100.0f;
   const float altitudeMeters = barometer.getAltitude(baroPressure, barometer.getSeaLevelPressure());
   if (!isfinite(altitudeMeters)) {
     return;
@@ -1252,7 +1272,10 @@ void updateAirspeedCache() {
 #if FC_TIMING_INSTRUMENTATION
   uint32_t timingStartUs = micros();
 #endif
-  float airspeedMph = airspeedSensor.getAirspeed();
+  // Pass the cached barometric ambient pressure so the pitot uses the real local
+  // air density. latestAmbientPressurePa is 0 until the first baro reading, which
+  // the driver treats as the sea-level 1.225 kg/m^3 default (the prior behaviour).
+  float airspeedMph = airspeedSensor.getAirspeed(latestAmbientPressurePa);
   if (isnan(airspeedMph)) {
     // A read can fail transiently: an I2C hiccup, or -- far more commonly -- the
     // MS4525D0 returning a "stale data" status frame when it is polled before

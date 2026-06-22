@@ -1,6 +1,9 @@
 import pathlib
 import sys
+import threading
 from queue import Queue
+
+import serial
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -83,3 +86,41 @@ def test_serial_reader_keeps_button_edges_out_of_droppable_axis_queue():
 
     assert list(button_queue.queue) == [(14, True), (14, False)]
     assert list(data_queue.queue) == ["X=2 Y=2", "X=3 Y=3"]
+
+
+class _RaisingFromInWaitingSerial:
+    """Fake serial port whose ``in_waiting`` raises on the first poll, the way
+    pyserial reports a USB unplug. ``readline`` is never reached on this path."""
+
+    is_open = True
+
+    @property
+    def in_waiting(self):
+        raise serial.SerialException("device reports readiness to read but returned no data")
+
+    def readline(self):  # pragma: no cover - should never be called
+        raise AssertionError("readline must not run once in_waiting has failed")
+
+
+def _run_reader_to_completion(serial_connection):
+    captured = []
+    reader = _SerialReader.__new__(_SerialReader)
+    reader.serial_connection = serial_connection
+    reader._stop = threading.Event()
+    reader.data_queue = Queue(maxsize=8)
+    reader.button_queue = Queue()
+    # ``error`` is a Qt Signal on the real class; stub it so run() works headless.
+    reader.error = type("_Sig", (), {"emit": lambda self, msg: captured.append(msg)})()
+    reader.run()
+    return captured
+
+
+def test_serial_unplug_via_in_waiting_triggers_joystick_loss_failsafe():
+    # main.py keys its joystick-loss failsafe (centre roll/pitch, cut throttle)
+    # on the substring "Serial connection error". A disconnect raised from
+    # in_waiting must surface under that exact wording so the failsafe engages
+    # instead of leaving frozen stick commands in flight.
+    messages = _run_reader_to_completion(_RaisingFromInWaitingSerial())
+
+    assert len(messages) == 1
+    assert "Serial connection error" in messages[0]
