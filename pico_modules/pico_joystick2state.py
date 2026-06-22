@@ -262,11 +262,19 @@ class JoystickRawHandler(QObject):
             weight = 1.0 - (self.smoothing / 100.0)
             now = time.monotonic()
             last = getattr(self, "_smoothing_last_update", None)
-            if last is None:
+            self._smoothing_last_update = now
+            if weight >= 1.0:
+                # Smoothing disabled: always pass the newest sample through.
+                # Delegating to time_scaled_weight would drop the sample when
+                # dt <= 0 (e.g. two polls under the same monotonic timestamp).
+                alpha = 1.0
+            elif last is None:
+                # First sample with no prior interval to scale against.
                 alpha = weight
             else:
-                alpha = time_scaled_weight(weight, now - last, self.SMOOTHING_REFERENCE_S)
-            self._smoothing_last_update = now
+                alpha = time_scaled_weight(
+                    weight, now - last, self.SMOOTHING_REFERENCE_S
+                )
             self.roll += alpha * (proc_roll - self.roll)
             self.pitch += alpha * (proc_pitch - self.pitch)
 

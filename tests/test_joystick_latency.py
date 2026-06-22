@@ -107,6 +107,25 @@ def test_smoothing_disabled_passes_latest_sample_through(monkeypatch):
     assert roll == 1023
 
 
+def test_smoothing_disabled_passes_through_with_zero_dt(monkeypatch):
+    # Regression: with smoothing disabled, a second sample sharing the previous
+    # monotonic timestamp (dt == 0) must still pass through rather than being
+    # dropped. time_scaled_weight(1.0, 0, ...) returns 0.0 (its dt<=0 guard runs
+    # before the full-weight guard), so the disabled case is handled directly.
+    import pico_modules.pico_joystick2state as joymod
+
+    monkeypatch.setattr(joymod.time, "monotonic", lambda: 5000.0)  # frozen clock
+    handler = _handler_with_queue(smoothing=0)
+
+    handler.data_queue.put_nowait("X=0 Y=0")
+    handler.get_raw_values()  # first poll sets _smoothing_last_update
+    handler.data_queue.put_nowait("X=1023 Y=1023")
+    pitch, roll = handler.get_raw_values()  # dt == 0 against the frozen clock
+
+    assert pitch == 1023
+    assert roll == 1023
+
+
 def test_button_event_parsing_is_case_insensitive():
     handler = _handler_with_queue("button 1 pressed", "BUTTON 15 RELEASED")
 
