@@ -3,6 +3,7 @@ import sys
 import threading
 from queue import Queue
 
+import pytest
 import serial
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -59,6 +60,51 @@ def test_get_raw_values_buffers_button_events_between_axis_samples():
     assert handler.consume_button_events() == [(13, True), (14, False)]
     assert handler.button_states == {13: True, 14: False}
     assert handler.consume_button_events() == []
+
+
+def test_smoothing_converges_independently_of_poll_rate(monkeypatch):
+    # The joystick EMA weight is now rescaled by the elapsed time since the last
+    # sample, so the converged value after a fixed wall-clock interval must not
+    # depend on how many times get_raw_values() is polled in between. Without the
+    # time scaling, polling more often would smooth faster (the original bug).
+    import pico_modules.pico_joystick2state as joymod
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(joymod.time, "monotonic", lambda: clock["t"])
+
+    def converge_over(total_s, steps):
+        handler = _handler_with_queue(smoothing=60)
+        # Warm-start the smoothing clock so every measured step is time-scaled
+        # (the very first sample with no prior timestamp uses the raw weight).
+        handler._smoothing_last_update = clock["t"]
+        dt = total_s / steps
+        for _ in range(steps):
+            clock["t"] += dt
+            handler.data_queue.put_nowait("X=1023 Y=1023")
+            handler.get_raw_values()
+        return handler.roll
+
+    coarse = converge_over(0.2, 4)
+    fine = converge_over(0.2, 40)
+
+    # Same time constant regardless of poll rate, and partially (not fully)
+    # converged from the 512 centre toward the 1023 step input.
+    assert coarse == pytest.approx(fine, rel=1e-6)
+    assert 512 < coarse < 1023
+
+
+def test_smoothing_disabled_passes_latest_sample_through(monkeypatch):
+    # smoothing=0 must remain an exact pass-through of the newest sample
+    # regardless of timing, matching the legacy behaviour relied on elsewhere.
+    import pico_modules.pico_joystick2state as joymod
+
+    monkeypatch.setattr(joymod.time, "monotonic", lambda: 1234.0)
+    handler = _handler_with_queue("X=1023 Y=1023", smoothing=0)
+
+    pitch, roll = handler.get_raw_values()
+
+    assert pitch == 1023
+    assert roll == 1023
 
 
 def test_button_event_parsing_is_case_insensitive():

@@ -626,6 +626,13 @@ const float FBW_MAX_PITCH_ANGLE_DEG = 80.0f;
 const float FBW_PID_OUTPUT_LIMIT_US = 400.0f;
 const float FBW_PID_INTEGRAL_LIMIT = 100.0f;
 const float FBW_PID_ERROR_DEADBAND_DEG = 0.5f;
+// First-order low-pass cutoff for the FBW derivative term. The EKF attitude
+// feeding the PID is differentiated at the control rate, which turns residual
+// sensor jitter/quantization into servo dither; filtering the derivative
+// removes that high-frequency content for only a few milliseconds of group
+// delay (the P path still sees the unfiltered attitude, so command latency is
+// unchanged). A non-positive value disables the filter.
+const float FBW_PID_DERIVATIVE_CUTOFF_HZ = 20.0f;
 
 // PID gains (servo microseconds per degree / degree-second) tuned for the Aeroscout airframe.
 const float FBW_ROLL_KP = 5.0f;
@@ -645,14 +652,19 @@ const float FBW_PITCH_KD = 1.1f;
 // (a double integrator on throttle), adding phase lag that invites overshoot and
 // limit-cycling around the target airspeed, so Ki is held at 0. After
 // integration the derivative term behaves like a proportional (rate-damping)
-// term on airspeed. (The PID's internal integrator/AUTO_THROTTLE_INTEGRAL_LIMIT
-// are therefore inert for throttle but stay wired for the shared controller.)
+// term on airspeed. (The PID's internal integrator is skipped entirely while
+// Ki == 0, so AUTO_THROTTLE_INTEGRAL_LIMIT is inert for throttle but stays
+// wired for the shared controller.)
 const float AUTO_THROTTLE_KP = 0.8f;
 const float AUTO_THROTTLE_KI = 0.0f;
 const float AUTO_THROTTLE_KD = 0.15f;
 const float AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S = 100.0f;
 const float AUTO_THROTTLE_INTEGRAL_LIMIT = 100.0f;
 const float AUTO_THROTTLE_ERROR_DEADBAND_MPH = 0.2f;
+// Low-pass cutoff for the airspeed-rate derivative term. Airspeed changes
+// slowly relative to the control loop, so a low cutoff rejects pitot noise
+// without meaningfully delaying the throttle response.
+const float AUTO_THROTTLE_DERIVATIVE_CUTOFF_HZ = 5.0f;
 
 struct PIDController {
   float kp;
@@ -666,19 +678,22 @@ struct PIDController {
   float integratorMin;
   float integratorMax;
   float errorDeadband;
+  float derivativeCutoffHz;
+  float derivativeState;
 
   PIDController(float p, float i, float d,
                 float outMin, float outMax,
                 float integMin, float integMax,
-                float deadband)
+                float deadband, float derivCutoffHz = 0.0f)
     : kp(p), ki(i), kd(d), integrator(0.0f), prevMeasurement(0.0f), hasPrevMeasurement(false),
       outputMin(outMin), outputMax(outMax), integratorMin(integMin), integratorMax(integMax),
-      errorDeadband(deadband) {}
+      errorDeadband(deadband), derivativeCutoffHz(derivCutoffHz), derivativeState(0.0f) {}
 
   void reset() {
     integrator = 0.0f;
     prevMeasurement = 0.0f;
     hasPrevMeasurement = false;
+    derivativeState = 0.0f;
   }
 
   float update(float target, float measurement, float dt) {
@@ -694,10 +709,30 @@ struct PIDController {
     prevMeasurement = measurement;
     hasPrevMeasurement = true;
 
-    float integratorIncrement = error * dt;
+    // Low-pass the measurement derivative so sensor jitter is not differentiated
+    // straight into the output. A non-positive cutoff (or unusable dt) passes the
+    // raw derivative through unchanged.
+    if (derivativeCutoffHz > 0.0f && dt > 0.0f) {
+      const float rc = 1.0f / (2.0f * static_cast<float>(M_PI) * derivativeCutoffHz);
+      const float alpha = dt / (rc + dt);
+      derivativeState += alpha * (dMeas - derivativeState);
+    } else {
+      derivativeState = dMeas;
+    }
+
     float pTerm = kp * error;
+    float dTerm = -kd * derivativeState;
+
+    // With Ki == 0 the integrator can never contribute to the output, so skip
+    // accumulation entirely. Otherwise the conditional-integration anti-windup
+    // below (which keys off ki * increment) would never engage and the
+    // integrator would simply wind to its clamp while iTerm stayed zero.
+    if (ki == 0.0f) {
+      return constrain(pTerm + dTerm, outputMin, outputMax);
+    }
+
+    float integratorIncrement = error * dt;
     float iTerm = ki * integrator;
-    float dTerm = -kd * dMeas;
 
     float unclampedOutput = pTerm + iTerm + dTerm;
     float clampedOutput = constrain(unclampedOutput, outputMin, outputMax);
@@ -721,19 +756,20 @@ struct PIDController {
 PIDController rollPid(FBW_ROLL_KP, FBW_ROLL_KI, FBW_ROLL_KD,
                       -FBW_PID_OUTPUT_LIMIT_US, FBW_PID_OUTPUT_LIMIT_US,
                       -FBW_PID_INTEGRAL_LIMIT, FBW_PID_INTEGRAL_LIMIT,
-                      FBW_PID_ERROR_DEADBAND_DEG);
+                      FBW_PID_ERROR_DEADBAND_DEG, FBW_PID_DERIVATIVE_CUTOFF_HZ);
 
 PIDController pitchPid(FBW_PITCH_KP, FBW_PITCH_KI, FBW_PITCH_KD,
                        -FBW_PID_OUTPUT_LIMIT_US, FBW_PID_OUTPUT_LIMIT_US,
                        -FBW_PID_INTEGRAL_LIMIT, FBW_PID_INTEGRAL_LIMIT,
-                       FBW_PID_ERROR_DEADBAND_DEG);
+                       FBW_PID_ERROR_DEADBAND_DEG, FBW_PID_DERIVATIVE_CUTOFF_HZ);
 
 PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
                           -AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
                           AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
                           -AUTO_THROTTLE_INTEGRAL_LIMIT,
                           AUTO_THROTTLE_INTEGRAL_LIMIT,
-                          AUTO_THROTTLE_ERROR_DEADBAND_MPH);
+                          AUTO_THROTTLE_ERROR_DEADBAND_MPH,
+                          AUTO_THROTTLE_DERIVATIVE_CUTOFF_HZ);
 
 float autoThrottlePercent = 0.0f;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
@@ -826,7 +862,14 @@ void initializeServoOutputs() {
 
 void haltStartupWithNeutralServos() {
   centerAllServos();
-  while (1) { ; }
+  // Spin forever holding the safe state (surfaces centered, throttle cut).
+  // Re-arm the watchdog every pass so this stays a stable fail-stop even if a
+  // caller ever reaches it after IWatchdog.begin(); otherwise an armed watchdog
+  // would reboot the board into a startup-failure loop. Reloading before the
+  // watchdog has been started is harmless.
+  while (1) {
+    IWatchdog.reload();
+  }
 }
 
 void signalCalibrationActive() {

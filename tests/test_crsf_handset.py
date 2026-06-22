@@ -268,6 +268,10 @@ def test_high_resolution_pacer_waits_until_next_deadline(monkeypatch):
     processor = type("DummyProcessor", (), {})()
     processor._tx_interval_ms = 4
     processor._tx_enabled = True
+    processor._tx_control_snapshot = lambda: (
+        processor._tx_enabled,
+        processor._tx_interval_ms,
+    )
     pacer = _HighResolutionTransmitPacer(processor)
     stop_event = StopEvent()
     reschedule_event = RescheduleEvent(stop_event)
@@ -308,6 +312,10 @@ def test_high_resolution_pacer_queues_send_at_deadline(monkeypatch):
     processor = type("DummyProcessor", (), {})()
     processor._tx_interval_ms = 4
     processor._tx_enabled = True
+    processor._tx_control_snapshot = lambda: (
+        processor._tx_enabled,
+        processor._tx_interval_ms,
+    )
     pacer = _HighResolutionTransmitPacer(processor)
     stop_event = StopEvent()
     pacer._stop_event = stop_event
@@ -370,6 +378,10 @@ def test_high_resolution_pacer_drops_ticks_while_send_in_flight(monkeypatch):
     processor = type("DummyProcessor", (), {})()
     processor._tx_interval_ms = 4
     processor._tx_enabled = True
+    processor._tx_control_snapshot = lambda: (
+        processor._tx_enabled,
+        processor._tx_interval_ms,
+    )
     pacer = _HighResolutionTransmitPacer(processor)
     pacer._stop_event = StopEvent(limit=4)
 
@@ -403,6 +415,10 @@ def test_high_resolution_pacer_can_queue_after_send_completion():
     processor = type("DummyProcessor", (), {})()
     processor._tx_interval_ms = 4
     processor._tx_enabled = True
+    processor._tx_control_snapshot = lambda: (
+        processor._tx_enabled,
+        processor._tx_interval_ms,
+    )
     pacer = _HighResolutionTransmitPacer(processor)
 
     assert pacer._claim_send_slot() is True
@@ -417,6 +433,10 @@ def test_mark_send_complete_does_not_reschedule_deadline():
     processor = type("DummyProcessor", (), {})()
     processor._tx_interval_ms = 4
     processor._tx_enabled = True
+    processor._tx_control_snapshot = lambda: (
+        processor._tx_enabled,
+        processor._tx_interval_ms,
+    )
     pacer = _HighResolutionTransmitPacer(processor)
     pacer._send_in_flight = True
 
