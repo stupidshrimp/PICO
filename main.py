@@ -4250,6 +4250,9 @@ class MainWindow(QMainWindow):
         # instead of forcing a trip back to the config page to reselect.
         self._joystick_desired_port = self.joystick_cfg.get("port", "Not connected")
         self._crsf_desired_port = self.crsf_cfg.get("port", "Not connected")
+        # Whether an unplug interrupted an active transmission session, so the
+        # automatic reconnect on re-plug can resume RC packet output.
+        self._crsf_resume_transmission = False
         self.battery_type_combo.setCurrentText(
             self.aircraft_cfg.get("battery_cells", "3s")
         )
@@ -4999,6 +5002,17 @@ class MainWindow(QMainWindow):
             self.crsf_cfg["port"] = port
             self._crsf_desired_port = port
         was_transmitting = self.transmission_active
+        if preserve_preference:
+            # Unplug-driven disconnect: remember whether transmission was active
+            # so the automatic reconnect on re-plug resumes RC packet output
+            # without the operator having to start transmission again.
+            self._crsf_resume_transmission = was_transmitting
+        else:
+            # Manual reselect or automatic reconnect: restore a transmission
+            # session that an unplug interrupted, then clear the pending flag.
+            if getattr(self, "_crsf_resume_transmission", False):
+                was_transmitting = True
+            self._crsf_resume_transmission = False
         if self.crsf_processor:
             try:
                 thread = self.crsf_processor._thread
