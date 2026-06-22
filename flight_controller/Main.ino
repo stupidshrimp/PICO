@@ -1254,13 +1254,24 @@ void updateAirspeedCache() {
 #endif
   float airspeedMph = airspeedSensor.getAirspeed();
   if (isnan(airspeedMph)) {
-    // Serial.println("Airspeed sensor error");
+    // A read can fail transiently: an I2C hiccup, or -- far more commonly -- the
+    // MS4525D0 returning a "stale data" status frame when it is polled before
+    // its next conversion has completed. Treat that as a single dropped sample,
+    // not a dead sensor: keep the last good airspeed, leave latestAirspeedValid
+    // set, and do NOT advance the freshness timestamp. Previously one bad read
+    // zeroed latestAirspeedMph and flipped latestAirspeedValid false, which made
+    // airspeedInputFresh() return false instantly; the auto-throttle loop then
+    // reset its PID and decayed the command toward idle. Intermittent dropouts
+    // therefore left the motor idling instead of holding the target airspeed.
+    // The 100 ms airspeedInputFresh() timeout (now keyed off the last *good*
+    // read) still trips the failsafe if valid airspeed genuinely stops arriving.
     ++controlDebugCounters.airspeedInvalidReads;
-    airspeedMph = 0.0f;
-    latestAirspeedValid = false;
-  } else {
-    latestAirspeedValid = true;
+#if FC_TIMING_INSTRUMENTATION
+    recordTiming(timingAirspeed, timingStartUs);
+#endif
+    return;
   }
+  latestAirspeedValid = true;
   latestAirspeedMph = airspeedMph;
   airSpeedCms = airspeedMph * 44.704f;   // mph to cm/s
   lastAirspeedUpdateUs = micros();
