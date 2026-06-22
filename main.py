@@ -5053,6 +5053,11 @@ class MainWindow(QMainWindow):
                 self.crsf_processor.link_diagnostics_update.connect(
                     self._handle_link_diagnostics_update
                 )
+                # Mirror the startup wiring so worker errors after an automatic
+                # reconnect still reach handle_worker_error; otherwise a failed
+                # open/write on the re-plugged transmitter would go unhandled and
+                # the UI could keep resuming a session against a dead processor.
+                self.crsf_processor.error.connect(self.handle_worker_error)
                 self._set_crsf_raw_serial_debug(self._debug_monitoring and self._debug_serial_all)
             except Exception as e:
                 print(f"Failed to initialize CRSF processor: {e}")
