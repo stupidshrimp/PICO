@@ -199,9 +199,17 @@ void M8N::parseRMC(char *sentence) {
         }
         speed = (parts[7][0] != '\0') ? atof(parts[7]) : 0.0;
         course = (parts[8][0] != '\0') ? atof(parts[8]) : 0.0;
+        // RMC "A" (active) plus non-zero coordinates is necessary but not
+        // sufficient: require the GGA-derived fix quality and satellite count to
+        // corroborate so a stray active RMC cannot declare a lock with zero
+        // satellites. The M8N is configured to stream GGA alongside RMC (see
+        // begin()), so this data is available, and this matches the criterion
+        // used by the RMC-void branch below and by parseGGA(). Latitude,
+        // longitude, speed, and course above still update regardless so
+        // telemetry keeps flowing; only the lock indicator is gated.
         has_valid_fix = currentCoordinatesValid &&
-                        (fix_quality > 0 || satellites_in_use == 0) &&
-                        (satellites_in_use == 0 || satellites_in_use >= MIN_SATELLITES_FOR_FIX);
+                        fix_quality > 0 &&
+                        satellites_in_use >= MIN_SATELLITES_FOR_FIX;
         if (has_valid_fix) {
             // Mark that fresh ground speed/course arrived so callers can detect a
             // silent GPS instead of trusting the sticky has_valid_fix flag.

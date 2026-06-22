@@ -81,7 +81,11 @@ class _HighResolutionTransmitPacer:
         next_deadline = time.perf_counter()
 
         while not self._stop_event.is_set():
-            interval_s = max(0.001, self._processor._tx_interval_ms / 1000.0)
+            # Read the transmit flag and cadence as one locked snapshot so a
+            # concurrent set_packet_interval()/set_transmission_enabled() on the
+            # worker thread cannot be observed half-applied.
+            tx_enabled, tx_interval_ms = self._processor._tx_control_snapshot()
+            interval_s = max(0.001, tx_interval_ms / 1000.0)
             now = time.perf_counter()
             wait_s = next_deadline - now
 
@@ -91,7 +95,7 @@ class _HighResolutionTransmitPacer:
                     next_deadline = time.perf_counter()
                 continue
 
-            if not self._processor._tx_enabled:
+            if not tx_enabled:
                 return
 
             self._processor._tx_pacer_ticks = getattr(self._processor, "_tx_pacer_ticks", 0) + 1
@@ -210,12 +214,18 @@ class CRSFPacketProcessor(QObject):
         self.serial_port = port_info.systemLocation() or port
         self.baudrate = baudrate
         self.serial = None  # QSerialPort instance
+        # ``_tx_enabled`` and ``_tx_interval_ms`` are written by this object's
+        # worker-thread slots but read by the separate pacer thread, so guard
+        # cross-thread access with a lock instead of relying on CPython's
+        # attribute-access atomicity.
+        self._tx_state_lock = threading.Lock()
         # Thread-safe (GIL-atomic) flag mirroring whether the worker thread has
         # the serial port open.  ``connect_serial`` runs asynchronously on the
         # worker thread, so the GUI cannot infer success from object existence;
         # it reads this flag instead (e.g. to decide whether an auto-reconnect
         # actually came up before clearing its retry budget).
         self._serial_connected = False
+        
         self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
         self._tx_enabled = bool(transmission_enabled)
         self._raw_serial_debug_enabled = bool(raw_serial_debug_enabled)
@@ -468,13 +478,37 @@ class CRSFPacketProcessor(QObject):
             return False
         return (time.perf_counter() - last) > timeout
 
+    def _ensure_tx_state_lock(self):
+        """Return the lock guarding the cross-thread transmit control state.
+
+        ``__init__`` creates it eagerly so production threads always share one
+        lock; this fallback only matters for tests that build the processor with
+        ``__new__`` and never run concurrently.
+        """
+        lock = getattr(self, "_tx_state_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._tx_state_lock = lock
+        return lock
+
+    def _tx_control_snapshot(self):
+        """Return a consistent ``(enabled, interval_ms)`` snapshot for the pacer.
+
+        Read under the state lock so the pacer thread never observes a transmit
+        flag and cadence that were written half-apart on the worker thread.
+        """
+        with self._ensure_tx_state_lock():
+            return self._tx_enabled, self._tx_interval_ms
+
     @Slot(int)
     def set_packet_interval(self, interval_ms):
         """Update the worker-thread transmit cadence."""
         try:
-            self._tx_interval_ms = max(1, int(interval_ms))
+            interval = max(1, int(interval_ms))
         except (TypeError, ValueError):
-            self._tx_interval_ms = 4
+            interval = 4
+        with self._ensure_tx_state_lock():
+            self._tx_interval_ms = interval
 
         if self._tx_pacer and self._tx_pacer.isActive():
             self._tx_pacer.reschedule()
@@ -483,7 +517,8 @@ class CRSFPacketProcessor(QObject):
     @Slot(bool)
     def set_transmission_enabled(self, enabled):
         """Enable or disable periodic RC frame transmission."""
-        self._tx_enabled = bool(enabled)
+        with self._ensure_tx_state_lock():
+            self._tx_enabled = bool(enabled)
         self._reset_tx_debug_window()
         if not self._tx_enabled:
             if self._tx_pacer:
@@ -512,7 +547,8 @@ class CRSFPacketProcessor(QObject):
         """Refresh channels before enabling periodic RC frame transmission."""
         try:
             self.channels = self._normalise_channels(new_channels)
-            self._tx_enabled = True
+            with self._ensure_tx_state_lock():
+                self._tx_enabled = True
             self._mark_channels_fresh()
             self._ensure_tx_timer()
             return "Good"

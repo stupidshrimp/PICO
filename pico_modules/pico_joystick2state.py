@@ -1,8 +1,11 @@
 import re
+import time
 import serial
 import threading
 from queue import Empty, Full, Queue
 from PySide6.QtCore import QObject, Signal, QThread
+
+from pico_modules.osd_smoothing import time_scaled_weight
 
 
 BUTTON_EVENT_RE = re.compile(r"Button\s+(\d+)\s+(PRESSED|RELEASED)", re.IGNORECASE)
@@ -100,6 +103,11 @@ class JoystickRawHandler(QObject):
     """
 
     error = Signal(str)
+
+    # The per-call smoothing weight was historically applied once per
+    # ~14 ms label-refresh tick (see main.py ``label_update_timer``), so this is
+    # the reference interval the ``smoothing`` percentage is calibrated against.
+    SMOOTHING_REFERENCE_S = 0.014
 
     def __init__(self, port, baudrate=9600, deadzone=0, sensitivity=100, smoothing=0):
         super().__init__()
@@ -247,7 +255,26 @@ class JoystickRawHandler(QObject):
             raw_roll, raw_pitch = latest_sample
             proc_roll = self._apply_deadzone_sensitivity(raw_roll)
             proc_pitch = self._apply_deadzone_sensitivity(raw_pitch)
-            alpha = 1.0 - (self.smoothing / 100.0)
+            # Rescale the per-call EMA weight against the time elapsed since the
+            # last sample so the smoothing time constant is fixed regardless of
+            # how often get_raw_values() is polled. At the nominal refresh
+            # cadence this is identical to the legacy fixed-weight blend.
+            weight = 1.0 - (self.smoothing / 100.0)
+            now = time.monotonic()
+            last = getattr(self, "_smoothing_last_update", None)
+            self._smoothing_last_update = now
+            if weight >= 1.0:
+                # Smoothing disabled: always pass the newest sample through.
+                # Delegating to time_scaled_weight would drop the sample when
+                # dt <= 0 (e.g. two polls under the same monotonic timestamp).
+                alpha = 1.0
+            elif last is None:
+                # First sample with no prior interval to scale against.
+                alpha = weight
+            else:
+                alpha = time_scaled_weight(
+                    weight, now - last, self.SMOOTHING_REFERENCE_S
+                )
             self.roll += alpha * (proc_roll - self.roll)
             self.pitch += alpha * (proc_pitch - self.pitch)
 
