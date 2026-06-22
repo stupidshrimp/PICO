@@ -1256,16 +1256,28 @@ void updateAirspeedCache() {
   if (isnan(airspeedMph)) {
     // A read can fail transiently: an I2C hiccup, or -- far more commonly -- the
     // MS4525D0 returning a "stale data" status frame when it is polled before
-    // its next conversion has completed. Treat that as a single dropped sample,
-    // not a dead sensor: keep the last good airspeed, leave latestAirspeedValid
-    // set, and do NOT advance the freshness timestamp. Previously one bad read
-    // zeroed latestAirspeedMph and flipped latestAirspeedValid false, which made
-    // airspeedInputFresh() return false instantly; the auto-throttle loop then
-    // reset its PID and decayed the command toward idle. Intermittent dropouts
-    // therefore left the motor idling instead of holding the target airspeed.
-    // The 100 ms airspeedInputFresh() timeout (now keyed off the last *good*
-    // read) still trips the failsafe if valid airspeed genuinely stops arriving.
+    // its next conversion has completed. Treat a short run of bad reads as
+    // dropped samples, not a dead sensor: keep the last good airspeed, leave
+    // latestAirspeedValid set, and do NOT advance the freshness timestamp.
+    // Previously one bad read zeroed latestAirspeedMph and flipped
+    // latestAirspeedValid false, which made airspeedInputFresh() return false
+    // instantly; the auto-throttle loop then reset its PID and decayed the
+    // command toward idle, so intermittent dropouts left the motor idling
+    // instead of holding the target airspeed.
     ++controlDebugCounters.airspeedInvalidReads;
+    // Once the dropout outlasts the same freshness window airspeedInputFresh()
+    // uses, the sensor is genuinely down rather than briefly hiccuping. Stop
+    // republishing the pre-failure reading: zero the cached airspeed so the GPS
+    // telemetry path (which sends airSpeedCms straight to the GCS, ungated by
+    // airspeedInputFresh()) shows a failsafe value instead of a frozen speed,
+    // and clear latestAirspeedValid. The auto-throttle loop is already disabled
+    // by the airspeedInputFresh() timeout in this state.
+    if (latestAirspeedValid && lastAirspeedUpdateUs != 0 &&
+        (uint32_t)(micros() - lastAirspeedUpdateUs) > AIRSPEED_FAILSAFE_TIMEOUT_US) {
+      latestAirspeedValid = false;
+      latestAirspeedMph = 0.0f;
+      airSpeedCms = 0.0f;
+    }
 #if FC_TIMING_INSTRUMENTATION
     recordTiming(timingAirspeed, timingStartUs);
 #endif
