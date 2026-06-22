@@ -5,6 +5,34 @@ from copy import deepcopy
 ALLOWED_ATTITUDE_PACKET_RATES_HZ = (100, 250, 500)
 DEFAULT_ATTITUDE_PACKET_RATE_HZ = 250
 
+# Sentinel shown in the port dropdowns when no serial device is selected.
+NOT_CONNECTED = "Not connected"
+
+
+def resolve_port_selection(current, desired, available_ports):
+    """Decide how a serial-port dropdown should react to the live device list.
+
+    ``current`` is the port the dropdown is presently showing, ``desired`` is
+    the port the operator last intentionally selected (remembered across an
+    unplug), and ``available_ports`` are the device names currently reported by
+    the OS.  Returns an ``(action, target)`` tuple:
+
+    * ``("keep", current)`` -- the active port is still present; leave it alone.
+    * ``("reconnect", desired)`` -- the desired port has (re)appeared, so the
+      caller should reconnect to it.  This is what lets a joystick/transmitter
+      USB re-plug restore the link automatically, without the operator having to
+      reopen the config page and reselect the port.
+    * ``("disconnect", None)`` -- the desired port is gone; the caller should
+      show "Not connected" and drop the live link while remembering ``desired``
+      for a later automatic reconnect.
+    """
+
+    if current != NOT_CONNECTED and current in available_ports:
+        return ("keep", current)
+    if desired != NOT_CONNECTED and desired in available_ports:
+        return ("reconnect", desired)
+    return ("disconnect", None)
+
 
 def packet_interval_ms_from_rate(rate_hz: int) -> int:
     """Return the CRSF RC packet interval for a supported attitude rate."""

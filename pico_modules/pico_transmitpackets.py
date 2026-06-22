@@ -210,6 +210,12 @@ class CRSFPacketProcessor(QObject):
         self.serial_port = port_info.systemLocation() or port
         self.baudrate = baudrate
         self.serial = None  # QSerialPort instance
+        # Thread-safe (GIL-atomic) flag mirroring whether the worker thread has
+        # the serial port open.  ``connect_serial`` runs asynchronously on the
+        # worker thread, so the GUI cannot infer success from object existence;
+        # it reads this flag instead (e.g. to decide whether an auto-reconnect
+        # actually came up before clearing its retry budget).
+        self._serial_connected = False
         self._tx_interval_ms = max(1, int(packet_interval_ms or 4))
         self._tx_enabled = bool(transmission_enabled)
         self._raw_serial_debug_enabled = bool(raw_serial_debug_enabled)
@@ -285,6 +291,7 @@ class CRSFPacketProcessor(QObject):
                 print(
                     f"Connected to {self.serial_port} at {self.baudrate} baud."
                 )
+                self._serial_connected = True
                 self._ensure_tx_timer()
             else:
                 logger.error(
@@ -292,10 +299,12 @@ class CRSFPacketProcessor(QObject):
                 )
                 self.error.emit(f"Failed to open serial port: {self.serial.errorString()}")
                 self.serial = None
+                self._serial_connected = False
         except Exception as e:
             logger.exception("Failed to open serial port")
             self.error.emit(f"Failed to open serial port: {e}")
             self.serial = None
+            self._serial_connected = False
 
     @Slot(QSerialPort.SerialPortError)
     def _handle_serial_error(self, err):
@@ -312,6 +321,16 @@ class CRSFPacketProcessor(QObject):
             bool: True if the serial connection is open, False otherwise.
         """
         return self.serial and self.serial.isOpen()
+
+    def has_open_serial(self) -> bool:
+        """Return whether the worker thread currently holds the port open.
+
+        Safe to call from the GUI thread: it reads the GIL-atomic
+        ``_serial_connected`` flag rather than touching the worker-owned
+        ``QSerialPort``.  Used by the auto-reconnect retry logic to confirm the
+        link actually came up before clearing its retry budget.
+        """
+        return self._serial_connected
 
     @Slot(result=bool)
     def check_usb_connection(self):
@@ -1341,4 +1360,5 @@ class CRSFPacketProcessor(QObject):
                     self.serial.close()
         finally:
             self.serial = None
+            self._serial_connected = False
 
