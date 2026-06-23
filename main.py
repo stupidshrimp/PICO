@@ -1531,7 +1531,14 @@ class MainWindow(QMainWindow):
         if label is None or dot is None:
             return
 
-        state = "active" if bool(getattr(self, "transmission_active", False)) else "inactive"
+        # Require both the transmit intent and a genuinely open CRSF link.  The
+        # processor object (and thus ``transmission_active``) can exist while the
+        # worker failed to open the port, so gating on the real link state avoids
+        # falsely confirming the TX module is transmitting.
+        transmitting = bool(getattr(self, "transmission_active", False)) and (
+            self._crsf_serial_link_up()
+        )
+        state = "active" if transmitting else "inactive"
         if state == self._last_transmission_indicator_state:
             return
 
