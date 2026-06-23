@@ -968,6 +968,14 @@ void setThrottleMode(ThrottleMode newMode) {
 void updateControlMode() {
   // Manual/Fly-By-Wire mode is carried on CH6/AUX2 so CH5/AUX1 can remain
   // dedicated to the ELRS arm state.  CRSF channel arrays are zero-indexed.
+  //
+  // latestRcChannels is only valid while RC input is fresh; once the link is
+  // stale the failsafe block elsewhere latches Manual directly, and re-deriving
+  // the mode from those stale channel values here would fight that latch.
+  if (!rcInputFresh(micros())) {
+    return;
+  }
+
   const size_t modeChannelIndex = 5;
   const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
   if (modeChannelIndex >= channelCount) {
@@ -990,6 +998,13 @@ void updateControlMode() {
 void updateThrottleMode() {
   // Auto throttle mode is carried on CH7/AUX3.  CH5/AUX1 remains the ELRS arm
   // state and CH6/AUX2 remains Manual/Fly-By-Wire mode.
+  //
+  // Same staleness guard as updateControlMode(): don't re-derive the mode
+  // from latestRcChannels once the RC link is no longer fresh.
+  if (!rcInputFresh(micros())) {
+    return;
+  }
+
   const size_t throttleModeChannelIndex = 6;
   const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
   if (throttleModeChannelIndex >= channelCount) {
