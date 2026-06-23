@@ -76,8 +76,13 @@
 /* Change this size based on the biggest matrix you will use */
 #define MATRIX_MAXIMUM_SIZE     (7)
 
-/* Define this to enable matrix bound checking */
-#define MATRIX_USE_BOUNDS_CHECKING
+/* Define this to enable matrix bound checking. Off by default for flight
+ * builds: the EKF matrices are fixed-size so this should never legitimately
+ * fire, it costs a branch on every hot-loop matrix access, and its failure
+ * path (SPEW_THE_ERROR -> while(1)) freezes the board for ~100 ms until the
+ * IWDG force-resets it. Enable locally when bench-testing matrix code; the
+ * host-side test in tests/ekf_decouple_mag_test.cpp defines it independently. */
+// #define MATRIX_USE_BOUNDS_CHECKING
 
 /* Set this define to choose math precision of the system */
 #define PRECISION_SINGLE    1
