@@ -139,6 +139,55 @@ def test_read_serial_data_caps_frames_and_resumes_backlog(monkeypatch):
     assert scheduled == ["_resume_rx_decode"]
 
 
+def test_read_serial_data_caps_resync_byte_scan(monkeypatch):
+    # A buffer full of noise (no valid sync byte) is discarded one byte at a
+    # time WITHOUT advancing the frame cap, so the resync path needs its own
+    # per-call budget; otherwise the worker would walk the whole buffer in one
+    # turn and still starve the queued RC transmit.
+    budget = CRSFPacketProcessor.RX_MAX_RESYNC_BYTES_PER_CALL
+    # 0x00 is neither CRSF_SYNC (0xC8) nor TELEMETRY_SYNC (0xEA), so every noise
+    # byte is dropped during resync.  A valid frame at the tail proves the scan
+    # eventually recovers real telemetry after draining the noise.
+    noise_len = budget + 50
+    frame = _build_handset_frame(1000, 200)
+    stream = bytes([0x00] * noise_len) + frame
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(stream)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+    processor._parameter_query_active = False
+    processor._rx_continuation_pending = False
+
+    scheduled = []
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.QMetaObject.invokeMethod",
+        lambda *args: scheduled.append(args) or True,
+    )
+
+    processor.read_serial_data()
+
+    # Only the budgeted number of noise bytes is dropped this turn (the frame is
+    # not reached yet), and a continuation is scheduled to drain the rest.
+    assert processor._diag_rx_dropped_bytes == budget
+    assert processor.telemetry_ready.emitted == []
+    assert scheduled and scheduled[0][1] == "_resume_rx_decode"
+    assert processor._rx_continuation_pending is True
+
+    # The continuation clears the remaining noise, recovers the valid frame, and
+    # does not reschedule again.
+    processor._resume_rx_decode()
+
+    assert processor._diag_rx_dropped_bytes == noise_len
+    assert len(processor._rx_buffer) == 0
+    assert len(processor.telemetry_ready.emitted) == 1
+    assert processor.telemetry_ready.emitted[0][0] == "handset_timing"
+    assert len(scheduled) == 1
+
+
 def test_read_serial_data_within_cap_schedules_no_continuation(monkeypatch):
     # Steady-state telemetry (a few frames per readyRead) stays well under the
     # cap and must never pay the cost of a queued continuation.

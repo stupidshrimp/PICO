@@ -143,6 +143,15 @@ class CRSFPacketProcessor(QObject):
     # per readyRead, so this cap is reached only when the worker is catching up.
     RX_MAX_FRAMES_PER_CALL = 16
 
+    # Companion budget for the resync path.  Garbage, invalid-length, and
+    # CRC-failed bytes are discarded one at a time WITHOUT advancing the frame
+    # cap above, so a noisy or post-stall stream could otherwise let the worker
+    # walk the entire buffer (up to the 8 KB cap) in a single turn and still
+    # delay the queued RC transmit.  Counting dropped bytes against their own
+    # per-call budget bounds that resync scan and yields to the event loop the
+    # same way the frame cap does.
+    RX_MAX_RESYNC_BYTES_PER_CALL = 256
+
     CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA
     CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE
     CRSF_ADDRESS_ELRS_LUA = 0xEF
@@ -830,13 +839,18 @@ class CRSFPacketProcessor(QObject):
                 self._diag_rx_max_buffer = max(self._diag_rx_max_buffer, len(self._rx_buffer))
 
             # Process packets while a complete frame is present in the buffer.
-            # Bound the frames decoded per call so a burst cannot starve the
-            # queued RC transmit on this shared worker thread; any remainder is
-            # resumed on a queued continuation that yields to the event loop.
+            # Bound the work done per call -- decoded frames AND resync byte
+            # drops -- so a burst (valid or noisy) cannot starve the queued RC
+            # transmit on this shared worker thread; any remainder is resumed on
+            # a queued continuation that yields to the event loop.
             frames_decoded = 0
+            resync_bytes = 0
             backlog_remaining = False
             while True:
-                if frames_decoded >= self.RX_MAX_FRAMES_PER_CALL:
+                if (
+                    frames_decoded >= self.RX_MAX_FRAMES_PER_CALL
+                    or resync_bytes >= self.RX_MAX_RESYNC_BYTES_PER_CALL
+                ):
                     backlog_remaining = len(self._rx_buffer) >= 3
                     break
                 # Need at least sync, length and type
@@ -849,6 +863,7 @@ class CRSFPacketProcessor(QObject):
                 # source.
                 if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
                     self._diag_rx_dropped_bytes += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
@@ -858,6 +873,7 @@ class CRSFPacketProcessor(QObject):
                 # and cap the maximum size to 64 bytes.
                 if length < 2 or length > 64:
                     self._diag_rx_invalid_lengths += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
@@ -877,6 +893,7 @@ class CRSFPacketProcessor(QObject):
                 ):
                     # CRC mismatch means the packet is corrupt and cannot be parsed
                     self._diag_rx_crc_errors += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
