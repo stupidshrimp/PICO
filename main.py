@@ -1272,6 +1272,34 @@ class MainWindow(QMainWindow):
         if show_autopilot_section:
             column_layout.addWidget(autopilot_container)
 
+    def _apply_status_pill(
+        self, label, dot, text, accent, background, border, dot_shadow
+    ) -> None:
+        """Apply the shared command-sidebar status-pill styling to a label/dot pair.
+
+        Centralises the pill/dot stylesheet shared by every command-page status
+        indicator so the look stays consistent and the colour choice is the only
+        thing each indicator has to vary.  The tighter letter-spacing/padding
+        keeps three pills per row legible in the condensed 2x3 grid.
+        """
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 1px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 10px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+
     def _setup_airborne_indicator(self) -> None:
         """Initialise the command-page grounded/airborne indicator."""
 
@@ -1303,21 +1331,8 @@ class MainWindow(QMainWindow):
             border = "rgba(154, 164, 178, 105)"
             dot_shadow = "rgba(154, 164, 178, 70)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_airborne_indicator_state = state
 
@@ -1352,21 +1367,8 @@ class MainWindow(QMainWindow):
             border = "rgba(255, 82, 82, 135)"
             dot_shadow = "rgba(255, 82, 82, 75)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_gps_fix_indicator_state = state
 
@@ -1401,21 +1403,8 @@ class MainWindow(QMainWindow):
             border = "rgba(154, 164, 178, 105)"
             dot_shadow = "rgba(154, 164, 178, 70)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_blackbox_indicator_state = state
 
@@ -1450,21 +1439,8 @@ class MainWindow(QMainWindow):
             border = "rgba(255, 82, 82, 135)"
             dot_shadow = "rgba(255, 82, 82, 75)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_telemetry_indicator_state = state
 
@@ -1499,21 +1475,8 @@ class MainWindow(QMainWindow):
             border = "rgba(255, 82, 82, 135)"
             dot_shadow = "rgba(255, 82, 82, 75)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_flight_controls_indicator_state = state
 
@@ -1555,21 +1518,8 @@ class MainWindow(QMainWindow):
             border = "rgba(255, 82, 82, 135)"
             dot_shadow = "rgba(255, 82, 82, 75)"
 
-        label.setText(text)
-        label.setStyleSheet(
-            "font-size: 13px;"
-            "font-weight: 700;"
-            "letter-spacing: 2px;"
-            f"color: {accent};"
-            f"background-color: {background};"
-            f"border: 1px solid {border};"
-            "border-radius: 14px;"
-            "padding: 5px 12px;"
-        )
-        dot.setStyleSheet(
-            f"background-color: {accent};"
-            f"border: 3px solid {dot_shadow};"
-            "border-radius: 7px;"
+        self._apply_status_pill(
+            label, dot, text, accent, background, border, dot_shadow
         )
         self._last_transmission_indicator_state = state
 
