@@ -92,6 +92,82 @@ def test_raw_serial_data_not_emitted_when_debug_disabled():
     assert processor.telemetry_ready.emitted, "Telemetry should still decode with raw debug disabled"
 
 
+def test_read_serial_data_caps_frames_and_resumes_backlog(monkeypatch):
+    # A telemetry burst larger than the per-call cap must not be decoded in a
+    # single worker turn -- that would delay the queued RC transmit on the same
+    # thread.  Only the cap is decoded per call and the remainder is resumed on
+    # a queued continuation that yields to the event loop in between.
+    frame = _build_handset_frame(1000, 200)
+    cap = CRSFPacketProcessor.RX_MAX_FRAMES_PER_CALL
+    total = cap + 5
+    burst = frame * total
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(burst)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+    processor._parameter_query_active = False
+    processor._rx_continuation_pending = False
+
+    scheduled = []
+
+    def fake_invoke(obj, name, *args):
+        scheduled.append(name)
+        return True
+
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.QMetaObject.invokeMethod",
+        fake_invoke,
+    )
+
+    processor.read_serial_data()
+
+    # First turn: only the cap is decoded, and exactly one continuation is queued.
+    assert len(processor.telemetry_ready.emitted) == cap
+    assert scheduled == ["_resume_rx_decode"]
+    assert processor._rx_continuation_pending is True
+
+    # Draining the backlog decodes the remaining frames from the buffer (the
+    # serial port is already empty) and stops scheduling once caught up.
+    processor._resume_rx_decode()
+
+    assert len(processor.telemetry_ready.emitted) == total
+    assert processor._rx_continuation_pending is False
+    assert scheduled == ["_resume_rx_decode"]
+
+
+def test_read_serial_data_within_cap_schedules_no_continuation(monkeypatch):
+    # Steady-state telemetry (a few frames per readyRead) stays well under the
+    # cap and must never pay the cost of a queued continuation.
+    frame = _build_handset_frame(2000, 50)
+    burst = frame * 3
+
+    processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
+    processor.serial = DummySerial(burst)
+    processor.serial_data = DummySignal()
+    processor.telemetry_ready = DummySignal()
+    processor.error = DummySignal()
+    processor._rx_buffer = bytearray()
+    processor._raw_serial_debug_enabled = False
+    processor._parameter_query_active = False
+    processor._rx_continuation_pending = False
+
+    scheduled = []
+    monkeypatch.setattr(
+        "pico_modules.pico_transmitpackets.QMetaObject.invokeMethod",
+        lambda *args: scheduled.append(args) or True,
+    )
+
+    processor.read_serial_data()
+
+    assert len(processor.telemetry_ready.emitted) == 3
+    assert scheduled == []
+    assert processor._rx_continuation_pending is False
+
+
 def test_raw_serial_debug_flag_can_be_toggled():
     processor = CRSFPacketProcessor.__new__(CRSFPacketProcessor)
 
