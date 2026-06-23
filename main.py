@@ -324,6 +324,8 @@ class MainWindow(QMainWindow):
         self._setup_gps_fix_indicator()
         self._setup_blackbox_indicator()
         self._setup_telemetry_status_indicator()
+        self._setup_flight_controls_indicator()
+        self._setup_transmission_indicator()
         self._setup_sortie_section()
         self.sortie_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         self.sortie_shortcut.activated.connect(self.toggle_sortie_recording)
@@ -1005,15 +1007,18 @@ class MainWindow(QMainWindow):
         flight_status_layout.setContentsMargins(12, 12, 12, 12)
         flight_status_layout.setSpacing(10)
 
-        # Arrange the four status indicators in a compact 2x2 grid rather than a
-        # 4x1 stack so the panel takes roughly half the height, leaving room for
-        # the attitude model below without scrolling the fixed-height sidebar.
+        # Arrange the six status indicators in a compact 2-row x 3-column grid
+        # rather than a 4x1 stack so the panel keeps the same footprint while
+        # leaving room for the attitude model below without scrolling the
+        # fixed-height sidebar.  Three columns condenses each indicator's width
+        # so the extra two fit inside the same dark-outlined panel.
         status_inner_grid = QGridLayout()
         status_inner_grid.setContentsMargins(0, 0, 0, 0)
-        status_inner_grid.setHorizontalSpacing(18)
+        status_inner_grid.setHorizontalSpacing(10)
         status_inner_grid.setVerticalSpacing(8)
         status_inner_grid.setColumnStretch(0, 1)
         status_inner_grid.setColumnStretch(1, 1)
+        status_inner_grid.setColumnStretch(2, 1)
         flight_status_layout.addLayout(status_inner_grid)
 
         flight_status_row = QHBoxLayout()
@@ -1104,7 +1109,7 @@ class MainWindow(QMainWindow):
         blackbox_row.addWidget(
             self.blackbox_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        status_inner_grid.addLayout(blackbox_row, 1, 0)
+        status_inner_grid.addLayout(blackbox_row, 0, 2)
 
         telemetry_status_row = QHBoxLayout()
         telemetry_status_row.setContentsMargins(0, 0, 0, 0)
@@ -1134,7 +1139,73 @@ class MainWindow(QMainWindow):
         telemetry_status_row.addWidget(
             self.telemetry_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
         )
-        status_inner_grid.addLayout(telemetry_status_row, 1, 1)
+        status_inner_grid.addLayout(telemetry_status_row, 1, 0)
+
+        # Flight Controls indicator: reflects whether the joystick is connected.
+        flight_controls_row = QHBoxLayout()
+        flight_controls_row.setContentsMargins(0, 0, 0, 0)
+        flight_controls_row.setSpacing(12)
+
+        flight_controls_text_layout = QVBoxLayout()
+        flight_controls_text_layout.setContentsMargins(0, 0, 0, 0)
+        flight_controls_text_layout.setSpacing(2)
+
+        flight_controls_title = QLabel("Flight Controls", flight_status_container)
+        flight_controls_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        flight_controls_title.setFont(signal_title.font())
+        style_section_header(flight_controls_title)
+        flight_controls_text_layout.addWidget(flight_controls_title)
+
+        self.flight_controls_status_label = QLabel(
+            "INACTIVE", flight_status_container
+        )
+        self.flight_controls_status_label.setObjectName("flightControlsStatusLabel")
+        self.flight_controls_status_label.setAlignment(
+            Qt.AlignLeft | Qt.AlignVCenter
+        )
+        self.flight_controls_status_label.setMinimumHeight(28)
+        flight_controls_text_layout.addWidget(self.flight_controls_status_label)
+
+        flight_controls_row.addLayout(flight_controls_text_layout, 1)
+
+        self.flight_controls_status_dot = QLabel(flight_status_container)
+        self.flight_controls_status_dot.setObjectName("flightControlsStatusDot")
+        self.flight_controls_status_dot.setFixedSize(14, 14)
+        flight_controls_row.addWidget(
+            self.flight_controls_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+        status_inner_grid.addLayout(flight_controls_row, 1, 1)
+
+        # Transmission indicator: reflects whether the TX module is transmitting.
+        transmission_row = QHBoxLayout()
+        transmission_row.setContentsMargins(0, 0, 0, 0)
+        transmission_row.setSpacing(12)
+
+        transmission_text_layout = QVBoxLayout()
+        transmission_text_layout.setContentsMargins(0, 0, 0, 0)
+        transmission_text_layout.setSpacing(2)
+
+        transmission_title = QLabel("Transmission", flight_status_container)
+        transmission_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        transmission_title.setFont(signal_title.font())
+        style_section_header(transmission_title)
+        transmission_text_layout.addWidget(transmission_title)
+
+        self.transmission_status_label = QLabel("INACTIVE", flight_status_container)
+        self.transmission_status_label.setObjectName("transmissionStatusLabel")
+        self.transmission_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.transmission_status_label.setMinimumHeight(28)
+        transmission_text_layout.addWidget(self.transmission_status_label)
+
+        transmission_row.addLayout(transmission_text_layout, 1)
+
+        self.transmission_status_dot = QLabel(flight_status_container)
+        self.transmission_status_dot.setObjectName("transmissionStatusDot")
+        self.transmission_status_dot.setFixedSize(14, 14)
+        transmission_row.addWidget(
+            self.transmission_status_dot, 0, Qt.AlignRight | Qt.AlignVCenter
+        )
+        status_inner_grid.addLayout(transmission_row, 1, 2)
 
         column_layout.addWidget(flight_status_container)
 
@@ -1396,6 +1467,104 @@ class MainWindow(QMainWindow):
             "border-radius: 7px;"
         )
         self._last_telemetry_indicator_state = state
+
+    def _setup_flight_controls_indicator(self) -> None:
+        """Initialise the command-page joystick (flight controls) indicator."""
+
+        self._last_flight_controls_indicator_state = None
+        self._update_flight_controls_indicator()
+
+    def _update_flight_controls_indicator(self) -> None:
+        """Render whether the joystick (flight controls) is connected."""
+
+        label = getattr(self, "flight_controls_status_label", None)
+        dot = getattr(self, "flight_controls_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "active" if getattr(self, "joystick", None) is not None else "inactive"
+        if state == self._last_flight_controls_indicator_state:
+            return
+
+        if state == "active":
+            text = "ACTIVE"
+            accent = "#21d07a"
+            background = "rgba(33, 208, 122, 32)"
+            border = "rgba(33, 208, 122, 155)"
+            dot_shadow = "rgba(33, 208, 122, 95)"
+        else:
+            text = "INACTIVE"
+            accent = "#ff5252"
+            background = "rgba(255, 82, 82, 28)"
+            border = "rgba(255, 82, 82, 135)"
+            dot_shadow = "rgba(255, 82, 82, 75)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_flight_controls_indicator_state = state
+
+    def _setup_transmission_indicator(self) -> None:
+        """Initialise the command-page TX transmission indicator."""
+
+        self._last_transmission_indicator_state = None
+        self._update_transmission_indicator()
+
+    def _update_transmission_indicator(self) -> None:
+        """Render whether the TX module is actively transmitting packets."""
+
+        label = getattr(self, "transmission_status_label", None)
+        dot = getattr(self, "transmission_status_dot", None)
+        if label is None or dot is None:
+            return
+
+        state = "active" if bool(getattr(self, "transmission_active", False)) else "inactive"
+        if state == self._last_transmission_indicator_state:
+            return
+
+        if state == "active":
+            text = "ACTIVE"
+            accent = "#21d07a"
+            background = "rgba(33, 208, 122, 32)"
+            border = "rgba(33, 208, 122, 155)"
+            dot_shadow = "rgba(33, 208, 122, 95)"
+        else:
+            text = "INACTIVE"
+            accent = "#ff5252"
+            background = "rgba(255, 82, 82, 28)"
+            border = "rgba(255, 82, 82, 135)"
+            dot_shadow = "rgba(255, 82, 82, 75)"
+
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 13px;"
+            "font-weight: 700;"
+            "letter-spacing: 2px;"
+            f"color: {accent};"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 14px;"
+            "padding: 5px 12px;"
+        )
+        dot.setStyleSheet(
+            f"background-color: {accent};"
+            f"border: 3px solid {dot_shadow};"
+            "border-radius: 7px;"
+        )
+        self._last_transmission_indicator_state = state
 
     def _setup_sortie_section(self) -> None:
         """Create the Sortie controls within the settings sidebar."""
@@ -1694,6 +1863,7 @@ class MainWindow(QMainWindow):
                 )
             self.joystick = None
             self.update_connection_status(self.control_status, False)
+            self._update_flight_controls_indicator()
             # Losing the joystick removes roll/pitch authority (those channels
             # fall back to centre in ``_build_control_channels``), but throttle
             # would otherwise persist at its last commanded value and fly the
@@ -2699,6 +2869,8 @@ class MainWindow(QMainWindow):
                 self.attitude_first_received_time = None
 
         self._update_telemetry_status_indicator()
+        self._update_flight_controls_indicator()
+        self._update_transmission_indicator()
 
         if self.link_stats_connected:
             if (
@@ -4819,6 +4991,7 @@ class MainWindow(QMainWindow):
         self._apply_transmission_button_style("inactive")
         self.transmission_control_button.setText("Start transmitting packets")
         self._update_parameter_query_button_state()
+        self._update_transmission_indicator()
         self._mute_sounds(["telemetryoffline", "disconnectedalarm", "disconnectalarm"], 2.0)
         self.play_sound("elrsterminated.mp3")
 
@@ -4858,6 +5031,7 @@ class MainWindow(QMainWindow):
         self._apply_transmission_button_style("active")
         self.transmission_control_button.setText("Terminate transmission")
         self._update_parameter_query_button_state()
+        self._update_transmission_indicator()
         self.play_sound("elrsinitiated.mp3")
 
     @staticmethod
@@ -5068,6 +5242,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Failed to initialize joystick: {e}")
         self.update_connection_status(self.control_status, self.joystick is not None)
+        self._update_flight_controls_indicator()
         if not preserve_preference:
             save_config(self.config)
 
