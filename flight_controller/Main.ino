@@ -16,11 +16,12 @@
 #include <IWatchdog.h>
 
 // Arduino IDE sketch-local debug toggles must be defined before including
-// konfig.h because konfig.h supplies guarded defaults. Keep this bench-build
-// value enabled so FCDBG lines are emitted to the USB Serial Monitor. Set this
-// to 0 before flight if the extra serial formatting jitter is not acceptable.
+// konfig.h because konfig.h supplies guarded defaults. Defaults to off so a
+// default build does not pay the FCDBG serial formatting jitter cost inside
+// the 125 Hz control loop; define this to 1 (e.g. via build flag) for bench
+// debugging.
 #ifndef FC_CONTROL_DEBUG_SERIAL_OUTPUT
-#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 1
+#define FC_CONTROL_DEBUG_SERIAL_OUTPUT 0
 #endif
 
 #include "konfig.h"
