@@ -3004,7 +3004,7 @@ background-repeat: no-repeat;</string>
                                <number>0</number>
                               </property>
                               <property name="topMargin">
-                               <number>8</number>
+                               <number>0</number>
                               </property>
                               <property name="rightMargin">
                                <number>0</number>
@@ -3049,7 +3049,7 @@ background-repeat: no-repeat;</string>
                                <number>0</number>
                               </property>
                               <property name="topMargin">
-                               <number>8</number>
+                               <number>0</number>
                               </property>
                               <property name="rightMargin">
                                <number>0</number>
