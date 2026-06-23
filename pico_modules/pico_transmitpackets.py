@@ -133,6 +133,25 @@ class CRSFPacketProcessor(QObject):
     # scheduling hiccups so an idle but healthy connection cannot false-trip.
     RC_CHANNEL_STALE_TIMEOUT_S = 2.0
 
+    # Maximum telemetry frames decoded per ``read_serial_data`` invocation.
+    # RX decode and the periodic RC transmit (``send_current_packet``) both run
+    # on this object's single Qt worker thread, so a heavy telemetry burst that
+    # decoded the entire buffer in one turn would delay the queued RC write and
+    # add jitter to the uplink cadence.  Capping the work per turn and resuming
+    # any backlog on a queued continuation lets the event loop service a pending
+    # transmit in between.  Steady-state telemetry delivers only a few frames
+    # per readyRead, so this cap is reached only when the worker is catching up.
+    RX_MAX_FRAMES_PER_CALL = 16
+
+    # Companion budget for the resync path.  Garbage, invalid-length, and
+    # CRC-failed bytes are discarded one at a time WITHOUT advancing the frame
+    # cap above, so a noisy or post-stall stream could otherwise let the worker
+    # walk the entire buffer (up to the 8 KB cap) in a single turn and still
+    # delay the queued RC transmit.  Counting dropped bytes against their own
+    # per-call budget bounds that resync scan and yields to the event loop the
+    # same way the frame cap does.
+    RX_MAX_RESYNC_BYTES_PER_CALL = 256
+
     CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA
     CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE
     CRSF_ADDRESS_ELRS_LUA = 0xEF
@@ -240,6 +259,10 @@ class CRSFPacketProcessor(QObject):
         # fragmented or arrive in bursts.  A persistent buffer lets us decode
         # every packet instead of only the first one in each serial read.
         self._rx_buffer = bytearray()
+        # True while a bounded-work RX decode continuation is already queued, so
+        # a sustained telemetry backlog cannot post a storm of duplicate decode
+        # events onto the worker thread (see RX_MAX_FRAMES_PER_CALL).
+        self._rx_continuation_pending = False
 
         # The transmit pacer can queue the first send immediately after the
         # worker thread opens the serial port, so every field used by
@@ -781,7 +804,13 @@ class CRSFPacketProcessor(QObject):
         """Read available telemetry data and decode all received packets."""
         if getattr(self, "_parameter_query_active", False):
             return
-        if not self.serial or self.serial.bytesAvailable() <= 0:
+        if not self.serial:
+            return
+        # Proceed when fresh serial bytes are waiting OR a previous (bounded)
+        # call left a partially decoded backlog in the RX buffer.  A queued
+        # continuation re-enters here with no new bytes available, so it must
+        # still drain the buffer rather than early-returning.
+        if self.serial.bytesAvailable() <= 0 and len(self._rx_buffer) < 3:
             return
 
         try:
@@ -809,8 +838,21 @@ class CRSFPacketProcessor(QObject):
                     self._rx_buffer = self._rx_buffer[-512:]
                 self._diag_rx_max_buffer = max(self._diag_rx_max_buffer, len(self._rx_buffer))
 
-            # Process packets while a complete frame is present in the buffer
+            # Process packets while a complete frame is present in the buffer.
+            # Bound the work done per call -- decoded frames AND resync byte
+            # drops -- so a burst (valid or noisy) cannot starve the queued RC
+            # transmit on this shared worker thread; any remainder is resumed on
+            # a queued continuation that yields to the event loop.
+            frames_decoded = 0
+            resync_bytes = 0
+            backlog_remaining = False
             while True:
+                if (
+                    frames_decoded >= self.RX_MAX_FRAMES_PER_CALL
+                    or resync_bytes >= self.RX_MAX_RESYNC_BYTES_PER_CALL
+                ):
+                    backlog_remaining = len(self._rx_buffer) >= 3
+                    break
                 # Need at least sync, length and type
                 if len(self._rx_buffer) < 3:
                     break
@@ -821,6 +863,7 @@ class CRSFPacketProcessor(QObject):
                 # source.
                 if self._rx_buffer[0] not in (self.CRSF_SYNC, self.TELEMETRY_SYNC):
                     self._diag_rx_dropped_bytes += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
@@ -830,6 +873,7 @@ class CRSFPacketProcessor(QObject):
                 # and cap the maximum size to 64 bytes.
                 if length < 2 or length > 64:
                     self._diag_rx_invalid_lengths += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
@@ -849,6 +893,7 @@ class CRSFPacketProcessor(QObject):
                 ):
                     # CRC mismatch means the packet is corrupt and cannot be parsed
                     self._diag_rx_crc_errors += 1
+                    resync_bytes += 1
                     del self._rx_buffer[0]
                     continue
 
@@ -856,6 +901,7 @@ class CRSFPacketProcessor(QObject):
                 # Extract complete packet and remove from buffer
                 packet = bytes(self._rx_buffer[:frame_end])
                 del self._rx_buffer[:frame_end]
+                frames_decoded += 1
 
                 packet_type = packet[2]
                 self._diag_rx_frames += 1
@@ -878,11 +924,35 @@ class CRSFPacketProcessor(QObject):
                     # Unknown packet type encountered
                     self._diag_rx_unknown_payloads += 1
 
+            if backlog_remaining:
+                self._schedule_rx_continuation()
+
             self._maybe_emit_link_diagnostics()
 
         except Exception as e:
             logger.exception("Error reading serial data")
             self.error.emit(f"Error reading serial data: {e}")
+
+    def _schedule_rx_continuation(self) -> None:
+        """Re-post the RX decode so a pending TX runs between burst chunks.
+
+        Capping frames per ``read_serial_data`` call only reduces uplink jitter
+        if the worker event loop gets a turn to service the queued
+        ``send_current_packet`` before decoding resumes.  Hand control back via a
+        queued invocation rather than looping inline, and track a single
+        in-flight continuation so a sustained backlog cannot post a storm of
+        duplicate decode events.
+        """
+        if getattr(self, "_rx_continuation_pending", False):
+            return
+        self._rx_continuation_pending = True
+        QMetaObject.invokeMethod(self, "_resume_rx_decode", Qt.QueuedConnection)
+
+    @Slot()
+    def _resume_rx_decode(self) -> None:
+        """Resume decoding the RX backlog after yielding to the event loop."""
+        self._rx_continuation_pending = False
+        self.read_serial_data()
 
 
     def _decode_link_statistics_payload(self, payload: bytes | memoryview) -> None:
