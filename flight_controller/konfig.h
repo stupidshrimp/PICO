@@ -64,10 +64,9 @@
  * Default ON. Set to 0 for a one-line rollback to the proven single-rate filter;
  * that path is bit-for-bit identical to the previous behavior.
  *
- * NOT YET BENCH-VERIFIED: this has not been compiled with the Arduino toolchain
- * or flight-tested. Before flying, confirm CPU/I2C headroom at the prediction
- * rate (~2x the IMU reads/predicts), that the IWDG watchdog stays happy, and
- * that attitude tracks correctly (no lag, no periodic snap) while rotating. */
+ * Before flying, confirm CPU/I2C headroom at the prediction rate (~2x the IMU
+ * reads/predicts), that the IWDG watchdog stays happy, and that attitude
+ * tracks correctly (no lag, no periodic snap) while rotating. */
 #ifndef FC_EKF_FAST_PREDICT
 #define FC_EKF_FAST_PREDICT 1
 #endif
