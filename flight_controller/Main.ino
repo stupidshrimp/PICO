@@ -121,6 +121,29 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #define FC_GPS_DIAGNOSTIC_NO_DATA_WARNING_MS 3000UL
 #endif
 
+// Set to 1 for a bench-only test of the u-blox M8N's bundled I2C compass
+// (magnetometer). This helper blocks normal flight startup, scans BOTH I2C
+// buses for devices, identifies the magnetometer (QMC5883L / HMC5883L /
+// IST8310 -- the three chips commonly fitted to M8N breakouts), and then
+// streams its raw X/Y/Z field plus an uncalibrated heading to the USB serial
+// monitor. Use it to confirm which bus/address the compass lives on and that
+// it returns sane, rotation-tracking data BEFORE the magnetometer is wired
+// into the flight code. It never returns (loops forever, same fail-stop
+// pattern as GPSDIAG/MAGCAL/VIBE) so it can never be active in flight.
+// Default OFF; flight builds are bit-for-bit unchanged. Set to 1 only on the
+// bench, then reflash/reset with 0 to fly.
+#ifndef FC_COMPASS_I2C_TEST_MODE
+#define FC_COMPASS_I2C_TEST_MODE 0
+#endif
+// Period between streamed magnetometer samples once a compass is found.
+#ifndef FC_COMPASS_I2C_TEST_SAMPLE_PERIOD_MS
+#define FC_COMPASS_I2C_TEST_SAMPLE_PERIOD_MS 200UL
+#endif
+// How often to re-scan both buses while no compass has been detected yet.
+#ifndef FC_COMPASS_I2C_TEST_RESCAN_PERIOD_MS
+#define FC_COMPASS_I2C_TEST_RESCAN_PERIOD_MS 5000UL
+#endif
+
 // Set to 1 for a bench-only motor-vibration frequency survey. This helper blocks
 // normal flight startup after the IMU and CRSF link are up. With the PROPELLER
 // ON and the aircraft firmly restrained, it walks the operator through a 0%
@@ -2690,6 +2713,347 @@ void runVibrationSurveyDebug() {
 #endif  // FC_VIBE_SURVEY_MODE
 
 
+#if FC_COMPASS_I2C_TEST_MODE
+// ===========================================================================
+//  M8N external-compass I2C bench test (bench-only; FC_COMPASS_I2C_TEST_MODE==1)
+//
+//  The u-blox M8N breakout ships with a separate magnetometer on its own I2C
+//  pins. This helper scans both of the board's I2C buses, figures out which
+//  bus/address the compass is on, identifies the chip, and then streams its raw
+//  X/Y/Z field and an uncalibrated heading to the USB serial monitor. It is a
+//  self-contained diagnostic: it does NOT touch the flight magnetometer path,
+//  and the whole block compiles out when FC_COMPASS_I2C_TEST_MODE == 0.
+// ===========================================================================
+
+// Common magnetometer 7-bit I2C addresses found on u-blox M8N breakouts.
+static constexpr uint8_t COMPASS_ADDR_QMC5883L = 0x0D;  // cheap M8N clones
+static constexpr uint8_t COMPASS_ADDR_IST8310  = 0x0E;  // some newer M8N units
+static constexpr uint8_t COMPASS_ADDR_LIS3MDL  = 0x1C;  // occasional alternative
+static constexpr uint8_t COMPASS_ADDR_HMC5883L = 0x1E;  // genuine Honeywell
+
+enum class CompassTestType : uint8_t {
+  None,
+  QMC5883L,
+  HMC5883L,
+  IST8310,
+  Unknown  // device present at a known compass address but ID did not match
+};
+
+static const char *compassTestTypeName(CompassTestType type) {
+  switch (type) {
+    case CompassTestType::QMC5883L: return "QMC5883L";
+    case CompassTestType::HMC5883L: return "HMC5883L";
+    case CompassTestType::IST8310:  return "IST8310";
+    case CompassTestType::Unknown:  return "unidentified device at a known compass address";
+    default:                        return "none";
+  }
+}
+
+// Best-effort label for an address seen during the bus scan.
+static const char *compassTestDescribeAddress(uint8_t address) {
+  switch (address) {
+    case 0x0C:                  return "AK8963 (MPU9250 internal mag, if I2C bypass enabled)";
+    case COMPASS_ADDR_QMC5883L: return "QMC5883L magnetometer (common cheap M8N compass)";
+    case COMPASS_ADDR_IST8310:  return "IST8310 magnetometer (some M8N compasses)";
+    case COMPASS_ADDR_LIS3MDL:  return "LIS3MDL magnetometer";
+    case COMPASS_ADDR_HMC5883L: return "HMC5883L magnetometer (genuine M8N compass) or LIS3MDL";
+    case 0x28:                  return "MS4525DO airspeed sensor (onboard)";
+    case 0x68:                  return "MPU9250 IMU (onboard)";
+    case 0x77:                  return "MS5611 barometer (onboard)";
+    default:                    return "unknown device";
+  }
+}
+
+// Scan one bus and print every responding address. Returns the device count.
+static uint8_t compassTestScanBus(TwoWire &bus, const char *busName) {
+  Serial.print("CMPTEST scanning ");
+  Serial.print(busName);
+  Serial.println(" ...");
+  uint8_t found = 0;
+  for (uint8_t address = 0x01; address <= 0x7F; ++address) {
+    bus.beginTransmission(address);
+    if (bus.endTransmission() == 0) {
+      ++found;
+      Serial.print("CMPTEST   found 0x");
+      if (address < 0x10) Serial.print('0');
+      Serial.print(address, HEX);
+      Serial.print(" -> ");
+      Serial.println(compassTestDescribeAddress(address));
+    }
+  }
+  if (found == 0) {
+    Serial.print("CMPTEST   no I2C devices responded on ");
+    Serial.println(busName);
+  }
+  return found;
+}
+
+static bool compassTestWriteReg(TwoWire &bus, uint8_t address, uint8_t reg, uint8_t value) {
+  bus.beginTransmission(address);
+  bus.write(reg);
+  bus.write(value);
+  return bus.endTransmission() == 0;
+}
+
+// Set the register pointer (with a STOP) then read `length` bytes. Using a STOP
+// between the write and read is the most universally compatible pattern across
+// these magnetometer chips; their data registers auto-increment.
+static bool compassTestReadRegs(TwoWire &bus, uint8_t address, uint8_t reg,
+                                uint8_t *buffer, uint8_t length) {
+  bus.beginTransmission(address);
+  bus.write(reg);
+  if (bus.endTransmission() != 0) {
+    return false;
+  }
+  if (bus.requestFrom(address, length) != length) {
+    return false;
+  }
+  for (uint8_t i = 0; i < length; ++i) {
+    buffer[i] = static_cast<uint8_t>(bus.read());
+  }
+  return true;
+}
+
+// Confirm the chip behind a known compass address via its identity register(s).
+static CompassTestType compassTestIdentify(TwoWire &bus, uint8_t address) {
+  uint8_t id[3] = {0};
+  if (address == COMPASS_ADDR_HMC5883L) {
+    // HMC5883L identification registers A/B/C (0x0A..0x0C) read "H43".
+    if (compassTestReadRegs(bus, address, 0x0A, id, 3) &&
+        id[0] == 'H' && id[1] == '4' && id[2] == '3') {
+      return CompassTestType::HMC5883L;
+    }
+  } else if (address == COMPASS_ADDR_QMC5883L) {
+    // QMC5883L chip-ID register 0x0D reads 0xFF.
+    if (compassTestReadRegs(bus, address, 0x0D, id, 1) && id[0] == 0xFF) {
+      return CompassTestType::QMC5883L;
+    }
+  } else if (address == COMPASS_ADDR_IST8310) {
+    // IST8310 "Who-Am-I" register 0x00 reads 0x10.
+    if (compassTestReadRegs(bus, address, 0x00, id, 1) && id[0] == 0x10) {
+      return CompassTestType::IST8310;
+    }
+  }
+  return CompassTestType::Unknown;
+}
+
+static bool compassTestInitQmc5883l(TwoWire &bus, uint8_t address) {
+  // SET/RESET period (datasheet-recommended 0x01), then control register 1:
+  // 0x1D = OSR 512 | range +/-8 G | ODR 200 Hz | continuous mode.
+  return compassTestWriteReg(bus, address, 0x0B, 0x01) &&
+         compassTestWriteReg(bus, address, 0x09, 0x1D);
+}
+
+static bool compassTestInitHmc5883l(TwoWire &bus, uint8_t address) {
+  // CRA 0x70 = 8 samples averaged, 15 Hz; CRB 0x20 = +/-1.3 Ga gain;
+  // mode 0x00 = continuous measurement.
+  return compassTestWriteReg(bus, address, 0x00, 0x70) &&
+         compassTestWriteReg(bus, address, 0x01, 0x20) &&
+         compassTestWriteReg(bus, address, 0x02, 0x00);
+}
+
+static bool compassTestInitIst8310(TwoWire & /*bus*/, uint8_t /*address*/) {
+  // Nothing to configure up front: each read triggers a single measurement.
+  return true;
+}
+
+static bool compassTestInit(TwoWire &bus, uint8_t address, CompassTestType type) {
+  switch (type) {
+    case CompassTestType::QMC5883L: return compassTestInitQmc5883l(bus, address);
+    case CompassTestType::HMC5883L: return compassTestInitHmc5883l(bus, address);
+    case CompassTestType::IST8310:  return compassTestInitIst8310(bus, address);
+    default:                        return false;
+  }
+}
+
+static bool compassTestReadQmc5883l(TwoWire &bus, uint8_t address,
+                                    int16_t &x, int16_t &y, int16_t &z) {
+  uint8_t d[6];
+  if (!compassTestReadRegs(bus, address, 0x00, d, 6)) return false;  // X,Y,Z LSB-first
+  x = static_cast<int16_t>(d[0] | (d[1] << 8));
+  y = static_cast<int16_t>(d[2] | (d[3] << 8));
+  z = static_cast<int16_t>(d[4] | (d[5] << 8));
+  return true;
+}
+
+static bool compassTestReadHmc5883l(TwoWire &bus, uint8_t address,
+                                    int16_t &x, int16_t &y, int16_t &z) {
+  uint8_t d[6];
+  if (!compassTestReadRegs(bus, address, 0x03, d, 6)) return false;  // X,Z,Y MSB-first
+  x = static_cast<int16_t>((d[0] << 8) | d[1]);
+  z = static_cast<int16_t>((d[2] << 8) | d[3]);
+  y = static_cast<int16_t>((d[4] << 8) | d[5]);
+  return true;
+}
+
+static bool compassTestReadIst8310(TwoWire &bus, uint8_t address,
+                                   int16_t &x, int16_t &y, int16_t &z) {
+  if (!compassTestWriteReg(bus, address, 0x0A, 0x01)) return false;  // single measurement
+  delay(7);                                                          // ~6 ms conversion
+  uint8_t d[6];
+  if (!compassTestReadRegs(bus, address, 0x03, d, 6)) return false;  // X,Y,Z LSB-first
+  x = static_cast<int16_t>(d[0] | (d[1] << 8));
+  y = static_cast<int16_t>(d[2] | (d[3] << 8));
+  z = static_cast<int16_t>(d[4] | (d[5] << 8));
+  return true;
+}
+
+static bool compassTestRead(TwoWire &bus, uint8_t address, CompassTestType type,
+                            int16_t &x, int16_t &y, int16_t &z) {
+  switch (type) {
+    case CompassTestType::QMC5883L: return compassTestReadQmc5883l(bus, address, x, y, z);
+    case CompassTestType::HMC5883L: return compassTestReadHmc5883l(bus, address, x, y, z);
+    case CompassTestType::IST8310:  return compassTestReadIst8310(bus, address, x, y, z);
+    default:                        return false;
+  }
+}
+
+// Raw horizontal heading (degrees, 0..360) from the X/Y field. This ignores
+// tilt, hard/soft-iron calibration, and magnetic declination -- it is only a
+// sanity check that the field rotates smoothly as the board is turned.
+static float compassTestHeadingDeg(int16_t x, int16_t y) {
+  float heading = atan2f(static_cast<float>(y), static_cast<float>(x)) * 180.0f / static_cast<float>(M_PI);
+  if (heading < 0.0f) heading += 360.0f;
+  return heading;
+}
+
+// Probe a bus for the first known compass address that responds. Reports
+// whether a device was found, its address, and (when identifiable) its type.
+static bool compassTestFindOnBus(TwoWire &bus, uint8_t &outAddress, CompassTestType &outType) {
+  const uint8_t candidates[] = {COMPASS_ADDR_QMC5883L, COMPASS_ADDR_IST8310, COMPASS_ADDR_HMC5883L};
+  for (uint8_t i = 0; i < sizeof(candidates); ++i) {
+    const uint8_t addr = candidates[i];
+    bus.beginTransmission(addr);
+    if (bus.endTransmission() != 0) {
+      continue;  // nothing acknowledged at this address
+    }
+    outAddress = addr;
+    outType = compassTestIdentify(bus, addr);  // may be Unknown if ID mismatched
+    return true;
+  }
+  return false;
+}
+
+void runCompassI2cTestDebug() {
+  Serial.println();
+  Serial.println("CMPTEST mode is ENABLED. This is a bench-only helper; do not fly with FC_COMPASS_I2C_TEST_MODE=1.");
+  Serial.println("CMPTEST set FC_COMPASS_I2C_TEST_MODE to 0 and reflash/reset to skip the compass test.");
+  Serial.println("CMPTEST wiring: M8N compass SDA/SCL to either the default Wire bus or I2C_Alternate (PB9=SDA, PB8=SCL), 3.3V, common ground.");
+
+  // The onboard sensors live on I2C_Alternate (PB9/PB8); the M8N's external
+  // compass may be wired to either bus, so bring up and scan both.
+  Wire.begin();
+  Wire.setClock(400000);
+  I2C_Alternate.begin();
+  I2C_Alternate.setClock(400000);
+
+  // Full inventory of both buses so an unrecognized compass is still visible.
+  compassTestScanBus(Wire, "default Wire bus");
+  compassTestScanBus(I2C_Alternate, "I2C_Alternate (PB9/PB8)");
+
+  TwoWire *compassBus = nullptr;
+  const char *compassBusName = "";
+  uint8_t compassAddress = 0;
+  CompassTestType compassType = CompassTestType::None;
+
+  uint8_t foundAddress = 0;
+  CompassTestType foundType = CompassTestType::None;
+  if (compassTestFindOnBus(Wire, foundAddress, foundType)) {
+    compassBus = &Wire;
+    compassBusName = "default Wire bus";
+  } else if (compassTestFindOnBus(I2C_Alternate, foundAddress, foundType)) {
+    compassBus = &I2C_Alternate;
+    compassBusName = "I2C_Alternate (PB9/PB8)";
+  }
+
+  if (compassBus != nullptr) {
+    compassAddress = foundAddress;
+    compassType = foundType;
+    Serial.print("CMPTEST detected ");
+    Serial.print(compassTestTypeName(compassType));
+    Serial.print(" at 0x");
+    if (compassAddress < 0x10) Serial.print('0');
+    Serial.print(compassAddress, HEX);
+    Serial.print(" on ");
+    Serial.println(compassBusName);
+    if (compassType == CompassTestType::Unknown) {
+      Serial.println("CMPTEST a device answered at a known compass address but its ID register did not match a supported chip; paste the scan above so we can add it.");
+    } else if (!compassTestInit(*compassBus, compassAddress, compassType)) {
+      Serial.println("CMPTEST WARNING: compass init write failed; readings below may be invalid.");
+    } else {
+      Serial.println("CMPTEST streaming raw magnetometer data (uncalibrated). Rotate the board level through 360 deg; heading should sweep smoothly 0..360.");
+    }
+  } else {
+    Serial.println("CMPTEST no known magnetometer found on either bus yet.");
+    Serial.println("CMPTEST expected one of QMC5883L@0x0D, IST8310@0x0E, or HMC5883L@0x1E; will keep re-scanning. Paste the scan above if the compass shows at another address.");
+  }
+
+  uint32_t lastSampleMs = 0;
+  uint32_t lastRescanMs = millis();
+  while (true) {
+    // Harmless before IWatchdog.begin(); keeps this a stable fail-stop if the
+    // watchdog were ever already running when we reach here.
+    IWatchdog.reload();
+    const uint32_t nowMs = millis();
+
+    if (compassBus == nullptr || compassType == CompassTestType::Unknown) {
+      if ((uint32_t)(nowMs - lastRescanMs) >= FC_COMPASS_I2C_TEST_RESCAN_PERIOD_MS) {
+        lastRescanMs = nowMs;
+        Serial.println("CMPTEST re-scanning for a compass...");
+        compassTestScanBus(Wire, "default Wire bus");
+        compassTestScanBus(I2C_Alternate, "I2C_Alternate (PB9/PB8)");
+        compassBus = nullptr;
+        if (compassTestFindOnBus(Wire, foundAddress, foundType)) {
+          compassBus = &Wire;
+          compassBusName = "default Wire bus";
+        } else if (compassTestFindOnBus(I2C_Alternate, foundAddress, foundType)) {
+          compassBus = &I2C_Alternate;
+          compassBusName = "I2C_Alternate (PB9/PB8)";
+        }
+        if (compassBus != nullptr) {
+          compassAddress = foundAddress;
+          compassType = foundType;
+          Serial.print("CMPTEST detected ");
+          Serial.print(compassTestTypeName(compassType));
+          Serial.print(" at 0x");
+          if (compassAddress < 0x10) Serial.print('0');
+          Serial.print(compassAddress, HEX);
+          Serial.print(" on ");
+          Serial.println(compassBusName);
+          if (compassType != CompassTestType::Unknown) {
+            compassTestInit(*compassBus, compassAddress, compassType);
+          }
+        }
+      }
+      delay(5);
+      continue;
+    }
+
+    if ((uint32_t)(nowMs - lastSampleMs) >= FC_COMPASS_I2C_TEST_SAMPLE_PERIOD_MS) {
+      lastSampleMs = nowMs;
+      int16_t x = 0, y = 0, z = 0;
+      if (compassTestRead(*compassBus, compassAddress, compassType, x, y, z)) {
+        Serial.print("CMPTEST mag ");
+        Serial.print(compassTestTypeName(compassType));
+        Serial.print(" x=");
+        Serial.print(x);
+        Serial.print(" y=");
+        Serial.print(y);
+        Serial.print(" z=");
+        Serial.print(z);
+        Serial.print(" heading_deg=");
+        Serial.print(compassTestHeadingDeg(x, y), 1);
+        Serial.println(" (raw; no tilt/declination/calibration)");
+      } else {
+        Serial.println("CMPTEST read failed; check compass wiring/power. Retrying...");
+      }
+    }
+    delay(2);
+  }
+}
+#endif  // FC_COMPASS_I2C_TEST_MODE
+
+
 void setup() {
   // ----- Initialize Debug Serial -----
   Serial.begin(115200);
@@ -2707,6 +3071,13 @@ void setup() {
   // Run GPSDIAG before any non-GPS sensor startup can halt the bench test.
 #if FC_GPS_DIAGNOSTIC_MODE
   runGpsDiagnosticDebug();
+#endif
+
+  // Run the M8N compass I2C bench test before any blocking sensor init. It
+  // brings up the I2C buses itself, scans for the compass, streams its data,
+  // and never returns, so the test can never be active in a flight build.
+#if FC_COMPASS_I2C_TEST_MODE
+  runCompassI2cTestDebug();
 #endif
 
   // ----- Initialize Servo Outputs -----
