@@ -4681,33 +4681,6 @@ class MainWindow(QMainWindow):
             ),
         )
 
-        battery_voltage = telemetry_values.get("battery_voltage")
-        battery_percent = telemetry_values.get("battery_percent")
-        battery_good = False
-        if battery_voltage is not None:
-            try:
-                voltage = float(battery_voltage)
-                percent = float(battery_percent) if battery_percent is not None else (
-                    voltage / self._battery_full_voltage * 100.0
-                    if self._battery_full_voltage else 0.0
-                )
-                battery_good = voltage > 0 and percent >= 25.0
-            except (TypeError, ValueError):
-                battery_good = False
-        self._add_preflight_check(
-            rows,
-            "pass" if battery_good else "warn",
-            (
-                f"Battery telemetry is usable: {float(battery_voltage):.2f} V, {float(battery_percent):.0f}% estimated."
-                if battery_good and battery_percent is not None
-                else (
-                    f"Battery telemetry is usable: {float(battery_voltage):.2f} V."
-                    if battery_good
-                    else "Battery telemetry is missing or below 25% estimated charge."
-                )
-            ),
-        )
-
         video_connected = False
         if hasattr(self, "video_feed") and getattr(self.video_feed, "label", None) is not None:
             pixmap = self.video_feed.label.pixmap()
