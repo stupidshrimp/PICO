@@ -4617,7 +4617,6 @@ class MainWindow(QMainWindow):
         telemetry_streams = (
             ("attitude", "Attitude telemetry"),
             ("gps", "GPS telemetry"),
-            ("battery", "Battery telemetry"),
         )
         for packet_type, label in telemetry_streams:
             fresh = self._is_packet_fresh(packet_type)
