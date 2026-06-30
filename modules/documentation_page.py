@@ -288,7 +288,7 @@ class DocumentationPage:
                 "While the checklist is being worked through, the GCS monitors live link "
                 "statistics (RSSI, link quality, SNR) and colour-codes them, so the operator "
                 "can see weak RF conditions rather than relying on a single pass/fail moment.",
-                "Attitude, GPS, and battery streams are validated for freshness and sane "
+                "Attitude and GPS streams are validated for freshness and sane "
                 "numeric ranges before they are trusted, so the UI does not treat a stale or "
                 "nonsensical reading as a valid flight state.",
                 "Sortie recording is locked out until fresh telemetry is present, ensuring a "
