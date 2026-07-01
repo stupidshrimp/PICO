@@ -248,6 +248,11 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define MAG_YAW_INNOVATION_GATE (0.6f)
 #define EKF_INNOVATION_GATE_WARMUP_UPDATES (250U)
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
+#ifndef FC_CENTRIPETAL_ACCEL_COMPENSATION
+#define FC_CENTRIPETAL_ACCEL_COMPENSATION 1
+#endif
+#define AIRSPEED_MPH_TO_MPS (0.44704f)
+#define CENTRIPETAL_COMP_MAX_ACCEL_MSS (GRAVITY_NOMINAL_MSS * 3.0f)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
@@ -774,6 +779,7 @@ PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
 
 float autoThrottlePercent = 0.0f;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
+float latestAirspeedMph = 0.0f;
 uint32_t lastAirspeedUpdateUs = 0;
 bool latestAirspeedValid = false;
 
@@ -934,6 +940,49 @@ bool airspeedInputFresh(uint32_t nowUs) {
          (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
 }
 
+void applyCentripetalAccelCompensation(float& ax, float& ay, float& az,
+                                       float p, float q, float r,
+                                       uint32_t nowUs) {
+#if FC_CENTRIPETAL_ACCEL_COMPENSATION
+  (void)p;  // Roll rate does not contribute when airspeed is modeled as body +X only.
+  if (!airspeedInputFresh(nowUs) || !isfinite(latestAirspeedMph) || latestAirspeedMph <= 0.0f) {
+    return;
+  }
+
+  // For fixed-wing flight, approximate velocity as airspeed along aircraft +X.
+  // In the EKF/body variables used below, v = [V, 0, 0], so the rotational
+  // turn acceleration is omega x v = [0, V*r, -V*q]. Subtract that term so
+  // the accelerometer measurement presented to the EKF is closer to gravity.
+  const float airspeedMps = latestAirspeedMph * AIRSPEED_MPH_TO_MPS;
+  float accelX = 0.0f;
+  float accelY = airspeedMps * r;
+  float accelZ = -airspeedMps * q;
+
+  const float accelNorm = sqrtf(accelX*accelX + accelY*accelY + accelZ*accelZ);
+  if (!isfinite(accelNorm)) {
+    return;
+  }
+  if (accelNorm > CENTRIPETAL_COMP_MAX_ACCEL_MSS) {
+    const float scale = CENTRIPETAL_COMP_MAX_ACCEL_MSS / accelNorm;
+    accelX *= scale;
+    accelY *= scale;
+    accelZ *= scale;
+  }
+
+  ax -= accelX;
+  ay -= accelY;
+  az -= accelZ;
+#else
+  (void)ax;
+  (void)ay;
+  (void)az;
+  (void)p;
+  (void)q;
+  (void)r;
+  (void)nowUs;
+#endif
+}
+
 float mapRcToNormalized(uint16_t value) {
   const float inMin = static_cast<float>(RC_INPUT_MIN);
   const float inMax = static_cast<float>(RC_INPUT_MAX);
@@ -1085,7 +1134,6 @@ uint32_t lastGpsFixCounter = 0;        // gps.fix_update_counter at the last ref
 // latest cached GPS coordinates plus separately sampled airspeed/barometer data.
 float airSpeedCms      = 0.0f; // Airspeed from sensor in centimeters per second
 float sensorAltitudeCm = 0.0f; // Altitude from barometer in centimeters
-float latestAirspeedMph = 0.0f;
 float latestAltitudeFeet = 0.0f;
 // Latest barometric ambient (static) pressure in Pascals, cached for the pitot's
 // air-density calculation. 0 until the first valid barometer reading, which the
@@ -2959,6 +3007,8 @@ void loop() {
     float p  = IMU.getGyroY_rads();
     float q  = IMU.getGyroX_rads();
     float r  = IMU.getGyroZ_rads();
+
+    applyCentripetalAccelCompensation(Ax, Ay, Az, p, q, r, controlUpdateUs);
     
     // Populate matrices for EKF update
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
