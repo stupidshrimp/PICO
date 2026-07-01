@@ -2956,47 +2956,80 @@ static bool compassTestFindOnBus(TwoWire &bus, uint8_t &outAddress,
   return false;
 }
 
-// Select a compass across BOTH buses. A positively identified chip on either
-// bus always wins over a device that merely ACKs at a known compass address
-// (Unknown), so an unsupported device on one bus cannot mask the real compass
-// on the other. Returns the chosen bus (nullptr if nothing responded) and fills
-// the address / type / human-readable bus-name out-params.
-static TwoWire *compassTestSelect(uint8_t &outAddress, CompassTestType &outType,
-                                  const char *&outBusName) {
-  TwoWire *const buses[] = {&Wire, &I2C_Alternate};
-  const char *const names[] = {"default Wire bus", "I2C_Alternate (PB9/PB8)"};
+// The two candidate I2C pin mappings to probe for the compass.
+//
+// IMPORTANT: on the STM32F405 the default `Wire` pins and `I2C_Alternate`
+// (PB9/PB8) are alternate pin mappings of the SAME I2C1 peripheral, not
+// independent controllers. If both are begin()'d at once, the one controller is
+// routed onto both pin pairs simultaneously, so a per-mapping scan can't tell
+// which connector a device is really on (and could report the compass on the
+// wrong bus name). We therefore probe them strictly one at a time:
+// begin -> scan -> probe -> end, so only one mapping is ever active, and
+// re-begin only the winning mapping for streaming.
+struct CompassTestMapping {
+  TwoWire *bus;
+  const char *name;
+};
+static const CompassTestMapping COMPASS_TEST_MAPPINGS[] = {
+  {&Wire, "default Wire bus"},
+  {&I2C_Alternate, "I2C_Alternate (PB9/PB8)"}
+};
+static constexpr uint8_t COMPASS_TEST_MAPPING_COUNT =
+    sizeof(COMPASS_TEST_MAPPINGS) / sizeof(COMPASS_TEST_MAPPINGS[0]);
 
-  TwoWire *fallbackBus = nullptr;
+// Scan each I2C pin mapping ONE AT A TIME (begin -> scan -> probe -> end) so the
+// two mappings of the shared I2C1 peripheral are never active together, then
+// pick the best match: a positively identified chip on either mapping wins over
+// a device that merely ACKs at a known compass address (Unknown). On success the
+// chosen mapping is left begun (clock set, but NOT yet initialized -- the caller
+// initializes so it can report an init failure) and its bus is returned;
+// otherwise returns nullptr with neither mapping left active.
+static TwoWire *compassTestScanAndSelect(uint8_t &outAddress, CompassTestType &outType,
+                                         const char *&outBusName) {
+  int chosenIndex = -1;
+  int fallbackIndex = -1;
   uint8_t fallbackAddress = 0;
-  const char *fallbackName = "";
 
-  for (uint8_t i = 0; i < 2; ++i) {
+  for (uint8_t i = 0; i < COMPASS_TEST_MAPPING_COUNT; ++i) {
+    TwoWire &bus = *COMPASS_TEST_MAPPINGS[i].bus;
+    bus.begin();
+    bus.setClock(400000);
+    compassTestScanBus(bus, COMPASS_TEST_MAPPINGS[i].name);
+
     uint8_t addr = 0;
     CompassTestType type = CompassTestType::None;
     bool identified = false;
-    if (!compassTestFindOnBus(*buses[i], addr, type, identified)) {
-      continue;  // nothing responded on this bus
-    }
-    if (identified) {
+    const bool found = compassTestFindOnBus(bus, addr, type, identified);
+    // Release this mapping before touching the other pin pair of the shared
+    // peripheral, so the two are never driven at the same time.
+    bus.end();
+
+    if (found && identified) {
+      chosenIndex = static_cast<int>(i);
       outAddress = addr;
       outType = type;
-      outBusName = names[i];
-      return buses[i];  // confirmed chip wins immediately, across either bus
+      break;  // confirmed chip wins immediately
     }
-    if (fallbackBus == nullptr) {
-      fallbackBus = buses[i];  // remember first unidentified ACK as a fallback
-      fallbackAddress = addr;
-      fallbackName = names[i];
+    if (found && fallbackIndex < 0) {
+      fallbackIndex = static_cast<int>(i);
+      fallbackAddress = addr;  // remember first unidentified ACK as a fallback
     }
   }
 
-  if (fallbackBus != nullptr) {
+  if (chosenIndex < 0 && fallbackIndex >= 0) {
+    chosenIndex = fallbackIndex;
     outAddress = fallbackAddress;
     outType = CompassTestType::Unknown;
-    outBusName = fallbackName;
-    return fallbackBus;
   }
-  return nullptr;
+  if (chosenIndex < 0) {
+    return nullptr;  // nothing responded on either mapping
+  }
+
+  TwoWire *chosen = COMPASS_TEST_MAPPINGS[chosenIndex].bus;
+  outBusName = COMPASS_TEST_MAPPINGS[chosenIndex].name;
+  chosen->begin();  // re-open ONLY the winning mapping for streaming
+  chosen->setClock(400000);
+  return chosen;
 }
 
 void runCompassI2cTestDebug() {
@@ -3004,24 +3037,15 @@ void runCompassI2cTestDebug() {
   Serial.println("CMPTEST mode is ENABLED. This is a bench-only helper; do not fly with FC_COMPASS_I2C_TEST_MODE=1.");
   Serial.println("CMPTEST set FC_COMPASS_I2C_TEST_MODE to 0 and reflash/reset to skip the compass test.");
   Serial.println("CMPTEST wiring: M8N compass SDA/SCL to either the default Wire bus or I2C_Alternate (PB9=SDA, PB8=SCL), 3.3V, common ground.");
-
-  // The onboard sensors live on I2C_Alternate (PB9/PB8); the M8N's external
-  // compass may be wired to either bus, so bring up and scan both.
-  Wire.begin();
-  Wire.setClock(400000);
-  I2C_Alternate.begin();
-  I2C_Alternate.setClock(400000);
-
-  // Full inventory of both buses so an unrecognized compass is still visible.
-  compassTestScanBus(Wire, "default Wire bus");
-  compassTestScanBus(I2C_Alternate, "I2C_Alternate (PB9/PB8)");
+  Serial.println("CMPTEST note: the two mappings share one I2C1 peripheral, so each is scanned separately (begin/scan/end) to tell the connectors apart.");
 
   TwoWire *compassBus = nullptr;
   const char *compassBusName = "";
   uint8_t compassAddress = 0;
   CompassTestType compassType = CompassTestType::None;
 
-  compassBus = compassTestSelect(compassAddress, compassType, compassBusName);
+  // Probes both pin mappings one at a time and leaves the winning one begun.
+  compassBus = compassTestScanAndSelect(compassAddress, compassType, compassBusName);
 
   if (compassBus != nullptr) {
     Serial.print("CMPTEST detected ");
@@ -3055,9 +3079,14 @@ void runCompassI2cTestDebug() {
       if ((uint32_t)(nowMs - lastRescanMs) >= FC_COMPASS_I2C_TEST_RESCAN_PERIOD_MS) {
         lastRescanMs = nowMs;
         Serial.println("CMPTEST re-scanning for a compass...");
-        compassTestScanBus(Wire, "default Wire bus");
-        compassTestScanBus(I2C_Alternate, "I2C_Alternate (PB9/PB8)");
-        compassBus = compassTestSelect(compassAddress, compassType, compassBusName);
+        // Close any mapping left begun from a prior pass (e.g. an Unknown-ACK
+        // fallback) so the shared peripheral is idle before re-probing both
+        // mappings one at a time.
+        if (compassBus != nullptr) {
+          compassBus->end();
+          compassBus = nullptr;
+        }
+        compassBus = compassTestScanAndSelect(compassAddress, compassType, compassBusName);
         if (compassBus != nullptr) {
           Serial.print("CMPTEST detected ");
           Serial.print(compassTestTypeName(compassType));
