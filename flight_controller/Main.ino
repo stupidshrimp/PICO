@@ -2917,21 +2917,86 @@ static float compassTestHeadingDeg(int16_t x, int16_t y) {
   return heading;
 }
 
-// Probe a bus for the first known compass address that responds. Reports
-// whether a device was found, its address, and (when identifiable) its type.
-static bool compassTestFindOnBus(TwoWire &bus, uint8_t &outAddress, CompassTestType &outType) {
+// Probe a bus for a compass at any known address. Prefers a positively
+// identified chip: it keeps probing the remaining candidate addresses after an
+// unidentified ACK, remembering only the first such bare ACK as a fallback so
+// its address is still surfaced. This way one unsupported or partially
+// responding device sitting at 0x0D/0x0E/0x1E cannot mask the real compass at a
+// later candidate address on the same bus. Returns whether anything responded;
+// `outIdentified` distinguishes a confirmed chip from a bare ACK.
+static bool compassTestFindOnBus(TwoWire &bus, uint8_t &outAddress,
+                                 CompassTestType &outType, bool &outIdentified) {
   const uint8_t candidates[] = {COMPASS_ADDR_QMC5883L, COMPASS_ADDR_IST8310, COMPASS_ADDR_HMC5883L};
+  bool haveUnknown = false;
+  uint8_t unknownAddress = 0;
   for (uint8_t i = 0; i < sizeof(candidates); ++i) {
     const uint8_t addr = candidates[i];
     bus.beginTransmission(addr);
     if (bus.endTransmission() != 0) {
       continue;  // nothing acknowledged at this address
     }
-    outAddress = addr;
-    outType = compassTestIdentify(bus, addr);  // may be Unknown if ID mismatched
+    const CompassTestType type = compassTestIdentify(bus, addr);
+    if (type != CompassTestType::Unknown) {
+      outAddress = addr;
+      outType = type;
+      outIdentified = true;
+      return true;  // confirmed chip wins immediately
+    }
+    if (!haveUnknown) {
+      haveUnknown = true;
+      unknownAddress = addr;  // first bare ACK; keep probing for a real chip
+    }
+  }
+  if (haveUnknown) {
+    outAddress = unknownAddress;
+    outType = CompassTestType::Unknown;
+    outIdentified = false;
     return true;
   }
   return false;
+}
+
+// Select a compass across BOTH buses. A positively identified chip on either
+// bus always wins over a device that merely ACKs at a known compass address
+// (Unknown), so an unsupported device on one bus cannot mask the real compass
+// on the other. Returns the chosen bus (nullptr if nothing responded) and fills
+// the address / type / human-readable bus-name out-params.
+static TwoWire *compassTestSelect(uint8_t &outAddress, CompassTestType &outType,
+                                  const char *&outBusName) {
+  TwoWire *const buses[] = {&Wire, &I2C_Alternate};
+  const char *const names[] = {"default Wire bus", "I2C_Alternate (PB9/PB8)"};
+
+  TwoWire *fallbackBus = nullptr;
+  uint8_t fallbackAddress = 0;
+  const char *fallbackName = "";
+
+  for (uint8_t i = 0; i < 2; ++i) {
+    uint8_t addr = 0;
+    CompassTestType type = CompassTestType::None;
+    bool identified = false;
+    if (!compassTestFindOnBus(*buses[i], addr, type, identified)) {
+      continue;  // nothing responded on this bus
+    }
+    if (identified) {
+      outAddress = addr;
+      outType = type;
+      outBusName = names[i];
+      return buses[i];  // confirmed chip wins immediately, across either bus
+    }
+    if (fallbackBus == nullptr) {
+      fallbackBus = buses[i];  // remember first unidentified ACK as a fallback
+      fallbackAddress = addr;
+      fallbackName = names[i];
+    }
+  }
+
+  if (fallbackBus != nullptr) {
+    outAddress = fallbackAddress;
+    outType = CompassTestType::Unknown;
+    outBusName = fallbackName;
+    return fallbackBus;
+  }
+  return nullptr;
 }
 
 void runCompassI2cTestDebug() {
@@ -2956,19 +3021,9 @@ void runCompassI2cTestDebug() {
   uint8_t compassAddress = 0;
   CompassTestType compassType = CompassTestType::None;
 
-  uint8_t foundAddress = 0;
-  CompassTestType foundType = CompassTestType::None;
-  if (compassTestFindOnBus(Wire, foundAddress, foundType)) {
-    compassBus = &Wire;
-    compassBusName = "default Wire bus";
-  } else if (compassTestFindOnBus(I2C_Alternate, foundAddress, foundType)) {
-    compassBus = &I2C_Alternate;
-    compassBusName = "I2C_Alternate (PB9/PB8)";
-  }
+  compassBus = compassTestSelect(compassAddress, compassType, compassBusName);
 
   if (compassBus != nullptr) {
-    compassAddress = foundAddress;
-    compassType = foundType;
     Serial.print("CMPTEST detected ");
     Serial.print(compassTestTypeName(compassType));
     Serial.print(" at 0x");
@@ -3002,17 +3057,8 @@ void runCompassI2cTestDebug() {
         Serial.println("CMPTEST re-scanning for a compass...");
         compassTestScanBus(Wire, "default Wire bus");
         compassTestScanBus(I2C_Alternate, "I2C_Alternate (PB9/PB8)");
-        compassBus = nullptr;
-        if (compassTestFindOnBus(Wire, foundAddress, foundType)) {
-          compassBus = &Wire;
-          compassBusName = "default Wire bus";
-        } else if (compassTestFindOnBus(I2C_Alternate, foundAddress, foundType)) {
-          compassBus = &I2C_Alternate;
-          compassBusName = "I2C_Alternate (PB9/PB8)";
-        }
+        compassBus = compassTestSelect(compassAddress, compassType, compassBusName);
         if (compassBus != nullptr) {
-          compassAddress = foundAddress;
-          compassType = foundType;
           Serial.print("CMPTEST detected ");
           Serial.print(compassTestTypeName(compassType));
           Serial.print(" at 0x");
