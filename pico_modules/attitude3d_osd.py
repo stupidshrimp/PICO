@@ -134,6 +134,7 @@ class Attitude3DOSD(QWidget):
 
         # Pre-built model geometry and the fixed view transform.
         self._vertices, self._faces = self._build_model()
+        self._prepare_face_arrays()
         self._view = _rot_y(math.radians(VIEW_YAW_DEG)) @ _rot_x(
             math.radians(VIEW_PITCH_DEG)
         )
@@ -178,8 +179,11 @@ class Attitude3DOSD(QWidget):
             or not math.isfinite(yaw_deg)
         ):
             return
+        # Only update the cached state here; the ~30 Hz ``_anim_timer`` owns
+        # the repaint clock so bursts of live telemetry (or the 70 Hz label
+        # timer) can't drive the expensive model paint faster than the display
+        # is refreshed.
         self._blend_attitude(roll_deg, pitch_deg, yaw_deg)
-        self.update()
 
     def setAirspeed(self, airspeed_mph: float) -> None:
         """Update the airspeed (mph) that drives the wind effect."""
@@ -193,8 +197,8 @@ class Attitude3DOSD(QWidget):
 
         if altitude_ft is None or not math.isfinite(altitude_ft):
             return
+        # Repaint is driven by ``_anim_timer`` (see ``setAttitude``).
         self._altitude = float(altitude_ft)
-        self.update()
 
     # ------------------------------------------------------------------ #
     # Telemetry simulation
@@ -241,7 +245,7 @@ class Attitude3DOSD(QWidget):
         self._blend_attitude(roll, pitch, yaw)
         self._airspeed = max(0.0, airspeed)
         self._altitude = max(0.0, altitude)
-        self.update()
+        # ``_anim_timer`` performs the repaint; the sim only advances state.
 
     def _blend_attitude(self, roll_deg: float, pitch_deg: float, yaw_deg: float) -> None:
         """Smooth an attitude sample into the displayed state (EMA)."""
@@ -440,6 +444,40 @@ class Attitude3DOSD(QWidget):
 
         return np.array(verts, dtype=float), faces
 
+    def _prepare_face_arrays(self) -> None:
+        """Hoist the static per-face maths out of the paint loop.
+
+        ``_paint_model`` runs on every repaint, so anything that depends only
+        on the (fixed) geometry is precomputed once here into NumPy arrays.
+        The paint pass then derives every face normal, shade and depth with a
+        few vectorised operations instead of a Python loop of small per-face
+        NumPy calls, which was the dominant cost of the command-page render.
+        """
+
+        faces = self._faces
+        # First three vertices of each face define its surface normal; all
+        # faces are planar quads or triangles, so three vertices suffice.
+        self._face_tri = np.array(
+            [(idx[0], idx[1], idx[2]) for idx, _ in faces], dtype=np.intp
+        )
+        # Flattened vertex indices plus per-face segment offsets let a single
+        # ``np.add.reduceat`` average each face's depth over *all* its
+        # vertices (matching the original ``np.mean`` over the full face).
+        flat: list[int] = []
+        offsets: list[int] = []
+        for idx, _ in faces:
+            offsets.append(len(flat))
+            flat.extend(idx)
+        self._face_flat = np.array(flat, dtype=np.intp)
+        self._face_offsets = np.array(offsets, dtype=np.intp)
+        self._face_lens = np.array([len(idx) for idx, _ in faces], dtype=float)
+        # Base RGB per face, used with the shade factor to tint the fill.
+        self._face_rgb = np.array(
+            [(c.red(), c.green(), c.blue()) for _, c in faces], dtype=float
+        )
+        # Raw index tuples retained for building the draw polygons.
+        self._face_polys = [tuple(idx) for idx, _ in faces]
+
     # ------------------------------------------------------------------ #
     # Wind animation
     # ------------------------------------------------------------------ #
@@ -569,38 +607,47 @@ class Attitude3DOSD(QWidget):
         cy = h * 0.46
         scale = min(w, h) * 0.62
 
-        def project(p):
-            depth = _CAM_DIST - p[2]
-            if depth < 0.05:
-                depth = 0.05
-            f = _FOCAL / depth
-            return QPointF(cx + p[0] * f * scale, cy - p[1] * f * scale)
+        # Perspective-project every vertex at once, then materialise one QPointF
+        # per vertex for the draw pass.
+        z = pts[:, 2]
+        depth = np.maximum(_CAM_DIST - z, 0.05)
+        f = (_FOCAL / depth) * scale
+        sx = cx + pts[:, 0] * f
+        sy = cy - pts[:, 1] * f
+        screen = [QPointF(px, py) for px, py in zip(sx.tolist(), sy.tolist())]
 
-        screen = [project(p) for p in pts]
+        # Face normals from the first three vertices of each face (vectorised).
+        tri = self._face_tri
+        v0 = pts[tri[:, 0]]
+        edge1 = pts[tri[:, 1]] - v0
+        edge2 = pts[tri[:, 2]] - v0
+        normals = np.cross(edge1, edge2)
+        lengths = np.linalg.norm(normals, axis=1)
+        valid = lengths > 0.0
+        safe = np.where(valid, lengths, 1.0)
+        unit = normals / safe[:, None]
+        shade = 0.42 + 0.58 * np.abs(unit @ self._light_dir)
 
-        light = self._light_dir
-        drawables = []
-        for indices, base in self._faces:
-            v0, v1, v2 = pts[indices[0]], pts[indices[1]], pts[indices[2]]
-            normal = np.cross(v1 - v0, v2 - v0)
-            n = np.linalg.norm(normal)
-            if n == 0:
+        # Painter's algorithm: order faces far (smaller camera-space z) first,
+        # using each face's mean vertex depth over *all* its vertices.
+        face_depth = (
+            np.add.reduceat(z[self._face_flat], self._face_offsets)
+            / self._face_lens
+        )
+        order = np.argsort(face_depth, kind="stable")
+
+        rgb = self._face_rgb
+        polys = self._face_polys
+        for fi in order:
+            if not valid[fi]:
                 continue
-            normal = normal / n
-            shade = 0.42 + 0.58 * abs(float(np.dot(normal, light)))
-            depth = float(np.mean([pts[i][2] for i in indices]))
-            drawables.append((depth, indices, base, shade))
-
-        # Painter's algorithm: far (smaller camera-space z) first.
-        drawables.sort(key=lambda d: d[0])
-
-        for _depth, indices, base, shade in drawables:
+            s = shade[fi]
             color = QColor(
-                int(min(255, base.red() * shade)),
-                int(min(255, base.green() * shade)),
-                int(min(255, base.blue() * shade)),
+                int(min(255.0, rgb[fi, 0] * s)),
+                int(min(255.0, rgb[fi, 1] * s)),
+                int(min(255.0, rgb[fi, 2] * s)),
             )
-            poly = QPolygonF([screen[i] for i in indices])
+            poly = QPolygonF([screen[i] for i in polys[fi]])
             painter.setBrush(QBrush(color))
             # Match the outline to the fill so curved lofts read as smooth
             # surfaces instead of a wireframe of quads.
