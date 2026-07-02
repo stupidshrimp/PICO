@@ -28,6 +28,7 @@
 #include "matrix.h"
 #include "ekf.h"
 #include "simple_mpu9250.h"
+#include "imu_axis_mount.h"
 #include <Arduino.h>
 #include <Servo.h>
 #include "ms5611.h" 
@@ -1483,9 +1484,8 @@ void runMagnetometerCalibrationDebug() {
       lastSampleMs = nowMs;
       if (IMU.readSensor() > 0) {
         // Use the same aircraft-frame magnetometer axes as the EKF update path.
-        float x = IMU.getMagY_uT();
-        float y = IMU.getMagX_uT();
-        float z = IMU.getMagZ_uT();
+        float x, y, z;
+        imuAxesToBody(IMU.getMagX_uT(), IMU.getMagY_uT(), IMU.getMagZ_uT(), x, y, z);
         float norm = sqrt(x*x + y*y + z*z);
         if (norm > NORM_EPSILON) {
           if (!haveSample) {
@@ -2536,8 +2536,10 @@ bool vibeMeasureWindow(float targetPct, float &actualAvg, float &actualMin, floa
     if ((int32_t)(nowUs - nextSampleUs) >= 0) {
       nextSampleUs += VIBE_SAMPLE_PERIOD_US;
       IMU.readSensor();
-      // Aircraft-frame gyro (X/Y swapped to match the flight loop), in rad/s.
-      vibeFeedSample(IMU.getGyroY_rads(), IMU.getGyroX_rads(), IMU.getGyroZ_rads());
+      // Aircraft-frame gyro (rotated to match the flight loop, see imu_axis_mount.h), in rad/s.
+      float vibeP, vibeQ, vibeR;
+      imuAxesToBody(IMU.getGyroX_rads(), IMU.getGyroY_rads(), IMU.getGyroZ_rads(), vibeP, vibeQ, vibeR);
+      vibeFeedSample(vibeP, vibeQ, vibeR);
       pctSum += pct; ++pctN;
       if (pct < actualMin) actualMin = pct;
       if (pct > actualMax) actualMax = pct;
@@ -3341,12 +3343,12 @@ void loop() {
       }
       lastEkfPredictUs = predictNowUs;
 
-      // Bias-corrected gyro, X/Y swapped to align the IMU frame with the aircraft
-      // frame (body X forward, Z up). Only the gyro is used here; the 125 Hz
-      // correction reads its own fresh accel/mag at the correction instant.
-      U[0][0] = IMU.getGyroY_rads();
-      U[1][0] = IMU.getGyroX_rads();
-      U[2][0] = IMU.getGyroZ_rads();
+      // Bias-corrected gyro, rotated into the aircraft frame (body X forward, Z up)
+      // by the configured proper 90-degree yaw rotation (see imu_axis_mount.h).
+      // Only the gyro is used here; the 125 Hz correction reads its own fresh
+      // accel/mag at the correction instant.
+      imuAxesToBody(IMU.getGyroX_rads(), IMU.getGyroY_rads(), IMU.getGyroZ_rads(),
+                    U[0][0], U[1][0], U[2][0]);
 
       gEkfRuntimeDt = static_cast<float_prec>(predictDt);
       ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
@@ -3392,19 +3394,16 @@ void loop() {
     // the accel/mag gate, centripetal compensation, and control attitude are never
     // based on a stale sample.
     IMU.readSensor();
-    // Swap X/Y axes to align IMU frame with aircraft frame
-    float Ax = IMU.getAccelY_mss();
-    float Ay = IMU.getAccelX_mss();
-    float Az = IMU.getAccelZ_mss();
-    float Bx = IMU.getMagY_uT();
-    float By = IMU.getMagX_uT();
-    float Bz = IMU.getMagZ_uT();
+    // Rotate the raw IMU axes into the aircraft/EKF frame with a proper 90-degree
+    // yaw rotation (see imu_axis_mount.h). Applied identically to accel, mag and
+    // gyro so the fused measurement set stays right-handed.
+    float Ax, Ay, Az, Bx, By, Bz, p, q, r;
+    imuAxesToBody(IMU.getAccelX_mss(), IMU.getAccelY_mss(), IMU.getAccelZ_mss(), Ax, Ay, Az);
+    imuAxesToBody(IMU.getMagX_uT(),    IMU.getMagY_uT(),    IMU.getMagZ_uT(),    Bx, By, Bz);
+    imuAxesToBody(IMU.getGyroX_rads(), IMU.getGyroY_rads(), IMU.getGyroZ_rads(),  p,  q,  r);
     // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
     // sample below rather than fusing it as a heading reference.
     const bool magOverflow = IMU.magnetometerOverflow();
-    float p  = IMU.getGyroY_rads();
-    float q  = IMU.getGyroX_rads();
-    float r  = IMU.getGyroZ_rads();
     
     // Populate matrices for EKF update
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
