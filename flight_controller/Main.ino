@@ -27,6 +27,7 @@
 #include "konfig.h"
 #include "matrix.h"
 #include "ekf.h"
+#include "attitude_init.h"
 #include "simple_mpu9250.h"
 #include <Arduino.h>
 #include <Servo.h>
@@ -220,6 +221,23 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // mapped through the horizontal field magnitude cos(inclination); TUNE in flight.
 #define R_INIT_YAW       (0.0025)
 #define R_REJECTED       (1.0e3)
+// Hard limit (rad/s) on the EKF's estimated residual gyro-bias states, applied
+// as a state constraint after every predict/correct. The boot calibration
+// already removes the dominant zero-rate offset, so the in-run states only
+// have to track slow thermal drift (a few tenths of a deg/s). Without a bound,
+// a stretch of gated-out measurements or a sustained disturbance can let the
+// bias states absorb maneuver-induced innovation -- and a wrongly learned bias
+// IS a persistent attitude drift once the disturbance ends. 0.1 rad/s
+// (~5.7 deg/s) is far above any plausible thermal drift yet small enough to
+// bound the worst-case coasting drift rate.
+#define GYRO_BIAS_LIMIT_RADS (0.1)
+// Boot-time coarse attitude alignment (TRIAD, see attitude_init.h): number of
+// IMU samples averaged for the accel/mag observation pair and the pause
+// between them. 40 x 5 ms = 200 ms of averaging knocks the sensor noise down
+// ~6x while keeping startup snappy; the AK8963 updates at 100 Hz so each mag
+// sample is fresh at this cadence.
+#define ATTITUDE_INIT_SAMPLES (40U)
+#define ATTITUDE_INIT_SAMPLE_DELAY_MS (5UL)
 #define GRAVITY_NOMINAL_MSS (9.80665f)
 #define ACCEL_NORM_GATE_FRACTION (0.35f)
 // Centripetal/transport-acceleration feed-forward for the accelerometer gravity
@@ -3129,6 +3147,80 @@ void runCompassI2cTestDebug() {
 #endif  // FC_COMPASS_I2C_TEST_MODE
 
 
+// Boot-time coarse attitude alignment. Averages ATTITUDE_INIT_SAMPLES IMU
+// samples (same axis swap and iron calibration as the 125 Hz fusion block) and
+// solves TRIAD (attitude_init.h) for the boot attitude, writing it into
+// quaternionData so the EKF starts at (roughly) the true attitude instead of
+// identity. Removes the large startup roll/pitch/yaw offset and its slow
+// convergence transient, and means the innovation gates arm on an
+// already-converged filter. Falls back to the identity quaternion (the
+// previous behavior) whenever the observation is unusable: failed reads,
+// saturated mag, accel magnitude off 1 g (airframe being handled), or a
+// degenerate field geometry.
+void initializeCoarseAttitude() {
+  quaternionData.vSetToZero();
+  quaternionData[0][0] = 1.0;
+
+  float accSum[3] = {0.0f, 0.0f, 0.0f};
+  float magSum[3] = {0.0f, 0.0f, 0.0f};
+  uint16_t validSamples = 0;
+  for (uint16_t i = 0; i < ATTITUDE_INIT_SAMPLES; ++i) {
+    if (IMU.readSensor() > 0 && !IMU.magnetometerOverflow()) {
+      // Same X/Y swap as the 125 Hz fusion block: body X forward, Z up.
+      accSum[0] += IMU.getAccelY_mss();
+      accSum[1] += IMU.getAccelX_mss();
+      accSum[2] += IMU.getAccelZ_mss();
+      magSum[0] += IMU.getMagY_uT();
+      magSum[1] += IMU.getMagX_uT();
+      magSum[2] += IMU.getMagZ_uT();
+      ++validSamples;
+    }
+    delay(ATTITUDE_INIT_SAMPLE_DELAY_MS);
+  }
+  if (validSamples < (ATTITUDE_INIT_SAMPLES / 2U)) {
+    Serial.println("Attitude init: too few valid IMU samples, starting at identity");
+    return;
+  }
+
+  float acc[3];
+  float magRaw[3];
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    acc[axis] = accSum[axis] / (float)validSamples;
+    magRaw[axis] = magSum[axis] / (float)validSamples;
+  }
+
+  // Only trust the accel as a gravity observation when its magnitude is near
+  // 1 g -- the same gate the in-flight fusion applies.
+  const float accNorm = sqrtf(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
+  if (fabsf(accNorm - GRAVITY_NOMINAL_MSS) / GRAVITY_NOMINAL_MSS > ACCEL_NORM_GATE_FRACTION) {
+    Serial.println("Attitude init: accel magnitude off 1 g, starting at identity");
+    return;
+  }
+
+  // Same hard-iron/soft-iron calibration as the fusion block.
+  float mag[3];
+  for (uint8_t row = 0; row < 3; ++row) {
+    mag[row] = SOFT_IRON_MATRIX[row][0] * (magRaw[0] - HARD_IRON_BIAS[0][0])
+             + SOFT_IRON_MATRIX[row][1] * (magRaw[1] - HARD_IRON_BIAS[1][0])
+             + SOFT_IRON_MATRIX[row][2] * (magRaw[2] - HARD_IRON_BIAS[2][0]);
+  }
+
+  const float magRef[3] = {
+    (float)IMU_MAG_B0[0][0], (float)IMU_MAG_B0[1][0], (float)IMU_MAG_B0[2][0]
+  };
+  float quatInit[4];
+  if (!bTriadAttitudeInit(acc, mag, magRef, quatInit)) {
+    Serial.println("Attitude init: degenerate accel/mag geometry, starting at identity");
+    return;
+  }
+  quaternionData[0][0] = quatInit[0];
+  quaternionData[1][0] = quatInit[1];
+  quaternionData[2][0] = quatInit[2];
+  quaternionData[3][0] = quatInit[3];
+  Serial.println("Attitude init: EKF aligned from accel/mag (TRIAD)");
+}
+
+
 void setup() {
   // ----- Initialize Debug Serial -----
   Serial.begin(115200);
@@ -3202,7 +3294,11 @@ void setup() {
   int status = IMU.begin();
   if (status < 0) {
     Serial.println("IMU initialization unsuccessful");
-    Serial.println("Check IMU wiring or try cycling power");
+    if (status == -21) {
+      Serial.println("Airframe was moving during gyro bias calibration -- keep it still and cycle power");
+    } else {
+      Serial.println("Check IMU wiring or try cycling power");
+    }
     Serial.print("Status: ");
     Serial.println(status);
     haltStartupWithNeutralServos();
@@ -3215,8 +3311,10 @@ void setup() {
 #endif
 
   // ----- Initialize EKF -----
-  quaternionData.vSetToZero();
-  quaternionData[0][0] = 1.0;
+  // Coarse-align the starting attitude from the averaged accel/mag observation
+  // (falls back to identity when the observation is unusable), then start the
+  // filter from it.
+  initializeCoarseAttitude();
   EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
   snprintf(bufferTxSer, sizeof(bufferTxSer)-1, "Adafruit STM32F405 Feather Express (%s)\r\n",
            (FPU_PRECISION == PRECISION_SINGLE) ? "Float32" : "Double64");
@@ -3882,6 +3980,18 @@ bool Main_bNormalizeState(Matrix& X)
     X[1][0] /= quatNorm;
     X[2][0] /= quatNorm;
     X[3][0] /= quatNorm;
+
+    /* Constrain the residual gyro-bias states to their physically plausible
+     * range (see GYRO_BIAS_LIMIT_RADS). Runs through the same normalization
+     * hook the EKF already calls after every predict and correct, so the
+     * constraint can never be skipped on any update path. */
+    for (int16_t _i = 4; _i < SS_X_LEN; _i++) {
+        if (X[_i][0] > float_prec(GYRO_BIAS_LIMIT_RADS)) {
+            X[_i][0] = float_prec(GYRO_BIAS_LIMIT_RADS);
+        } else if (X[_i][0] < float_prec(-GYRO_BIAS_LIMIT_RADS)) {
+            X[_i][0] = float_prec(-GYRO_BIAS_LIMIT_RADS);
+        }
+    }
     return true;
 }
 

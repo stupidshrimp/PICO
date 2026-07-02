@@ -137,6 +137,14 @@ bool EKF::bPredict(const Matrix& U)
     /* P(k|k-1)  = F*P(k-1|k-1)*F' + Q                                  ...{EKF_3} */
     P = F*P*(F.Transpose()) + Q;
 
+    /* F*P*F' is symmetric in exact arithmetic but float round-off breaks the
+     * symmetry a little on every step, and the asymmetry compounds across the
+     * thousands of predicts between corrections-that-matter. An asymmetric P
+     * skews the Kalman gain, which shows up as slow attitude drift long before
+     * the filter outright diverges. Re-symmetrizing each step keeps P a valid
+     * covariance. */
+    P = (P + P.Transpose()) * 0.5;
+
     return true;
 }
 
@@ -181,8 +189,10 @@ bool EKF::bCorrect(const Matrix& Y, const Matrix& U)
     /* P(k|k)  = (I - K*H)*P(k|k-1), implemented with the Joseph stabilized form. */
     Matrix IminusKH = MatIdentity(SS_X_LEN) - (Gain*H);
     P = IminusKH*P*(IminusKH.Transpose()) + Gain*R*(Gain.Transpose());
-    
-    
+
+    /* Same float round-off symmetry enforcement as the prediction step. */
+    P = (P + P.Transpose()) * 0.5;
+
     return true;
 }
 

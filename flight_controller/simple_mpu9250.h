@@ -159,8 +159,14 @@ public:
         // instruct the MPU9250 to get 7 bytes of data from the AK8963 at the sample rate
         readAK8963Registers(AK8963_HXL,7,_buffer);
         // estimate gyro bias
-        if (calibrateGyro() < 0) {
-            return -20;
+        {
+            const int calStatus = calibrateGyro();
+            if (calStatus == -8) {
+                return -21;  // airframe moving: bias estimate rejected, keep still and power-cycle
+            }
+            if (calStatus < 0) {
+                return -20;
+            }
         }
         
         
@@ -235,30 +241,71 @@ public:
             return -3;
         }
 
-        // take samples and find bias
-        _gxbD = 0;
-        _gybD = 0;
-        _gzbD = 0;
-        size_t validSamples = 0;
-        for (size_t i=0; i < _numSamples; i++) {
-            // A failed read leaves the cached gyro at its previous value. Folding
-            // that stale sample into the average would skew the zero-rate bias,
-            // which feeds straight into attitude accuracy, so only accumulate
-            // successful reads and divide by the count that actually contributed.
-            if (readSensor() > 0) {
-                _gxbD += (double)(getGyroX_rads() + _gxb);
-                _gybD += (double)(getGyroY_rads() + _gyb);
-                _gzbD += (double)(getGyroZ_rads() + _gzb);
-                ++validSamples;
+        // Take samples and find the bias. The average is only a valid zero-rate
+        // offset if the airframe is STILL while it is collected -- a boot while
+        // the aircraft is being handled or buffeted would bake real rotation
+        // into the offset, and that corrupted offset is a persistent attitude
+        // drift for the whole flight. Guard it: also accumulate the second
+        // moment, and only accept the estimate when the per-axis standard
+        // deviation is at sensor-noise level. On motion, retry; if it never
+        // settles, fail begin() so the operator power-cycles at rest instead of
+        // flying with a corrupted gyro offset.
+        int result = -7;    // no valid samples
+        for (uint8_t attempt = 0; attempt < _gyroCalMaxAttempts; ++attempt) {
+            _gxbD = 0;
+            _gybD = 0;
+            _gzbD = 0;
+            double gxSqD = 0, gySqD = 0, gzSqD = 0;
+            size_t validSamples = 0;
+            for (size_t i=0; i < _numSamples; i++) {
+                // A failed read leaves the cached gyro at its previous value. Folding
+                // that stale sample into the average would skew the zero-rate bias,
+                // which feeds straight into attitude accuracy, so only accumulate
+                // successful reads and divide by the count that actually contributed.
+                if (readSensor() > 0) {
+                    const double gx = (double)(getGyroX_rads() + _gxb);
+                    const double gy = (double)(getGyroY_rads() + _gyb);
+                    const double gz = (double)(getGyroZ_rads() + _gzb);
+                    _gxbD += gx;
+                    _gybD += gy;
+                    _gzbD += gz;
+                    gxSqD += gx * gx;
+                    gySqD += gy * gy;
+                    gzSqD += gz * gz;
+                    ++validSamples;
+                }
+                delay(20);
             }
-            delay(20);
+            if (validSamples == 0) {
+                result = -7;  // could not read any valid gyro samples to estimate bias
+                continue;
+            }
+            const double n = (double)validSamples;
+            const double gxMean = _gxbD / n;
+            const double gyMean = _gybD / n;
+            const double gzMean = _gzbD / n;
+            // Population variance; clamp tiny negative round-off to zero.
+            double gxVar = gxSqD / n - gxMean * gxMean;
+            double gyVar = gySqD / n - gyMean * gyMean;
+            double gzVar = gzSqD / n - gzMean * gzMean;
+            if (gxVar < 0) gxVar = 0;
+            if (gyVar < 0) gyVar = 0;
+            if (gzVar < 0) gzVar = 0;
+            const double stillVarLimit =
+                (double)_gyroCalStillnessStdLimit * (double)_gyroCalStillnessStdLimit;
+            if (gxVar > stillVarLimit || gyVar > stillVarLimit || gzVar > stillVarLimit) {
+                result = -8;  // motion detected during bias estimation
+                continue;
+            }
+            _gxb = (float)gxMean;
+            _gyb = (float)gyMean;
+            _gzb = (float)gzMean;
+            result = 1;
+            break;
         }
-        if (validSamples == 0) {
-            return -7;  // could not read any valid gyro samples to estimate bias
+        if (result < 0) {
+            return result;
         }
-        _gxb = (float)(_gxbD / (double)validSamples);
-        _gyb = (float)(_gybD / (double)validSamples);
-        _gzb = (float)(_gzbD / (double)validSamples);
 
         // set the range, bandwidth, and srd back to what they were
         if (setGyroRange(_gyroRange) < 0) {
@@ -547,6 +594,15 @@ private:
     size_t _numSamples = 100;
     double _gxbD, _gybD, _gzbD;
     float _gxb, _gyb, _gzb;
+    // Stillness gate for the boot bias estimate: per-axis standard deviation
+    // must stay under this (rad/s) for the sample window to be accepted. Gyro
+    // noise at the calibration DLPF (20 Hz) is well under 0.002 rad/s std, so
+    // 0.0175 rad/s (~1 deg/s) passes any resting airframe (including light
+    // wind buffet) while rejecting handling motion, which is orders larger.
+    float _gyroCalStillnessStdLimit = 0.0175f;
+    // Each attempt is _numSamples x 20 ms = 2 s; 5 attempts bound startup at
+    // 10 s before giving up and failing begin().
+    uint8_t _gyroCalMaxAttempts = 5;
     // accel bias and scale factor estimation
     double _axbD, _aybD, _azbD;
     float _axmax, _aymax, _azmax;
