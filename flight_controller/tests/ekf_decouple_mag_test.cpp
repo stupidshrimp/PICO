@@ -62,15 +62,18 @@ void SPEW_THE_ERROR(char const* str);
 void SPEW_THE_ERROR(char const* str) { std::printf("MATRIX ASSERT: %s\n", str); std::abort(); }
 
 /* ---- Magnetic reference field for the firmware's default site (central
- *      Illinois). |B0| == 1 by construction. ---- */
+ *      Illinois). |B0| == 1 by construction. NED-style Z-down earth frame to
+ *      match the firmware: inclination is down-positive (+sin), and the
+ *      at-rest specific force points to (0,0,IMU_ACC_Z0) with Z0 = -1. ---- */
 static const double DECL = -0.05640509;
 static const double INCL =  1.17209583;
 static double B0[3] = {
     cos(INCL) * cos(DECL),
     cos(INCL) * sin(DECL),
-    -sin(INCL)
+    sin(INCL)
 };
-static const double IMU_ACC_Z0 = 1.0;
+static const double IMU_ACC_Z0 = -1.0;
+static const double ACC_REF[3] = {0.0, 0.0, IMU_ACC_Z0};
 
 static double wrapPi(double a) {
     while (a >  M_PI) a -= 2.0 * M_PI;
@@ -271,10 +274,10 @@ static bool cbNorm(Matrix& X) {
 }
 
 static void rollpitch_of(const double q[4], double& roll, double& pitch) {
-    /* gravity (earth up) direction in body frame = accel prediction */
-    double g[3] = {0,0,1}, gb[3];
-    Reb_times(q, g, gb);
-    pitch = asin(fmax(-1.0, fmin(1.0, gb[0])));      /* -sin(theta) component layout */
+    /* specific-force (at-rest accel) direction in body frame = accel prediction */
+    double gb[3];
+    Reb_times(q, ACC_REF, gb);
+    pitch = asin(fmax(-1.0, fmin(1.0, gb[0])));
     roll  = atan2(gb[1], gb[2]);
 }
 
@@ -294,8 +297,8 @@ static void test_decoupling_ekf() {
     check(fabs(r0-rt)<1e-9 && fabs(p0-pt)<1e-9, "truth differs from est by pure yaw", fabs(r0-rt), 0.0, 1e-9);
 
     /* measurements consistent with truth */
-    double acc[3], mb_clean[3], up[3]={0,0,1};
-    Reb_times(qtrue, up, acc);
+    double acc[3], mb_clean[3];
+    Reb_times(qtrue, ACC_REF, acc);
     Reb_times(qtrue, B0, mb_clean);
 
     /* ---- Case A: clean mag -> yaw converges, roll/pitch stay put ---- */
@@ -346,7 +349,7 @@ static void test_decoupling_ekf() {
 int main() {
     std::printf("B0 = [% .5f % .5f % .5f], |B0|=%.6f  decl=%.4f incl=%.4f\n\n",
                 B0[0],B0[1],B0[2], sqrt(B0[0]*B0[0]+B0[1]*B0[1]+B0[2]*B0[2]),
-                atan2(B0[1],B0[0]), -asin(B0[2]));
+                atan2(B0[1],B0[0]), asin(B0[2]));
     test_jacobian();
     test_innovation_sign();
     test_decoupling_ekf();
