@@ -10,9 +10,9 @@
  *
  * The industry-standard fix is a deterministic coarse alignment before the
  * filter starts: solve Wahba's problem for the boot attitude from one
- * accelerometer observation of earth-up and one magnetometer observation of
- * the local field, using the TRIAD method. The EKF then starts at (roughly)
- * the true attitude and only has to track.
+ * accelerometer observation of the earth specific-force reference and one
+ * magnetometer observation of the local field, using the TRIAD method. The
+ * EKF then starts at (roughly) the true attitude and only has to track.
  *
  * Everything here is pure math on plain float arrays -- no Arduino, matrix
  * library, or konfig dependencies -- so the exact flight code is compiled and
@@ -20,9 +20,11 @@
  *
  * Conventions match the EKF measurement model in Main.ino: quaternions
  * parameterize the earth->body direction cosine matrix M(q) with
- *   M(q) * [0,0,1]' = predicted body-frame gravity direction (accel rows) and
- *   M(q) * B0      = predicted body-frame magnetic field    (mag rows),
- * i.e. the same M used by Main_bUpdateNonlinearY.
+ *   M(q) * accRef = predicted body-frame specific-force direction (accel rows),
+ *   M(q) * magRef = predicted body-frame magnetic field           (mag rows),
+ * i.e. the same M used by Main_bUpdateNonlinearY. The earth references are
+ * caller-supplied so the alignment works in any earth convention (the firmware
+ * passes (0,0,IMU_ACC_Z0) and IMU_MAG_B0).
  ************************************************************************************************************/
 #ifndef ATTITUDE_INIT_H
 #define ATTITUDE_INIT_H
@@ -90,22 +92,24 @@ static inline void attitudeInitQuatFromDcm(const float M[3][3], float quat[4])
 }
 
 /* TRIAD alignment: build the earth->body DCM that maps
- *   earth-up [0,0,1]  -> accBody (normalized accelerometer specific force) and
- *   magRefEarth       -> magBody (as closely as the accel anchor allows),
+ *   accRefEarth -> accBody (normalized accelerometer specific force) and
+ *   magRefEarth -> magBody (as closely as the accel anchor allows),
  * then extract the quaternion. The accelerometer is the anchor observation
  * (exact), the magnetometer only resolves the rotation about it -- so mag
  * error cannot tilt the alignment, matching the decoupled fusion philosophy.
  *
- * accBody must be the specific force at rest (gravity reaction, pointing to
- * body "up"), magBody the iron-calibrated field, magRefEarth the unit earth
- * reference field (IMU_MAG_B0). Vectors need not be pre-normalized.
+ * accBody must be the specific force at rest (the gravity reaction), magBody
+ * the iron-calibrated field. accRefEarth/magRefEarth are the earth-frame
+ * references the EKF measurement model predicts against ((0,0,IMU_ACC_Z0) and
+ * IMU_MAG_B0 in the firmware). Vectors need not be pre-normalized.
  *
  * Returns false (quat untouched) when the geometry is degenerate: a near-zero
- * accel or mag vector, or a field (measured or reference) parallel to gravity
- * so heading is unobservable.
+ * accel, mag, or reference vector, or a field (measured or reference)
+ * parallel to gravity so heading is unobservable.
  */
 static inline bool bTriadAttitudeInit(const float accBody[3], const float magBody[3],
-                                      const float magRefEarth[3], float quat[4])
+                                      const float accRefEarth[3], const float magRefEarth[3],
+                                      float quat[4])
 {
     /* Body-frame triad: anchor on the gravity direction. */
     float b1[3] = { accBody[0], accBody[1], accBody[2] };
@@ -121,7 +125,10 @@ static inline bool bTriadAttitudeInit(const float accBody[3], const float magBod
     attitudeInitCross3(b1, b2, b3);
 
     /* Earth-frame triad from the same construction. */
-    float r1[3] = { 0.0f, 0.0f, 1.0f };
+    float r1[3] = { accRefEarth[0], accRefEarth[1], accRefEarth[2] };
+    if (!attitudeInitNormalize3(r1)) {
+        return false;
+    }
     float r2[3];
     attitudeInitCross3(r1, magRefEarth, r2);
     if (!attitudeInitNormalize3(r2)) {

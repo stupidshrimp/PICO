@@ -5,7 +5,9 @@
  *   1. Round trip: for random attitudes, TRIAD on the model-generated accel/mag
  *      observations recovers the original quaternion (in the EKF's earth->body
  *      M(q) parameterization, q0 >= 0 hemisphere), including inverted and
- *      near-gimbal-lock attitudes that exercise every Shepperd branch.
+ *      near-gimbal-lock attitudes that exercise every Shepperd branch. Run in
+ *      BOTH earth conventions (legacy Z-up and the firmware's Z-down/NED) to
+ *      prove the alignment is convention-agnostic.
  *   2. Anchor property: the alignment reproduces the accelerometer gravity
  *      direction EXACTLY regardless of magnetometer disturbance -- mag error
  *      can only rotate the solution about gravity (yaw), never tilt it. This
@@ -22,14 +24,21 @@
 #include <cmath>
 #include <cstdio>
 
-/* ---- Magnetic reference for the firmware's default site, |B0| == 1. ---- */
+/* ---- Magnetic reference for the firmware's default site, |B0| == 1.
+ *      Firmware convention (NED-style Z-down earth frame): inclination is
+ *      down-positive so the vertical component is +sin(INCL), and the at-rest
+ *      specific force points to (0,0,-1). ---- */
 static const double DECL = -0.05640509;
 static const double INCL =  1.17209583;
-static const float B0[3] = {
+static const float B0_NED[3] = {
     (float)(cos(INCL) * cos(DECL)),
     (float)(cos(INCL) * sin(DECL)),
-    (float)(-sin(INCL))
+    (float)(sin(INCL))
 };
+static const float ACC_REF_NED[3] = {0.0f, 0.0f, -1.0f};
+/* Legacy Z-up convention, exercised to prove convention-agnosticism. */
+static const float B0_ZUP[3] = { B0_NED[0], B0_NED[1], -B0_NED[2] };
+static const float ACC_REF_ZUP[3] = {0.0f, 0.0f, 1.0f};
 
 static int g_fail = 0;
 
@@ -63,8 +72,8 @@ static double quatAngleError(const double qa[4], const float qb[4]) {
 
 /* Test 1: round trip over random attitudes (uniform on the quaternion sphere,
  * so inverted and steep attitudes -- every Shepperd branch -- are covered). */
-static void test_round_trip() {
-    std::printf("[test_round_trip] TRIAD recovers random attitudes\n");
+static void test_round_trip(const float accRef[3], const float magRef[3], const char* conv) {
+    std::printf("[test_round_trip/%s] TRIAD recovers random attitudes\n", conv);
     double worst = 0.0;
     for (int t = 0; t < 2000; t++) {
         double q[4] = { frand(-1,1), frand(-1,1), frand(-1,1), frand(-1,1) };
@@ -74,15 +83,14 @@ static void test_round_trip() {
 
         double M[3][3];
         MofQ(q, M);
-        const float up[3] = {0.0f, 0.0f, 1.0f};
         float acc[3], mag[3];
-        MtimesV(M, up, acc);
-        MtimesV(M, B0, mag);
+        MtimesV(M, accRef, acc);
+        MtimesV(M, magRef, mag);
         /* physical magnitudes: the header must not require unit inputs */
         for (int i = 0; i < 3; i++) { acc[i] *= 9.80665f; mag[i] *= 45.0f; }
 
         float qhat[4];
-        if (!bTriadAttitudeInit(acc, mag, B0, qhat)) {
+        if (!bTriadAttitudeInit(acc, mag, accRef, magRef, qhat)) {
             g_fail++;
             std::printf("  FAIL trial %d: alignment rejected a valid observation\n", t);
             continue;
@@ -113,24 +121,23 @@ static void test_mag_disturbance_anchor() {
 
         double M[3][3];
         MofQ(q, M);
-        const float up[3] = {0.0f, 0.0f, 1.0f};
         float acc[3], mag[3];
-        MtimesV(M, up, acc);
-        MtimesV(M, B0, mag);
+        MtimesV(M, ACC_REF_NED, acc);
+        MtimesV(M, B0_NED, mag);
         /* heavy disturbance: hard-iron-like offset up to ~60% of the field */
         float magBad[3] = { mag[0] + (float)frand(-0.6, 0.6),
                             mag[1] + (float)frand(-0.6, 0.6),
                             mag[2] + (float)frand(-0.6, 0.6) };
 
         float qhat[4];
-        if (!bTriadAttitudeInit(acc, magBad, B0, qhat)) continue;  /* degenerate combos may reject */
+        if (!bTriadAttitudeInit(acc, magBad, ACC_REF_NED, B0_NED, qhat)) continue;
 
-        /* gravity direction predicted by the aligned attitude must equal acc */
+        /* specific-force direction predicted by the aligned attitude must equal acc */
         const double qh[4] = { qhat[0], qhat[1], qhat[2], qhat[3] };
         double Mh[3][3];
         MofQ(qh, Mh);
         float gpred[3];
-        MtimesV(Mh, up, gpred);
+        MtimesV(Mh, ACC_REF_NED, gpred);
         const double tilt = sqrt( (gpred[0]-acc[0])*(gpred[0]-acc[0])
                                 + (gpred[1]-acc[1])*(gpred[1]-acc[1])
                                 + (gpred[2]-acc[2])*(gpred[2]-acc[2]) );
@@ -147,17 +154,18 @@ static void test_mag_disturbance_anchor() {
 static void test_degenerate_rejection() {
     std::printf("[test_degenerate_rejection] unusable observations rejected\n");
     float quat[4] = {9, 9, 9, 9};
-    const float acc[3] = {0.1f, -0.2f, 9.7f};
+    const float acc[3] = {0.1f, -0.2f, -9.7f};
     const float zero[3] = {0.0f, 0.0f, 0.0f};
-    const float magAlongGravity[3] = {0.02f, -0.04f, 1.94f};  /* parallel to acc */
-    const float upRef[3] = {0.0f, 0.0f, 1.0f};
+    const float magAlongGravity[3] = {0.02f, -0.04f, -1.94f};  /* parallel to acc */
+    const float refAlongAcc[3] = {0.0f, 0.0f, -1.0f};          /* magRef parallel to accRef */
 
     struct { bool got; const char* name; } cases[] = {
-        { bTriadAttitudeInit(zero, B0, B0, quat),               "zero accel" },
-        { bTriadAttitudeInit(acc, zero, B0, quat),              "zero mag" },
-        { bTriadAttitudeInit(acc, magAlongGravity, B0, quat),   "mag parallel to gravity" },
-        { bTriadAttitudeInit(acc, B0, upRef, quat),             "reference parallel to earth-up" },
-        { bTriadAttitudeInit(acc, B0, zero, quat),              "zero reference" },
+        { bTriadAttitudeInit(zero, B0_NED, ACC_REF_NED, B0_NED, quat),             "zero accel" },
+        { bTriadAttitudeInit(acc, zero, ACC_REF_NED, B0_NED, quat),                "zero mag" },
+        { bTriadAttitudeInit(acc, magAlongGravity, ACC_REF_NED, B0_NED, quat),     "mag parallel to gravity" },
+        { bTriadAttitudeInit(acc, B0_NED, ACC_REF_NED, refAlongAcc, quat),         "mag reference parallel to gravity reference" },
+        { bTriadAttitudeInit(acc, B0_NED, zero, B0_NED, quat),                     "zero gravity reference" },
+        { bTriadAttitudeInit(acc, B0_NED, ACC_REF_NED, zero, quat),                "zero mag reference" },
     };
     for (const auto& c : cases) {
         if (c.got) {
@@ -170,8 +178,10 @@ static void test_degenerate_rejection() {
 }
 
 int main() {
-    std::printf("B0 = [% .5f % .5f % .5f]\n\n", (double)B0[0], (double)B0[1], (double)B0[2]);
-    test_round_trip();
+    std::printf("B0_NED = [% .5f % .5f % .5f]\n\n",
+                (double)B0_NED[0], (double)B0_NED[1], (double)B0_NED[2]);
+    test_round_trip(ACC_REF_NED, B0_NED, "z-down (firmware)");
+    test_round_trip(ACC_REF_ZUP, B0_ZUP, "z-up (legacy)");
     test_mag_disturbance_anchor();
     test_degenerate_rejection();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",

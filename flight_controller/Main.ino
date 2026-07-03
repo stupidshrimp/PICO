@@ -70,7 +70,12 @@ HardwareSerial Serial3(PB11, PB10);
 HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 
 // ----- IMU & EKF Variables -----
-#define IMU_ACC_Z0  (1)
+// Earth-frame Z component of the accelerometer's specific-force reference.
+// The EKF body/earth frames are NED-style (Z down), so the at-rest specific
+// force (the reaction to gravity) points UP = -Z: the reference is (0,0,-1).
+// See the frame-mapping comment in the 125 Hz block for why the frame is
+// Z-down: the previous Z-up mapping was a left-handed (det -1) reflection.
+#define IMU_ACC_Z0  (-1)
 // Default magnetic reference for central Illinois (~40.0 N, 89.0 W),
 // evaluated for 2026-06-11. Override these at build time for a specific
 // flying site; declination is positive east and inclination is positive down.
@@ -195,11 +200,16 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 float_prec IMU_MAG_B0_data[3] = {
   cos(FC_MAG_INCLINATION_RAD)*cos(FC_MAG_DECLINATION_RAD),
   cos(FC_MAG_INCLINATION_RAD)*sin(FC_MAG_DECLINATION_RAD),
-  -sin(FC_MAG_INCLINATION_RAD)  // Convert geomagnetic down-positive inclination to EKF +Z-up/specific-force convention.
+  +sin(FC_MAG_INCLINATION_RAD)  // NED-style Z-down earth frame: geomagnetic inclination is down-positive, so +Z.
 };
 Matrix IMU_MAG_B0(3, 1, IMU_MAG_B0_data);
+// Fitted by MAGCAL in the fusion body frame. The Z component's sign follows
+// the frame's Z axis: when the fusion frame changed from Z-up to Z-down the
+// Z bias flipped sign with it (X/Y are unchanged, and the diagonal soft-iron
+// matrix is sign-invariant). Re-running MAGCAL now fits directly in the
+// Z-down frame.
 float_prec HARD_IRON_BIAS_data[3] = {
-  -33.941257f, -10.753434f, -2.073374f
+  -33.941257f, -10.753434f, +2.073374f
 };
 Matrix HARD_IRON_BIAS(3, 1, HARD_IRON_BIAS_data);
 float_prec SOFT_IRON_MATRIX_data[9] = {
@@ -1195,8 +1205,8 @@ void ekfRefreshAttitudeCache() {
   const float q1 = q[1][0];
   const float q2 = q[2][0];
   const float q3 = q[3][0];
-  const float roll  = -atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
-  const float pitchArg = clampFloat(2.0f*(q0*q2 - q3*q1), -1.0f, 1.0f);
+  const float roll  = atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
+  const float pitchArg = clampFloat(2.0f*(q3*q1 - q0*q2), -1.0f, 1.0f);
   const float pitch = asinf(pitchArg) * (180.0f / (float)M_PI);
   const float yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
   latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
@@ -1500,10 +1510,12 @@ void runMagnetometerCalibrationDebug() {
     if ((uint32_t)(nowMs - lastSampleMs) >= FC_MAG_CALIBRATION_SAMPLE_PERIOD_MS) {
       lastSampleMs = nowMs;
       if (IMU.readSensor() > 0) {
-        // Use the same aircraft-frame magnetometer axes as the EKF update path.
+        // Use the same aircraft-frame magnetometer axes as the EKF update path
+        // (X = imu Y, Y = imu X, Z = -imu Z) so the fitted hard/soft-iron
+        // constants drop straight into HARD_IRON_BIAS / SOFT_IRON_MATRIX.
         float x = IMU.getMagY_uT();
         float y = IMU.getMagX_uT();
-        float z = IMU.getMagZ_uT();
+        float z = -IMU.getMagZ_uT();
         float norm = sqrt(x*x + y*y + z*z);
         if (norm > NORM_EPSILON) {
           if (!haveSample) {
@@ -2554,8 +2566,10 @@ bool vibeMeasureWindow(float targetPct, float &actualAvg, float &actualMin, floa
     if ((int32_t)(nowUs - nextSampleUs) >= 0) {
       nextSampleUs += VIBE_SAMPLE_PERIOD_US;
       IMU.readSensor();
-      // Aircraft-frame gyro (X/Y swapped to match the flight loop), in rad/s.
-      vibeFeedSample(IMU.getGyroY_rads(), IMU.getGyroX_rads(), IMU.getGyroZ_rads());
+      // Aircraft-frame gyro (same mapping as the flight loop), in rad/s. The
+      // Z sign is irrelevant to the Goertzel amplitude scan but kept
+      // consistent with the fusion frame.
+      vibeFeedSample(IMU.getGyroY_rads(), IMU.getGyroX_rads(), -IMU.getGyroZ_rads());
       pctSum += pct; ++pctN;
       if (pct < actualMin) actualMin = pct;
       if (pct > actualMax) actualMax = pct;
@@ -3166,13 +3180,14 @@ void initializeCoarseAttitude() {
   uint16_t validSamples = 0;
   for (uint16_t i = 0; i < ATTITUDE_INIT_SAMPLES; ++i) {
     if (IMU.readSensor() > 0 && !IMU.magnetometerOverflow()) {
-      // Same X/Y swap as the 125 Hz fusion block: body X forward, Z up.
+      // Same proper frame mapping as the 125 Hz fusion block: X = imu Y
+      // (forward), Y = imu X, Z = -imu Z (down).
       accSum[0] += IMU.getAccelY_mss();
       accSum[1] += IMU.getAccelX_mss();
-      accSum[2] += IMU.getAccelZ_mss();
+      accSum[2] += -IMU.getAccelZ_mss();
       magSum[0] += IMU.getMagY_uT();
       magSum[1] += IMU.getMagX_uT();
-      magSum[2] += IMU.getMagZ_uT();
+      magSum[2] += -IMU.getMagZ_uT();
       ++validSamples;
     }
     delay(ATTITUDE_INIT_SAMPLE_DELAY_MS);
@@ -3205,11 +3220,14 @@ void initializeCoarseAttitude() {
              + SOFT_IRON_MATRIX[row][2] * (magRaw[2] - HARD_IRON_BIAS[2][0]);
   }
 
+  // Earth references in the same convention as the EKF measurement model: the
+  // at-rest specific force points to (0, 0, IMU_ACC_Z0) and the field to B0.
+  const float accRef[3] = { 0.0f, 0.0f, (float)IMU_ACC_Z0 };
   const float magRef[3] = {
     (float)IMU_MAG_B0[0][0], (float)IMU_MAG_B0[1][0], (float)IMU_MAG_B0[2][0]
   };
   float quatInit[4];
-  if (!bTriadAttitudeInit(acc, mag, magRef, quatInit)) {
+  if (!bTriadAttitudeInit(acc, mag, accRef, magRef, quatInit)) {
     Serial.println("Attitude init: degenerate accel/mag geometry, starting at identity");
     return;
   }
@@ -3439,12 +3457,13 @@ void loop() {
       }
       lastEkfPredictUs = predictNowUs;
 
-      // Bias-corrected gyro, X/Y swapped to align the IMU frame with the aircraft
-      // frame (body X forward, Z up). Only the gyro is used here; the 125 Hz
-      // correction reads its own fresh accel/mag at the correction instant.
+      // Bias-corrected gyro in the aircraft body frame (X = imu Y forward,
+      // Y = imu X, Z = -imu Z down; proper right-handed mapping -- see the
+      // 125 Hz block). Only the gyro is used here; the 125 Hz correction reads
+      // its own fresh accel/mag at the correction instant.
       U[0][0] = IMU.getGyroY_rads();
       U[1][0] = IMU.getGyroX_rads();
-      U[2][0] = IMU.getGyroZ_rads();
+      U[2][0] = -IMU.getGyroZ_rads();
 
       gEkfRuntimeDt = static_cast<float_prec>(predictDt);
       ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
@@ -3490,19 +3509,32 @@ void loop() {
     // the accel/mag gate, centripetal compensation, and control attitude are never
     // based on a stale sample.
     IMU.readSensor();
-    // Swap X/Y axes to align IMU frame with aircraft frame
+    // IMU -> aircraft body frame: X = imu Y (forward), Y = imu X, Z = -imu Z
+    // (down). This is a PROPER rotation (det +1). The previous mapping kept
+    // +imu Z, i.e. a bare X<->Y swap -- a det -1 REFLECTION, which no physical
+    // mounting can produce. In a reflected frame angular velocity (a
+    // pseudovector) needs an opposite sign from the accel/mag (polar vectors),
+    // so the gyro prediction rotated the estimate in the wrong sense and the
+    // accel/mag correction dragged it back every step: roll/pitch swapped in
+    // the response, heading mirrored, and the residual fight bled into the
+    // gyro-bias states as offset + drift. With Z negated on ALL THREE sensors
+    // the frame is right-handed and prediction/correction agree. The reported
+    // roll/pitch/yaw are numerically IDENTICAL to the previous (correct)
+    // static outputs -- proven over random attitudes in
+    // tests/frame_consistency_test.cpp -- so display, control, and telemetry
+    // conventions are unchanged.
     float Ax = IMU.getAccelY_mss();
     float Ay = IMU.getAccelX_mss();
-    float Az = IMU.getAccelZ_mss();
+    float Az = -IMU.getAccelZ_mss();
     float Bx = IMU.getMagY_uT();
     float By = IMU.getMagX_uT();
-    float Bz = IMU.getMagZ_uT();
+    float Bz = -IMU.getMagZ_uT();
     // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
     // sample below rather than fusing it as a heading reference.
     const bool magOverflow = IMU.magnetometerOverflow();
     float p  = IMU.getGyroY_rads();
     float q  = IMU.getGyroX_rads();
-    float r  = IMU.getGyroZ_rads();
+    float r  = -IMU.getGyroZ_rads();
     
     // Populate matrices for EKF update
     U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
@@ -3562,11 +3594,13 @@ void loop() {
 
 #if FC_ACCEL_CENTRIPETAL_COMPENSATION
     // Subtract the centripetal/transport acceleration (a ~= omega x V) from the
-    // measured specific force before treating it as a gravity reference. In this
-    // EKF body frame the axis swap above gives X forward, Z up (a left-handed
-    // basis), so a forward velocity V with body pitch rate q and yaw rate r
-    // produces a kinematic acceleration of [0, -r*V, q*V]; removing it leaves the
-    // gravity-only specific force. The body rates are EKF bias-corrected (q,r minus
+    // measured specific force before treating it as a gravity reference. In the
+    // right-handed Z-down body frame, a forward velocity V with body pitch rate
+    // q and yaw rate r produces a kinematic acceleration of
+    // omega x V = [0, r*V, -q*V]; removing it leaves the gravity-only specific
+    // force. (Because r's sign flipped with the frame's Z axis, the physical
+    // correction applied is identical to the previous left-handed-frame
+    // derivation.) The body rates are EKF bias-corrected (q,r minus
     // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
     // cannot inject a persistent bias*airspeed term in straight flight. Only
     // applied with a fresh, valid, bounded airspeed, GPS-confirmed ground motion,
@@ -3581,8 +3615,8 @@ void loop() {
         centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
         const float pitchRate = U[1][0] - predictedX[5][0];  // q minus est. pitch-gyro bias
         const float yawRate   = U[2][0] - predictedX[6][0];  // r minus est. yaw-gyro bias
-        Y[1][0] += yawRate   * centripetalAirspeedMps;   // remove the -r*V term
-        Y[2][0] -= pitchRate * centripetalAirspeedMps;   // remove the +q*V term
+        Y[1][0] -= yawRate   * centripetalAirspeedMps;   // remove the +r*V term
+        Y[2][0] += pitchRate * centripetalAirspeedMps;   // remove the -q*V term
       }
     }
 #endif
@@ -3726,9 +3760,14 @@ void loop() {
     float q2 = quaternionData[2][0];
     float q3 = quaternionData[3][0];
     
-    // Invert roll sign so right rolls are negative and left rolls are positive
-    float roll  = -atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
-    float pitchArg = clampFloat(2.0f*(q0*q2 - q3*q1), -1.0f, 1.0f);
+    // Euler extraction for the Z-down body frame, preserving the project's
+    // established output conventions exactly (right rolls negative, pitch and
+    // compass-style yaw unchanged): the frame's Z negation supplies the roll
+    // sign flip that used to be applied here explicitly, and moves the sign
+    // onto pitch instead. Numerical equivalence with the previous outputs is
+    // proven attitude-by-attitude in tests/frame_consistency_test.cpp.
+    float roll  = atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * (180.0f / (float)M_PI);
+    float pitchArg = clampFloat(2.0f*(q3*q1 - q0*q2), -1.0f, 1.0f);
     float pitch = asinf(pitchArg) * (180.0f / (float)M_PI);
     float yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
     // Previously applied calibration offsets have been removed so that
