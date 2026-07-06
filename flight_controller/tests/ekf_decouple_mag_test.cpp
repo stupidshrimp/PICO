@@ -62,15 +62,18 @@ void SPEW_THE_ERROR(char const* str);
 void SPEW_THE_ERROR(char const* str) { std::printf("MATRIX ASSERT: %s\n", str); std::abort(); }
 
 /* ---- Magnetic reference field for the firmware's default site (central
- *      Illinois). |B0| == 1 by construction. ---- */
+ *      Illinois). |B0| == 1 by construction. NED-style Z-down earth frame to
+ *      match the firmware: inclination is down-positive (+sin), and the
+ *      at-rest specific force points to (0,0,IMU_ACC_Z0) with Z0 = -1. ---- */
 static const double DECL = -0.05640509;
 static const double INCL =  1.17209583;
 static double B0[3] = {
     cos(INCL) * cos(DECL),
     cos(INCL) * sin(DECL),
-    -sin(INCL)
+    sin(INCL)
 };
-static const double IMU_ACC_Z0 = 1.0;
+static const double IMU_ACC_Z0 = -1.0;
+static const double ACC_REF[3] = {0.0, 0.0, IMU_ACC_Z0};
 
 static double wrapPi(double a) {
     while (a >  M_PI) a -= 2.0 * M_PI;
@@ -271,11 +274,171 @@ static bool cbNorm(Matrix& X) {
 }
 
 static void rollpitch_of(const double q[4], double& roll, double& pitch) {
-    /* gravity (earth up) direction in body frame = accel prediction */
-    double g[3] = {0,0,1}, gb[3];
-    Reb_times(q, g, gb);
-    pitch = asin(fmax(-1.0, fmin(1.0, gb[0])));      /* -sin(theta) component layout */
+    /* specific-force (at-rest accel) direction in body frame = accel prediction */
+    double gb[3];
+    Reb_times(q, ACC_REF, gb);
+    pitch = asin(fmax(-1.0, fmin(1.0, gb[0])));
     roll  = atan2(gb[1], gb[2]);
+}
+
+/* ===================== Dynamic frame consistency (shipped configuration) =====================
+ *
+ * The firmware default is FC_EKF_DECOUPLE_MAG == 1 with the proper Z-down body
+ * frame (Z negated on accel/gyro/mag, IMU_ACC_Z0 = -1, B0_z = +sin(INCL)).
+ * tests/frame_consistency_test.cpp proves the frame fix dynamically for the
+ * legacy 6-row model; this test proves it for the 4-row decoupled model that
+ * actually ships: a tumbling truth, sensors mapped through the proper
+ * C = [[0,1,0],[1,0,0],[0,0,-1]], the real EKF class running the firmware's
+ * dt-predict (f, F) plus the decoupled (h, H) and the tilt-compensated heading
+ * innovation exactly as Main.ino builds it. The gyro prediction must agree
+ * with the accel/heading correction (innovation ~ 0) and the attitude must
+ * track C * M(q_true) * C throughout. */
+
+static const double DT_DYN = 0.008;
+
+static bool cbXdyn(Matrix& Xn, const Matrix& X, const Matrix& U) {
+    const double q0=X[0][0], q1=X[1][0], q2=X[2][0], q3=X[3][0];
+    const double p=U[0][0]-X[4][0], q=U[1][0]-X[5][0], r=U[2][0]-X[6][0];
+    double qn[4] = {
+        q0 + DT_DYN*0.5*(-p*q1 - q*q2 - r*q3),
+        q1 + DT_DYN*0.5*( p*q0 + r*q2 - q*q3),
+        q2 + DT_DYN*0.5*( q*q0 - r*q1 + p*q3),
+        q3 + DT_DYN*0.5*( r*q0 + q*q1 - p*q2)
+    };
+    qnorm(qn);
+    for (int i = 0; i < 4; i++) Xn[i][0] = qn[i];
+    for (int i = 4; i < 7; i++) Xn[i][0] = X[i][0];
+    return true;
+}
+
+static bool cbFdyn(Matrix& F, const Matrix& X, const Matrix& U) {
+    const double q0=X[0][0], q1=X[1][0], q2=X[2][0], q3=X[3][0];
+    const double p=U[0][0]-X[4][0], q=U[1][0]-X[5][0], r=U[2][0]-X[6][0];
+    F.vSetToZero();
+    F[0][0]=1;             F[0][1]=-0.5*p*DT_DYN; F[0][2]=-0.5*q*DT_DYN; F[0][3]=-0.5*r*DT_DYN;
+    F[1][0]=0.5*p*DT_DYN;  F[1][1]=1;             F[1][2]= 0.5*r*DT_DYN; F[1][3]=-0.5*q*DT_DYN;
+    F[2][0]=0.5*q*DT_DYN;  F[2][1]=-0.5*r*DT_DYN; F[2][2]=1;             F[2][3]= 0.5*p*DT_DYN;
+    F[3][0]=0.5*r*DT_DYN;  F[3][1]= 0.5*q*DT_DYN; F[3][2]=-0.5*p*DT_DYN; F[3][3]=1;
+    F[0][4]= 0.5*q1*DT_DYN; F[1][4]=-0.5*q0*DT_DYN; F[2][4]=-0.5*q3*DT_DYN; F[3][4]= 0.5*q2*DT_DYN;
+    F[0][5]= 0.5*q2*DT_DYN; F[1][5]= 0.5*q3*DT_DYN; F[2][5]=-0.5*q0*DT_DYN; F[3][5]=-0.5*q1*DT_DYN;
+    F[0][6]= 0.5*q3*DT_DYN; F[1][6]=-0.5*q2*DT_DYN; F[2][6]= 0.5*q1*DT_DYN; F[3][6]=-0.5*q0*DT_DYN;
+    F[4][4]=1; F[5][5]=1; F[6][6]=1;
+    return true;
+}
+
+static void MofQ_full(const double q[4], double M[3][3]) {
+    const double q0=q[0], q1=q[1], q2=q[2], q3=q[3];
+    M[0][0]=q0*q0+q1*q1-q2*q2-q3*q3; M[0][1]=2*(q1*q2+q0*q3);         M[0][2]=2*(q1*q3-q0*q2);
+    M[1][0]=2*(q1*q2-q0*q3);         M[1][1]=q0*q0-q1*q1+q2*q2-q3*q3; M[1][2]=2*(q2*q3+q0*q1);
+    M[2][0]=2*(q1*q3+q0*q2);         M[2][1]=2*(q2*q3-q0*q1);         M[2][2]=q0*q0-q1*q1-q2*q2+q3*q3;
+}
+
+static void mat3mul(const double A[3][3], const double B[3][3], double C[3][3]) {
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            C[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j];
+}
+
+static void test_dynamic_frame_decoupled() {
+    std::printf("[test_dynamic_frame_decoupled] shipped 4-row model, proper Z-down frame, tumbling truth\n");
+
+    /* proper body map C and the physical earth field (z-up world) consistent
+     * with "the previous configuration read correctly": B_E = S * B0_ZUP,
+     * where B0_ZUP is this file's NED B0 with the vertical sign flipped back. */
+    const double C_MAP[3][3] = {{0,1,0},{1,0,0},{0,0,-1}};
+    const double B0_ZUP[3] = { B0[0], B0[1], -B0[2] };
+    const double B_E[3] = { B0_ZUP[1], B0_ZUP[0], B0_ZUP[2] };
+    const double E3[3] = {0, 0, 1};   /* specific force points up in the z-up world */
+
+    Matrix Xi(SS_X_LEN,1); Xi.vSetToZero(); Xi[0][0]=1.0;
+    Matrix P(SS_X_LEN,SS_X_LEN); P.vSetToZero();
+    for (int i=0;i<4;i++) P[i][i]=10.0;
+    for (int i=4;i<7;i++) P[i][i]=0.02;
+    Matrix Q(SS_X_LEN,SS_X_LEN); Q.vSetToZero();
+    for (int i=0;i<4;i++) Q[i][i]=1e-6;
+    for (int i=4;i<7;i++) Q[i][i]=1e-8;
+    Matrix R(SS_Z_LEN,SS_Z_LEN); R.vSetToZero();
+    R[0][0]=R[1][1]=R[2][2]=0.00015; R[3][3]=0.0025;
+    EKF filter(Xi, P, Q, R, cbXdyn, cbY, cbFdyn, cbH, cbNorm);
+    filter.vSetMeasurementNoise(R);
+
+    double qt[4] = {1,0,0,0};
+    const int steps = (int)(6.5/DT_DYN);
+    double innovSum = 0; int innovN = 0; double worstAtt = 0;
+    Matrix Y(SS_Z_LEN,1), U(SS_U_LEN,1);
+    for (int k = 0; k < steps; k++) {
+        const double t = k*DT_DYN;
+        const bool tumbling = (t >= 1.5 && t < 5.5);
+        double w[3] = {0,0,0};
+        if (tumbling) { w[0]=12*M_PI/180; w[1]=8*M_PI/180; w[2]=-10*M_PI/180; }
+
+        /* sensors at the current truth, mapped through the proper frame */
+        double Rt[3][3]; MofQ_full(qt, Rt);
+        double a_e[3], m_e[3], a_b[3], m_b[3], w_b[3];
+        for (int i=0;i<3;i++) {
+            a_e[i] = Rt[i][0]*E3[0] + Rt[i][1]*E3[1] + Rt[i][2]*E3[2];
+            m_e[i] = Rt[i][0]*B_E[0] + Rt[i][1]*B_E[1] + Rt[i][2]*B_E[2];
+        }
+        for (int i=0;i<3;i++) {
+            a_b[i] = C_MAP[i][0]*a_e[0] + C_MAP[i][1]*a_e[1] + C_MAP[i][2]*a_e[2];
+            m_b[i] = C_MAP[i][0]*m_e[0] + C_MAP[i][1]*m_e[1] + C_MAP[i][2]*m_e[2];
+            w_b[i] = C_MAP[i][0]*w[0]   + C_MAP[i][1]*w[1]   + C_MAP[i][2]*w[2];
+        }
+        for (int i=0;i<3;i++) U[i][0] = w_b[i];
+
+        /* build the measurement exactly as Main.ino does: manual one-step
+         * prediction (identical to the bUpdate-internal one), accel rows
+         * normalized, yaw row = h3(predicted) + tilt-compensated innovation */
+        Matrix Xpred(SS_X_LEN,1);
+        cbXdyn(Xpred, filter.GetX(), U);
+        double Xp[7]; for (int i=0;i<7;i++) Xp[i]=Xpred[i][0];
+        double yhat[SS_Z_LEN]; h_decoupled(Xp, yhat);
+        double an = sqrt(a_b[0]*a_b[0]+a_b[1]*a_b[1]+a_b[2]*a_b[2]);
+        Y[0][0]=a_b[0]/an; Y[1][0]=a_b[1]/an; Y[2][0]=a_b[2]/an;
+        Y[3][0]=yhat[3] + mag_yaw_innovation(Xp, m_b);
+
+        bool ok = filter.bUpdate(Y, U);
+        if (!ok) { g_fail++; std::printf("  FAIL bUpdate returned false at k=%d\n", k); return; }
+
+        if (tumbling && t > 2.0) {
+            Matrix E = filter.GetErr();
+            double in = 0;
+            for (int i=0;i<SS_Z_LEN;i++) in += E[i][0]*E[i][0];
+            innovSum += sqrt(in); ++innovN;
+            /* attitude error vs the exact conjugated truth N = C * M(qt) * C */
+            double CR[3][3], N[3][3], Me[3][3];
+            mat3mul(C_MAP, Rt, CR);
+            mat3mul(CR, C_MAP, N);
+            Matrix Xf = filter.GetX();
+            double qe[4] = {Xf[0][0],Xf[1][0],Xf[2][0],Xf[3][0]};
+            MofQ_full(qe, Me);
+            double tr = 0;
+            for (int i=0;i<3;i++)
+                for (int j=0;j<3;j++) tr += Me[j][i]*N[j][i];   /* trace(Me' * N) */
+            double cang = (tr - 1.0) * 0.5;
+            if (cang > 1.0) cang = 1.0;
+            if (cang < -1.0) cang = -1.0;
+            const double ang = acos(cang);
+            if (ang > worstAtt) worstAtt = ang;
+        }
+
+        /* propagate truth (10 substeps) with the standard kinematics */
+        for (int s = 0; s < 10; s++) {
+            const double p=w[0], q=w[1], r=w[2];
+            const double h = DT_DYN/10*0.5;
+            double q0=qt[0], q1=qt[1], q2=qt[2], q3=qt[3];
+            qt[0] = q0 + h*(-p*q1 - q*q2 - r*q3);
+            qt[1] = q1 + h*( p*q0 + r*q2 - q*q3);
+            qt[2] = q2 + h*( q*q0 - r*q1 + p*q3);
+            qt[3] = q3 + h*( r*q0 + q*q1 - p*q2);
+            qnorm(qt);
+        }
+    }
+    const double meanInnov = innovN ? innovSum/innovN : 1.0;
+    std::printf("  info mean|innov| during tumble = %.6f, worst attitude error = %.4f deg\n",
+                meanInnov, worstAtt*180/M_PI);
+    check(meanInnov < 1e-3, "prediction agrees with correction", meanInnov, 0.0, 1e-3);
+    check(worstAtt < 0.5*M_PI/180, "attitude tracks C*M(q)*C through tumble", worstAtt, 0.0, 0.5*M_PI/180);
 }
 
 /* Test 3: the decoupling property, run through the REAL EKF class. */
@@ -294,8 +457,8 @@ static void test_decoupling_ekf() {
     check(fabs(r0-rt)<1e-9 && fabs(p0-pt)<1e-9, "truth differs from est by pure yaw", fabs(r0-rt), 0.0, 1e-9);
 
     /* measurements consistent with truth */
-    double acc[3], mb_clean[3], up[3]={0,0,1};
-    Reb_times(qtrue, up, acc);
+    double acc[3], mb_clean[3];
+    Reb_times(qtrue, ACC_REF, acc);
     Reb_times(qtrue, B0, mb_clean);
 
     /* ---- Case A: clean mag -> yaw converges, roll/pitch stay put ---- */
@@ -346,10 +509,11 @@ static void test_decoupling_ekf() {
 int main() {
     std::printf("B0 = [% .5f % .5f % .5f], |B0|=%.6f  decl=%.4f incl=%.4f\n\n",
                 B0[0],B0[1],B0[2], sqrt(B0[0]*B0[0]+B0[1]*B0[1]+B0[2]*B0[2]),
-                atan2(B0[1],B0[0]), -asin(B0[2]));
+                atan2(B0[1],B0[0]), asin(B0[2]));
     test_jacobian();
     test_innovation_sign();
     test_decoupling_ekf();
+    test_dynamic_frame_decoupled();
     std::printf("\n%s (%d failure%s)\n", g_fail? "TESTS FAILED":"ALL TESTS PASSED",
                 g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;

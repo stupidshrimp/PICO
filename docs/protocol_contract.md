@@ -104,10 +104,15 @@ Current FC attitude production details:
 
 - EKF/cache cadence is `8 ms` (`SS_DT_MILIS`), matching the `125 Hz` attitude
   telemetry period.
-- Roll is sign-inverted before being cached so right rolls are negative and left
-  rolls are positive.
-- Pitch is cached directly from the EKF but emitted through the CRSF attitude
-  helper, whose sign convention is undone in the GS decoder.
+- The cached angle conventions are unchanged: right rolls are negative, left
+  rolls are positive, pitch is nose-up positive, yaw is compass-style. Since
+  the EKF body frame moved to Z-down (proper right-handed), these signs come
+  directly out of the quaternion-to-Euler conversion
+  (`quaternionToEulerDeg` in `Main.ino`) with no post-hoc roll flip; the
+  emitted values are numerically identical to earlier firmware (proven in
+  `flight_controller/tests/frame_consistency_test.cpp`).
+- Pitch is emitted through the CRSF attitude helper, whose sign convention is
+  undone in the GS decoder.
 
 ### GPS (`0x02`)
 

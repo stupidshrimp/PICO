@@ -31,6 +31,7 @@ public:
     const Matrix GetErr() const { return Err; }
 
 protected:
+    void vSymmetrizeP(void);
     bool (*bNonlinearUpdateX) (Matrix& X_dot, const Matrix& X, const Matrix& U);
     bool (*bNonlinearUpdateY) (Matrix& Y_Est, const Matrix& X, const Matrix& U);
     bool (*bCalcJacobianF) (Matrix& F, const Matrix& X, const Matrix& U);

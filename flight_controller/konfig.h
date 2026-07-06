@@ -14,23 +14,28 @@
 
 
 /* Decouple the magnetometer from roll & pitch.
- *   0 (default) = legacy 3-axis magnetometer fusion. The full body-frame field
+ *   0           = legacy 3-axis magnetometer fusion. The full body-frame field
  *                 is a measurement, so its Jacobian couples into every attitude
  *                 DOF and magnetic disturbances (hard/soft-iron residual, motor
  *                 current, local anomalies, a wrong inclination constant) bleed
- *                 into roll & pitch.
- *   1           = the magnetometer feeds ONLY a tilt-compensated heading
+ *                 into roll & pitch. This is the primary source of the
+ *                 heading-dependent roll/pitch offset and the slow attitude
+ *                 drift observed near magnetic disturbances.
+ *   1 (default) = the magnetometer feeds ONLY a tilt-compensated heading
  *                 measurement (a scalar yaw), so roll & pitch come purely from
- *                 the accelerometer + gyro and are immune to magnetic error. The
- *                 measurement vector shrinks from accel(3)+mag(3) to
- *                 accel(3)+yaw(1); see Main.ino for the model and tests/
- *                 ekf_decouple_mag_test.cpp for the host-side proof.
+ *                 the accelerometer + gyro and are immune to magnetic error.
+ *                 This is how mainstream autopilots (PX4/ArduPilot-style AHRS)
+ *                 fuse a compass. The measurement vector shrinks from
+ *                 accel(3)+mag(3) to accel(3)+yaw(1); see Main.ino for the
+ *                 model and tests/ekf_decouple_mag_test.cpp for the host-side
+ *                 proof (yaw Jacobian vs finite difference, innovation sign,
+ *                 and the decoupling property through the real EKF class).
  *
- * NOT YET BENCH-VERIFIED: the decoupled path has not been compiled with the
- * Arduino toolchain or flight-tested, and R_INIT_YAW / the heading gate still
- * need flight tuning. Default OFF; the legacy path is bit-for-bit unchanged. */
+ * Default ON. Set to 0 for a one-line rollback to the legacy 3-axis fusion;
+ * that path is bit-for-bit unchanged. R_INIT_YAW and the heading gate
+ * (MAG_YAW_INNOVATION_GATE) may still benefit from flight tuning. */
 #ifndef FC_EKF_DECOUPLE_MAG
-#define FC_EKF_DECOUPLE_MAG 0
+#define FC_EKF_DECOUPLE_MAG 1
 #endif
 
 /* State Space dimension */
