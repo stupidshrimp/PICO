@@ -277,7 +277,13 @@ public:
                 delay(20);
             }
             if (validSamples == 0) {
-                result = -7;  // could not read any valid gyro samples to estimate bias
+                // Keep an earlier motion verdict (-8) sticky: a read glitch on a
+                // later attempt must not downgrade the failure to "no samples",
+                // which the caller reports as a wiring problem instead of the
+                // keep-the-airframe-still message the operator actually needs.
+                if (result != -8) {
+                    result = -7;  // could not read any valid gyro samples to estimate bias
+                }
                 continue;
             }
             const double n = (double)validSamples;
@@ -291,22 +297,22 @@ public:
             if (gxVar < 0) gxVar = 0;
             if (gyVar < 0) gyVar = 0;
             if (gzVar < 0) gzVar = 0;
+            // One stillness predicate, two symptoms: variance catches shaking/
+            // handling, and the mean bound catches STEADY rotation the variance
+            // cannot see (constant rate has sensor-noise variance, e.g. booting
+            // on a turning vehicle or deck). A real MPU-9250 zero-rate offset is
+            // bounded by the datasheet (+/-5 dps initial tolerance), so a window
+            // mean beyond _gyroCalMaxMeanRads cannot be bias -- it is real
+            // angular rate and must not be stored as the zero-rate offset.
             const double stillVarLimit =
                 (double)_gyroCalStillnessStdLimit * (double)_gyroCalStillnessStdLimit;
-            if (gxVar > stillVarLimit || gyVar > stillVarLimit || gzVar > stillVarLimit) {
+            const bool notStill =
+                (gxVar > stillVarLimit || gyVar > stillVarLimit || gzVar > stillVarLimit) ||
+                (fabsf((float)gxMean) > _gyroCalMaxMeanRads ||
+                 fabsf((float)gyMean) > _gyroCalMaxMeanRads ||
+                 fabsf((float)gzMean) > _gyroCalMaxMeanRads);
+            if (notStill) {
                 result = -8;  // motion detected during bias estimation
-                continue;
-            }
-            // The variance gate cannot see a STEADY rotation (constant rate has
-            // sensor-noise variance), e.g. booting on a turning vehicle or deck.
-            // A real MPU-9250 zero-rate offset is bounded by the datasheet
-            // (+/-5 dps initial tolerance), so a window mean beyond
-            // _gyroCalMaxMeanRads cannot be bias -- it is real angular rate and
-            // must not be stored as the zero-rate offset.
-            if (fabsf((float)gxMean) > _gyroCalMaxMeanRads ||
-                fabsf((float)gyMean) > _gyroCalMaxMeanRads ||
-                fabsf((float)gzMean) > _gyroCalMaxMeanRads) {
-                result = -8;  // steady rotation during bias estimation
                 continue;
             }
             _gxb = (float)gxMean;

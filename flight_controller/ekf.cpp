@@ -143,9 +143,24 @@ bool EKF::bPredict(const Matrix& U)
      * skews the Kalman gain, which shows up as slow attitude drift long before
      * the filter outright diverges. Re-symmetrizing each step keeps P a valid
      * covariance. */
-    P = (P + P.Transpose()) * 0.5;
+    vSymmetrizeP();
 
     return true;
+}
+
+/* P = (P + P') / 2 without temporaries: average the off-diagonal pairs in
+ * place (the diagonal is already exact). This runs inside the high-rate
+ * prediction loop, where the matrix-expression form (Transpose + add + scalar
+ * multiply + assign) would build three full copies per call. */
+void EKF::vSymmetrizeP(void)
+{
+    for (int16_t _i = 0; _i < SS_X_LEN; _i++) {
+        for (int16_t _j = _i + 1; _j < SS_X_LEN; _j++) {
+            float_prec _avg = (P[_i][_j] + P[_j][_i]) * 0.5;
+            P[_i][_j] = _avg;
+            P[_j][_i] = _avg;
+        }
+    }
 }
 
 bool EKF::bCorrect(const Matrix& Y, const Matrix& U)
@@ -191,7 +206,7 @@ bool EKF::bCorrect(const Matrix& Y, const Matrix& U)
     P = IminusKH*P*(IminusKH.Transpose()) + Gain*R*(Gain.Transpose());
 
     /* Same float round-off symmetry enforcement as the prediction step. */
-    P = (P + P.Transpose()) * 0.5;
+    vSymmetrizeP();
 
     return true;
 }
