@@ -297,6 +297,18 @@ public:
                 result = -8;  // motion detected during bias estimation
                 continue;
             }
+            // The variance gate cannot see a STEADY rotation (constant rate has
+            // sensor-noise variance), e.g. booting on a turning vehicle or deck.
+            // A real MPU-9250 zero-rate offset is bounded by the datasheet
+            // (+/-5 dps initial tolerance), so a window mean beyond
+            // _gyroCalMaxMeanRads cannot be bias -- it is real angular rate and
+            // must not be stored as the zero-rate offset.
+            if (fabsf((float)gxMean) > _gyroCalMaxMeanRads ||
+                fabsf((float)gyMean) > _gyroCalMaxMeanRads ||
+                fabsf((float)gzMean) > _gyroCalMaxMeanRads) {
+                result = -8;  // steady rotation during bias estimation
+                continue;
+            }
             _gxb = (float)gxMean;
             _gyb = (float)gyMean;
             _gzb = (float)gzMean;
@@ -600,6 +612,13 @@ private:
     // 0.0175 rad/s (~1 deg/s) passes any resting airframe (including light
     // wind buffet) while rejecting handling motion, which is orders larger.
     float _gyroCalStillnessStdLimit = 0.0175f;
+    // Largest per-axis window MEAN accepted as a zero-rate offset (rad/s).
+    // Catches steady rotation, which the variance gate cannot see. The
+    // MPU-9250 initial ZRO tolerance is +/-5 dps (~0.087 rad/s); 0.175 rad/s
+    // (~10 dps) gives 2x margin for temperature and part spread, while any
+    // window mean beyond it must be real rotation (or a gyro so far out of
+    // spec that refusing to boot is the right call).
+    float _gyroCalMaxMeanRads = 0.175f;
     // Each attempt is _numSamples x 20 ms = 2 s; 5 attempts bound startup at
     // 10 s before giving up and failing begin().
     uint8_t _gyroCalMaxAttempts = 5;
