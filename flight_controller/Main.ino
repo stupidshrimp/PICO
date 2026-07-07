@@ -1348,7 +1348,11 @@ void ekfRefreshAttitudeCache() {
   latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
   latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
   latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
-  attitudeSampleValid = true;
+  // Only advertise the attitude as valid while it is actually being updated, so
+  // a dead IMU (recovery boot with a failed IMU init) never publishes a frozen
+  // estimate as a live one. Fresh here in normal operation (lastAttitudeUpdateUs
+  // was just set by the successful predict).
+  attitudeSampleValid = attitudeEstimateFresh(micros());
 }
 #endif  // FC_EKF_FAST_PREDICT
 
@@ -4058,7 +4062,12 @@ void loop() {
     latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
     latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
     latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
-    attitudeSampleValid = true;
+    // Validity tracks freshness, not merely "the control block ran": when the
+    // IMU read failed this cycle (or the IMU is dead on a recovery boot) the
+    // estimate did not update, so once it goes stale telemetry stops
+    // advertising it as a live attitude. In normal operation the update above
+    // set lastAttitudeUpdateUs == controlUpdateUs, so this stays true.
+    attitudeSampleValid = attitudeEstimateFresh(controlUpdateUs);
 
     serviceCrsfLink();
 
