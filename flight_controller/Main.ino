@@ -311,6 +311,12 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define AIRBORNE_ENGAGE_HEIGHT_M (3.0f)       // climb above ground to latch airborne
 #define AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0f)   // airspeed needed to latch airborne
 #define AIRBORNE_DISENGAGE_HEIGHT_M (1.5f)    // back near the ground -> not airborne
+// A watchdog-recovery boot has no ground/height reference, so its airborne
+// latch disengages on AIRSPEED instead of barometric height (see
+// updateAirborneState()). Set below AIRBORNE_ENGAGE_AIRSPEED_MPS for hysteresis
+// and above typical taxi airspeed so a post-recovery landing roll or taxi drops
+// the latch and stops the kinematic accel compensation.
+#define AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS (6.0f)
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -1408,16 +1414,23 @@ void updateAirborneState(uint32_t nowUs) {
     // Watchdog-recovery boot with no trustworthy ground-height reference: the
     // ground capture is intentionally skipped (see applyBarometerPressure())
     // because the first in-flight reading would otherwise fix the recovery
-    // ALTITUDE as "ground". A watchdog reset fires in the air, so assume
-    // airborne and latch it from airspeed alone -- otherwise the height-gated
-    // engage below would never fire in level or descending recovery flight and
-    // the kinematic accel compensation would stay disabled exactly when it is
-    // needed. The latch is one-way here; the call site's airspeed +
-    // GPS-ground-motion gates still keep the compensation off a stopped or
-    // slow-taxi airframe (e.g. a reset that happened on the ground).
-    if (airspeedInputFresh(nowUs) &&
-        (airSpeedCms * 0.01f) >= AIRBORNE_ENGAGE_AIRSPEED_MPS) {
-      aircraftAirborne = true;
+    // ALTITUDE as "ground". A watchdog reset fires in the air, so the airborne
+    // state is driven by AIRSPEED with hysteresis instead of the usual
+    // barometric height: engage above AIRBORNE_ENGAGE_AIRSPEED_MPS so the
+    // kinematic accel compensation is available in level/descending recovery
+    // flight, and -- unlike a one-way latch -- disengage again below
+    // AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS so a post-recovery landing roll
+    // or taxi (gear-constrained) stops feeding the compensation. Stale airspeed
+    // reads as zero, which disengages. A fast rollout still above the disengage
+    // speed stays "airborne" briefly; the call site's GPS-ground-motion gate and
+    // the pilot's manual authority cover that residual window.
+    const float airspeedMps = airspeedInputFresh(nowUs) ? (airSpeedCms * 0.01f) : 0.0f;
+    if (!aircraftAirborne) {
+      if (airspeedMps >= AIRBORNE_ENGAGE_AIRSPEED_MPS) {
+        aircraftAirborne = true;
+      }
+    } else if (airspeedMps <= AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS) {
+      aircraftAirborne = false;
     }
     return;
   }
