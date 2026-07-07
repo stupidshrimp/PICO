@@ -1118,6 +1118,20 @@ bool attitudeEstimateFresh(uint32_t nowUs) {
          (uint32_t)(nowUs - lastAttitudeUpdateUs) <= ATTITUDE_STALE_TIMEOUT_US;
 }
 
+// True once the attitude estimate is trustworthy enough to close the fly-by-wire
+// loop. A watchdog-recovery boot restarts the EKF in the air and may begin from
+// the identity attitude (TRIAD coarse alignment can fail during a bank/hard
+// maneuver), then needs its innovation-gate warmup window to converge. During
+// that window the estimate is fresh (updating) but may still be swinging in from
+// a TRIAD or identity start, so it is NOT yet safe to steer the PIDs against it.
+// A normal ground boot converges long before takeoff, so only the airborne
+// recovery case is gated here. A dead IMU never increments the warmup counter,
+// so recovery FBW then stays in pass-through indefinitely (as intended).
+bool attitudeEstimateConvergedForFbw(void) {
+  return !watchdogRecoveryBoot ||
+         ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES;
+}
+
 float mapRcToNormalized(uint16_t value) {
   const float inMin = static_cast<float>(RC_INPUT_MIN);
   const float inMax = static_cast<float>(RC_INPUT_MAX);
@@ -4145,12 +4159,18 @@ void loop() {
         yawCommandUs = SERVO_CENTER_US;
       }
     } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE &&
-               !attitudeEstimateFresh(servoUpdateUs)) {
-      // The attitude estimate has stopped updating (dead/failed IMU reads or
-      // persistent EKF failures). Steering the PIDs against a frozen attitude
-      // would hold whatever correction was last commanded, so fall back to
-      // direct RC pass-through -- the pilot still has full manual authority --
-      // until the estimate goes live again.
+               (!attitudeEstimateFresh(servoUpdateUs) || !attitudeEstimateConvergedForFbw())) {
+      // Fall back to direct RC pass-through when the attitude estimate is not
+      // trustworthy enough to close the FBW loop, for either reason:
+      //  - it has stopped updating (dead/failed IMU reads or persistent EKF
+      //    failures) -- steering the PIDs against a frozen attitude would hold
+      //    whatever correction was last commanded; or
+      //  - a watchdog-recovery boot restarted the EKF in the air and it has not
+      //    yet finished its convergence (innovation-gate warmup) window, so the
+      //    estimate is fresh but may still be swinging in from a TRIAD or
+      //    identity start (see attitudeEstimateConvergedForFbw()).
+      // The pilot keeps full manual authority until the estimate is live and
+      // converged.
       ++controlDebugCounters.fbwStaleAttitudeFallbacks;
       rollPid.reset();
       pitchPid.reset();
