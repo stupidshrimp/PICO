@@ -1400,6 +1400,23 @@ bool gpsMotionConfirmed(uint32_t nowUs) {
 // and only drop back to "on ground" once near the captured ground height. This
 // keeps the gear-constrained takeoff/landing roll out of the free-flight model.
 void updateAirborneState(uint32_t nowUs) {
+  if (watchdogRecoveryBoot && !groundAltitudeCaptured) {
+    // Watchdog-recovery boot with no trustworthy ground-height reference: the
+    // ground capture is intentionally skipped (see applyBarometerPressure())
+    // because the first in-flight reading would otherwise fix the recovery
+    // ALTITUDE as "ground". A watchdog reset fires in the air, so assume
+    // airborne and latch it from airspeed alone -- otherwise the height-gated
+    // engage below would never fire in level or descending recovery flight and
+    // the kinematic accel compensation would stay disabled exactly when it is
+    // needed. The latch is one-way here; the call site's airspeed +
+    // GPS-ground-motion gates still keep the compensation off a stopped or
+    // slow-taxi airframe (e.g. a reset that happened on the ground).
+    if (airspeedInputFresh(nowUs) &&
+        (airSpeedCms * 0.01f) >= AIRBORNE_ENGAGE_AIRSPEED_MPS) {
+      aircraftAirborne = true;
+    }
+    return;
+  }
   if (!groundAltitudeCaptured) {
     aircraftAirborne = false;
     return;
@@ -1434,10 +1451,18 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
-  if (!groundAltitudeCaptured) {
+  if (!groundAltitudeCaptured && !watchdogRecoveryBoot) {
     // First valid reading happens on the ground during startup; use it as the
     // height reference for airborne detection. Baro drift over a flight is small
     // relative to the engage/disengage margins.
+    //
+    // NOT on a watchdog-recovery boot: if the reset happened in flight this
+    // first reading is at the recovery altitude, and capturing it as "ground"
+    // would make updateAirborneState() see ~0 height and refuse to latch
+    // airborne, disabling the kinematic accel compensation for level or
+    // descending recovery flight. The recovery path latches airborne from
+    // airspeed instead (see updateAirborneState()), so groundAltitudeCaptured
+    // is deliberately left false for the whole recovery session.
     groundAltitudeM = altitudeMeters;
     groundAltitudeCaptured = true;
   }
