@@ -480,14 +480,21 @@ constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
 // gyro calibration demands a motionless airframe and every startup sensor
 // fault "fail-stops" into haltStartupWithNeutralServos() -- on the ground
 // that is the safe outcome, but after an in-air IWDG reset it permanently
-// freezes the surfaces and cuts throttle. When the IWDG reset flag is set,
-// setup() instead takes a recovery path: skip the stillness-gated gyro
-// calibration and the in-air-invalid airspeed/baro zero captures, skip every
-// cosmetic delay and control-surface sweep, and degrade (never halt) on
-// sensor init failures so RC pass-through comes back as fast as possible.
-// The recovery boot itself is guarded by a temporarily widened watchdog
-// window (armed at the very top of setup()) so a hang during recovery still
-// resets instead of holding stale servo commands.
+// freezes the surfaces and cuts throttle. BUT an IWDG reset does not by itself
+// mean the aircraft is airborne (the watchdog can trip on the bench, during
+// taxi, or on a takeoff roll), and taking the recovery path on the ground would
+// skip calibration and run with uncalibrated/dead sensors. So a watchdog reset
+// is only a CANDIDATE for recovery: setup() then probes actual motion using the
+// stillness-gated gyro calibration (it only succeeds when the airframe is
+// still). Still -> treat as a ground cold boot (calibrate, fail-stop). Moving
+// (gyro cal rejects motion) -> airborne recovery: skip the in-air-invalid
+// airspeed/baro zero captures and cosmetic sweeps, and degrade (never halt) on
+// sensor init failures so RC pass-through comes back fast. If the IMU is
+// unresponsive the probe is impossible, so recovery is assumed rather than
+// bricking a possibly-airborne aircraft. The candidate boot is guarded by a
+// temporarily widened watchdog window (armed at the very top of setup(), which
+// also covers the gyro-cal probe) so a hang still resets instead of holding
+// stale servo commands.
 constexpr uint32_t WATCHDOG_RECOVERY_BOOT_TIMEOUT_US = 8000000UL;
 constexpr uint8_t IMU_RECOVERY_INIT_ATTEMPTS = 3;
 bool watchdogRecoveryBoot = false;
@@ -3517,16 +3524,18 @@ void initializeCoarseAttitude() {
 void setup() {
   // Classify this boot before anything else. IWatchdog.isReset(true) reads the
   // RCC "reset caused by IWDG" flag and clears the (sticky) reset flags so a
-  // later normal reboot cannot be misclassified from a stale flag. See the
-  // WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment for why a watchdog reset must
-  // not take the cold-boot path.
-  watchdogRecoveryBoot = IWatchdog.isReset(true);
-  if (watchdogRecoveryBoot) {
-    // Guard the recovery boot itself: if re-initialization hangs (e.g. the
-    // same wedged bus that caused the reset), reset again rather than sitting
-    // with dead surfaces. Widened window because startup I2C/mag init has
-    // legitimate multi-hundred-ms blocking stretches; the final
-    // IWatchdog.begin() at the end of setup() re-tightens it to the flight
+  // later normal reboot cannot be misclassified from a stale flag. This only
+  // marks the reset as a CANDIDATE for recovery; the airborne-vs-ground decision
+  // (and the global watchdogRecoveryBoot the flight loop reads) is made later
+  // from the stillness-gated gyro-cal motion probe -- see the IMU init block and
+  // the WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment.
+  const bool watchdogResetDetected = IWatchdog.isReset(true);
+  if (watchdogResetDetected) {
+    // Guard the boot itself: if re-initialization hangs (e.g. the same wedged
+    // bus that caused the reset), reset again rather than sitting with dead
+    // surfaces. Widened window because startup I2C/mag init and the gyro-cal
+    // stillness probe have legitimate multi-hundred-ms blocking stretches; the
+    // final IWatchdog.begin() at the end of setup() re-tightens it to the flight
     // window (the IWDG prescaler/reload are rewritable while running).
     IWatchdog.begin(WATCHDOG_RECOVERY_BOOT_TIMEOUT_US);
   }
@@ -3537,11 +3546,11 @@ void setup() {
   // wait at all on a watchdog-recovery boot, where every startup millisecond
   // is spent without RC control.
   unsigned long serialStart = millis();
-  while (!Serial && !watchdogRecoveryBoot && (millis() - serialStart < 3000)) {
+  while (!Serial && !watchdogResetDetected && (millis() - serialStart < 3000)) {
     delay(10);
   }
-  if (watchdogRecoveryBoot) {
-    Serial.println("WATCHDOG RESET: taking in-flight recovery boot path (no gyro cal, no zero captures, no halts)");
+  if (watchdogResetDetected) {
+    Serial.println("WATCHDOG RESET detected; probing stillness to choose ground cold-boot vs airborne recovery.");
   }
 #if FC_CONTROL_DEBUG_SERIAL_OUTPUT
   Serial.println("FCDBG serial output enabled; emitting control stats once per second.");
@@ -3568,10 +3577,11 @@ void setup() {
   // then return to neutral before any blocking I2C sensor calls. This gives the
   // pilot a visible startup-calibration indication without holding the surfaces
   // near an end stop if a disconnected sensor stalls initialization.
-  // Skipped on a watchdog-recovery boot: deflecting flight surfaces in the air
-  // is an uncommanded control input, and the indicator delays waste recovery
-  // time.
-  if (!watchdogRecoveryBoot) {
+  // Skipped on any watchdog reset: we do not yet know whether we are airborne
+  // (the stillness probe runs later), and deflecting flight surfaces in the air
+  // is an uncommanded control input. Worst case this skips a cosmetic sweep on a
+  // ground watchdog reset -- harmless.
+  if (!watchdogResetDetected) {
     signalCalibrationActive();
   }
 
@@ -3593,12 +3603,74 @@ void setup() {
   I2C_Alternate.setWireTimeout(25000 /* us */, true /* reset_with_timeout */);
 #endif
 
+  // ----- Initialize IMU (stillness-gated gyro cal doubles as the airborne probe) -----
+  // On a watchdog reset we do not yet know whether the board is on the ground
+  // (bench/taxi) or airborne, and we must not skip the cold-boot safety checks
+  // without evidence. The gyro calibration is itself a stillness probe -- it
+  // only succeeds when the airframe is still -- so on a watchdog reset we always
+  // attempt a normal (calibrating) init first and branch on the result:
+  //   success   -> airframe still  -> treat as a ground COLD boot (calibrated,
+  //                fail-stop on faults, normal delays/sweeps);
+  //   -21 motion-> airframe moving  -> AIRBORNE recovery: re-init with zero gyro
+  //                bias (the EKF learns the in-run bias), skip the zero-captures,
+  //                and degrade instead of halting;
+  //   other <0  -> IMU unresponsive -> cannot probe: bias to recovery so a
+  //                possibly-airborne aircraft is never bricked; run without the
+  //                IMU (no FBW, manual RC only).
+  // A normal (non-watchdog) boot is unchanged: calibrate, halt on any failure.
+  Serial.println(watchdogResetDetected
+                     ? "Watchdog reset: probing stillness via gyro calibration..."
+                     : "Calibrating IMU bias...");
+  int status = IMU.begin(false /* calibrate; on a watchdog reset this is the stillness probe */);
+  if (!watchdogResetDetected) {
+    if (status < 0) {
+      Serial.println("IMU initialization unsuccessful");
+      if (status == -21) {
+        Serial.println("Airframe was moving during gyro bias calibration -- keep it still and cycle power");
+      } else {
+        Serial.println("Check IMU wiring or try cycling power");
+      }
+      Serial.print("Status: ");
+      Serial.println(status);
+      haltStartupWithNeutralServos();
+    }
+    Serial.println("IMU Calibration complete...");
+  } else if (status >= 0) {
+    // Stillness probe passed -> airframe still -> ground boot. watchdogRecoveryBoot
+    // stays false, so the rest of setup calibrates and fail-stops as a cold boot.
+    Serial.println("Watchdog reset while still: normal ground boot (IMU calibrated).");
+  } else if (status == -21) {
+    // Motion during gyro cal -> airborne recovery. Re-init with zero bias; retry
+    // against transient I2C hiccups.
+    watchdogRecoveryBoot = true;
+    Serial.println("Watchdog reset while moving: airborne recovery (zero gyro bias, degrade on faults).");
+    status = -1;
+    for (uint8_t attempt = 0; attempt < IMU_RECOVERY_INIT_ATTEMPTS && status < 0; ++attempt) {
+      status = IMU.begin(true /* skipGyroBiasCalibration */);
+    }
+    if (status < 0) {
+      imuHealthy = false;
+    }
+  } else {
+    // IMU unresponsive (not a motion rejection): stillness is unprovable. Retry,
+    // then run without the IMU rather than bricking a possibly-airborne aircraft.
+    watchdogRecoveryBoot = true;
+    imuHealthy = false;
+    Serial.println("Watchdog reset with unresponsive IMU: assuming airborne recovery, running without IMU.");
+    for (uint8_t attempt = 1; attempt < IMU_RECOVERY_INIT_ATTEMPTS && status < 0; ++attempt) {
+      status = IMU.begin(true /* skipGyroBiasCalibration */);
+    }
+    if (status >= 0) {
+      imuHealthy = true;   // came back on a retry; still recovery mode (stillness unproven)
+    }
+  }
+
   // ----- Calibrate Barometer -----
   if (!barometer.begin()) {
     Serial.println("MS5611 initialization unsuccessful");
     Serial.println("Check barometer wiring or try cycling power");
     if (watchdogRecoveryBoot) {
-      // Recovery boot: never halt on a sensor fault -- restoring RC control
+      // Airborne recovery: never halt on a sensor fault -- restoring RC control
       // outranks altitude telemetry and the airborne latch.
       barometerHealthy = false;
     } else {
@@ -3612,7 +3684,7 @@ void setup() {
     barometer.setOversampling("LOW_POWER");
     // The sea-level capture assumes the airframe is on the ground; running it
     // mid-air after a watchdog reset would zero the altitude at the recovery
-    // altitude. The standard-atmosphere default it falls back to is closer.
+    // altitude. A ground boot (including a still watchdog reset) runs it normally.
     if (!watchdogRecoveryBoot) {
       barometer.calibrate();
     }
@@ -3622,40 +3694,18 @@ void setup() {
   // The zero-airspeed capture likewise assumes a windless, stationary pitot.
   // Running it mid-air would capture cruise dynamic pressure as "zero", so
   // airspeed would read ~0 in flight and an engaged auto-throttle would
-  // command full power chasing its target. The factory offset (a few Pa) is
-  // far safer, so skip the capture on a recovery boot.
+  // command full power chasing its target. Skip only on an airborne recovery.
   if (!watchdogRecoveryBoot) {
     airspeedSensor.calibrate();
   }
 
-  // ----- Initialize IMU -----
-  Serial.println(watchdogRecoveryBoot ? "Initializing IMU (recovery boot: gyro bias calibration skipped)..."
-                                      : "Calibrating IMU bias...");
-  int status = -1;
-  const uint8_t imuInitAttempts = watchdogRecoveryBoot ? IMU_RECOVERY_INIT_ATTEMPTS : 1;
-  for (uint8_t attempt = 0; attempt < imuInitAttempts && status < 0; ++attempt) {
-    status = IMU.begin(watchdogRecoveryBoot /* skipGyroBiasCalibration */);
-  }
-  if (status < 0) {
-    Serial.println("IMU initialization unsuccessful");
-    if (status == -21) {
-      Serial.println("Airframe was moving during gyro bias calibration -- keep it still and cycle power");
-    } else {
-      Serial.println("Check IMU wiring or try cycling power");
-    }
-    Serial.print("Status: ");
-    Serial.println(status);
-    if (watchdogRecoveryBoot) {
-      // Recovery boot: keep going without the IMU. There is no attitude and
-      // therefore no FBW (the stale-attitude gate falls back to direct RC
-      // pass-through), but manual RC control does not need the IMU.
-      imuHealthy = false;
-    } else {
-      haltStartupWithNeutralServos();
-    }
-  } else {
-    Serial.println("IMU Calibration complete...");
-  }
+  // Feed the widened watchdog partway through startup. On a watchdog reset the
+  // 8 ms->8 s window is armed at the top of setup(), and a reset the probe
+  // classified as a GROUND boot then runs the full cold-boot path (gyro cal,
+  // baro/airspeed calibrate, GPS settle, sweeps) under it; reloading here and
+  // before the sweeps keeps each phase well inside the window. Harmless no-op on
+  // a normal boot (the IWDG is not started until the end of setup()).
+  IWatchdog.reload();
 #if FC_MAG_CALIBRATION_MODE
   runMagnetometerCalibrationDebug();
   Serial.println("MAGCAL complete. Halting startup so calibration mode cannot be used for flight.");
@@ -3721,6 +3771,7 @@ void setup() {
   // initialization is complete, then return them to neutral for normal servo
   // operation. Never in a recovery boot: a full-travel surface sweep in the
   // air is a violent uncommanded input.
+  IWatchdog.reload();   // second reload of the widened window (see the note above)
   if (!watchdogRecoveryBoot) {
     signalCalibrationComplete();
   }
