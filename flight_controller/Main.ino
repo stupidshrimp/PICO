@@ -3847,6 +3847,14 @@ void setup() {
     quaternionData[0][0] = 1.0;
   }
   EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+#if !FC_EKF_FAST_PREDICT
+  // Seed the single-rate fusion-integration origin to the reset instant so the
+  // FIRST successful fusion integrates the true elapsed time since the EKF was
+  // initialized -- not a nominal 8 ms controlDt -- even if startup/recovery IMU
+  // reads fail for a while before that first success. Bounded by
+  // EKF_MAX_CATCHUP_DT_S in the loop, and near-zero on the ground (gyro ~0).
+  lastEkfFusionUs = micros();
+#endif
   snprintf(bufferTxSer, sizeof(bufferTxSer)-1, "Adafruit STM32F405 Feather Express (%s)\r\n",
            (FPU_PRECISION == PRECISION_SINGLE) ? "Float32" : "Double64");
   Serial.print(bufferTxSer);
@@ -3878,7 +3886,21 @@ void setup() {
   // Use a baud rate of 921600 as required.
   if (!crsf.begin(921600)) {
     Serial.println("CRSF for Arduino initialization failed!");
-    haltStartupWithNeutralServos();
+    centerAllServos();
+    // crsf.update() dereferences pointers that a failed begin() never allocated,
+    // so we must NOT fall through into loop() and service a dead link.
+    if (watchdogRecoveryBoot) {
+      // Airborne recovery: the widened IWDG is already running. Spin WITHOUT
+      // reloading it so it RESETS the board and re-runs setup -- retrying the
+      // link -- instead of a reloading halt that would feed the watchdog forever
+      // and permanently brick in the air. Surfaces are centered / throttle cut
+      // (by centerAllServos and re-centered each boot) throughout.
+      while (1) { /* wait for the widened IWDG to reset and retry setup */ }
+    } else {
+      // Normal ground boot: fail-stop with neutral servos (the IWDG is not
+      // started yet, so this is a stable permanent halt -- the safe ground state).
+      haltStartupWithNeutralServos();
+    }
   }
   crsf.setRcChannelsCallback(rcChannelsCallback);
 
