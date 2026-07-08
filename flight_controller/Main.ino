@@ -486,43 +486,44 @@ constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
 // skip calibration and run with uncalibrated/dead sensors.
 //
 // So a watchdog reset DEFAULTS to airborne recovery, and setup() drops to the
-// cold-boot path only when it can POSITIVELY confirm the aircraft is on the
-// ground. The discriminator is AIRSPEED: sustained flight always has real pitot
-// dynamic pressure, while a bench/parked airframe reads ~0. (The gyro cannot
-// tell these apart -- smooth straight-and-level cruise has near-zero angular
-// rate and would pass a stillness test just like the bench -- so gyro stillness
-// alone is NOT used.) The pitot is read before its zero-offset is calibrated, so
-// a positive offset could read high at rest; a calibration-free GPS ground-speed
-// veto covers that. Boot decision on a watchdog reset:
-//   airspeed >= RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS (or pitot dead), AND a fresh
-//     GPS fix does NOT show the aircraft stationary -> airborne recovery: skip
-//     gyro cal (zero bias, EKF learns it), skip the in-air-invalid airspeed/baro
-//     zero captures and cosmetic sweeps, degrade (never halt);
-//   airspeed low, OR GPS confirms stationary despite high airspeed -> likely on
-//     the ground: run the gyro calibration as a final confirmation -- still ->
-//     ground cold boot (calibrate, fail-stop); motion -> airborne after all ->
-//     recovery; IMU dead -> recovery (never brick).
-// The airborne path never runs the slow gyro cal, so it can't trip the boot
-// watchdog. The candidate boot is guarded by a temporarily widened watchdog
-// window (armed at the very top of setup()) that is sized to cover the ~10 s
-// worst-case ground-confirmation cal and is fed at checkpoints through setup().
+// cold-boot path only when it can POSITIVELY confirm the aircraft is stationary
+// on the ground. Airspeed alone CANNOT confirm this: it is unreliable in both
+// directions -- an uncalibrated positive zero-offset reads high at rest, and a
+// blocked/iced/stuck pitot reads low in flight. The gyro cannot confirm it
+// either -- smooth straight-and-level cruise has near-zero angular rate and
+// would pass a stillness test just like the bench. Only GPS ground speed, which
+// needs no calibration, positively confirms stationary. Boot decision on a
+// watchdog reset:
+//   airspeed low (< RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS) AND a fresh GPS fix
+//     shows the aircraft stationary -> likely on the ground: run the gyro
+//     calibration as the final still check -- still -> ground cold boot
+//     (calibrate, fail-stop); motion -> airborne after all -> recovery;
+//   anything else -- high/unreadable airspeed, GPS-confirmed motion, or no fresh
+//     GPS fix -> airborne recovery: skip gyro cal (zero bias, EKF learns it),
+//     skip the in-air-invalid airspeed/baro zero captures and cosmetic sweeps,
+//     degrade (never halt).
+// This errs to recovery (the safe direction: never sweeps/zero-captures in the
+// air). The cost is that a pitot-offset unit (reads high) or an indoor bench
+// with no GPS lock skips calibration on a watchdog reset -- safe, since recovery
+// runs manual RC and the EKF learns the gyro bias in flight. The airborne path
+// never runs the slow gyro cal, so it can't trip the boot watchdog. The
+// candidate boot is guarded by a temporarily widened watchdog window (armed at
+// the very top of setup()) sized to cover the ~10 s worst-case ground-
+// confirmation cal, and is fed at checkpoints through setup().
 constexpr uint32_t WATCHDOG_RECOVERY_BOOT_TIMEOUT_US = 15000000UL;
 constexpr uint8_t IMU_RECOVERY_INIT_ATTEMPTS = 3;
-// Boot-time airborne threshold (m/s). At/above this the pitot proves the
-// aircraft is moving through air fast enough to be flying, so a watchdog reset
-// takes the airborne-recovery path. Set below stall (~8-10 m/s) so all sustained
-// flight triggers it, yet above light bench wind so a calm ground boot still
-// takes the cold-boot path and calibrates.
+// Boot-time airspeed threshold (m/s). At/above this the pitot MIGHT be reading
+// real flight, so a watchdog reset defaults to recovery without even consulting
+// GPS (safe: a ground pitot-offset that reads high just skips calibration). Only
+// BELOW this is GPS asked to confirm the aircraft is stationary before cold
+// booting. Set below stall (~8-10 m/s) so all sustained flight is excluded from
+// the cold-boot path.
 constexpr float RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS = 6.0f;
-// The boot airspeed probe reads the pitot BEFORE its zero-offset is calibrated,
-// so a positive sensor offset can read as several m/s at rest and push a genuine
-// GROUND watchdog reset into recovery (skipping calibration). GPS ground speed
-// needs no calibration, so it vetoes that: if a fresh GPS fix (the u-blox module
-// is hot and still streaming after a reset) shows the aircraft essentially
-// stationary, the high airspeed is treated as a pitot offset and the cold-boot
-// path is taken. A wrong veto is the dangerous direction (airborne -> cold boot),
-// so it only fires on a FRESH RMC fix (fix_update_counter advance) whose ground
-// speed is at/below this threshold -- never on a stale or GGA-only speed of 0.
+// GPS is the only calibration-free positive ground signal, so cold-boot after a
+// watchdog reset requires a fresh GPS fix at/below this ground speed. A wrong
+// "stationary" verdict is the dangerous direction (airborne -> cold boot), so
+// bootGpsConfirmsStationary() only trusts a FRESH RMC fix (fix_update_counter
+// advance) -- never a stale or GGA-only speed of 0.
 constexpr float RECOVERY_PROBE_GROUND_GPS_SPEED_MPS = 2.0f;
 // Bounded window to catch a fresh RMC fix for the veto. The module streams RMC at
 // 5 Hz, so a hot fix usually arrives well within this; if none does (e.g. an
@@ -3706,23 +3707,26 @@ void setup() {
   //   normal (non-watchdog) boot -> unchanged: calibrate, halt on any failure.
   bool attemptGroundColdBoot = !watchdogResetDetected;   // a normal boot always cold-boots
   if (watchdogResetDetected) {
+    // Positive ground confirmation is required before cold booting (see the
+    // WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment): airspeed must read low AND a
+    // fresh GPS fix must show the aircraft stationary. bootGpsConfirmsStationary()
+    // (up to ~800 ms) is short-circuited out unless airspeed is already low, so a
+    // high/dead-pitot reset goes straight to recovery with no GPS wait.
     const float probeAirspeedMps = readBootAirspeedProbeMps();
-    if (isfinite(probeAirspeedMps) && probeAirspeedMps < RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS) {
-      attemptGroundColdBoot = true;   // low airspeed: likely on the ground; confirm with the gyro cal
-      Serial.print("Watchdog reset, airspeed ");
-      Serial.print(probeAirspeedMps, 1);
-      Serial.println(" m/s (low): confirming ground via gyro calibration...");
-    } else if (bootGpsConfirmsStationary()) {
-      // High (or unreadable) airspeed, but GPS -- which needs no calibration --
-      // shows the aircraft stationary: the pitot reading is a zero-offset, not
-      // real flight, so take the cold-boot path (the gyro cal still confirms).
-      attemptGroundColdBoot = true;
-      Serial.println("Watchdog reset: airspeed reads high but GPS is stationary (uncalibrated pitot); ground cold boot.");
+    const bool airspeedLow = isfinite(probeAirspeedMps) &&
+                             probeAirspeedMps < RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS;
+    if (airspeedLow && bootGpsConfirmsStationary()) {
+      attemptGroundColdBoot = true;   // low airspeed + GPS stationary: confirm with the gyro cal
+      Serial.println("Watchdog reset: low airspeed and GPS stationary -> ground cold boot (gyro cal confirms).");
     } else {
-      watchdogRecoveryBoot = true;    // flying, or no ground evidence: airborne recovery
-      Serial.println(isfinite(probeAirspeedMps)
-                         ? "Watchdog reset, airspeed high and GPS not stationary: airborne recovery (skip gyro cal)."
-                         : "Watchdog reset, pitot unavailable and GPS not stationary: airborne recovery.");
+      watchdogRecoveryBoot = true;    // no positive ground confirmation: airborne recovery
+      if (!isfinite(probeAirspeedMps)) {
+        Serial.println("Watchdog reset: pitot unavailable -> airborne recovery (no ground confirmation).");
+      } else if (!airspeedLow) {
+        Serial.println("Watchdog reset: airspeed high -> airborne recovery (skip gyro cal, zero bias).");
+      } else {
+        Serial.println("Watchdog reset: low airspeed but GPS not stationary/unavailable -> airborne recovery.");
+      }
     }
   } else {
     Serial.println("Calibrating IMU bias...");
@@ -3747,12 +3751,12 @@ void setup() {
       }
       Serial.println("IMU Calibration complete...");
     } else if (status >= 0) {
-      // Low airspeed AND gyro still -> confirmed on the ground -> cold boot
-      // (watchdogRecoveryBoot stays false: calibrate + fail-stop from here on).
-      Serial.println("Ground confirmed (low airspeed, gyro still): normal cold boot, IMU calibrated.");
+      // Low airspeed + GPS stationary + gyro still -> confirmed on the ground ->
+      // cold boot (watchdogRecoveryBoot stays false: calibrate + fail-stop on).
+      Serial.println("Ground confirmed (low airspeed, GPS stationary, gyro still): cold boot, IMU calibrated.");
     } else if (status == -21) {
-      // Low airspeed but the gyro sees motion -> moving after all (bench being
-      // handled, or a tumble with an unreadable pitot) -> airborne recovery.
+      // Confirmed stationary by airspeed + GPS, but the gyro sees motion ->
+      // moving after all (e.g. the bench being handled) -> airborne recovery.
       watchdogRecoveryBoot = true;
       Serial.println("Low airspeed but gyro motion: airborne recovery (zero gyro bias).");
       status = -1;
