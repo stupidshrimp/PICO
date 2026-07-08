@@ -317,6 +317,17 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // and above typical taxi airspeed so a post-recovery landing roll or taxi drops
 // the latch and stops the kinematic accel compensation.
 #define AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS (6.0f)
+// After a recovery boot, once the aircraft is confirmed back on the ground the
+// airspeed-only latch is retired: the current baro altitude is recaptured as the
+// ground reference and the normal height gate takes over (so a later takeoff
+// roll is not mistaken for flight -- see updateAirborneState()). "On the ground"
+// requires airspeed and GPS ground speed both at/below these thresholds, held
+// for the hold time, with a healthy barometer. Both speeds sit below taxi speed
+// so this can never fire in flight: a fixed-wing cannot sustain near-zero
+// airspeed AND near-zero ground speed aloft.
+#define RECOVERY_GROUND_RECAPTURE_AIRSPEED_MPS (3.0f)
+#define RECOVERY_GROUND_RECAPTURE_GROUNDSPEED_MPS (2.0f)
+#define RECOVERY_GROUND_RECAPTURE_HOLD_US (3000000UL)
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -1303,6 +1314,7 @@ float latestAmbientPressurePa = 0.0f;
 float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
 bool groundAltitudeCaptured = false;   // True once the ground reference is set
 bool aircraftAirborne = false;         // Latched airborne state gating the feed-forward
+uint32_t recoveryGroundHoldStartUs = 0;  // hold timer for recovery ground-reference recapture
 
 // ----- Sensor and telemetry timing -----
 elapsedMicros attitudeTelemetryTimer;
@@ -1427,6 +1439,18 @@ bool gpsMotionConfirmed(uint32_t nowUs) {
          latestGpsGroundSpeedMps >= CENTRIPETAL_MIN_GROUND_SPEED_MPS;
 }
 
+// True when a fresh GPS fix shows the airframe is nearly stationary. Used with a
+// low airspeed reading to confirm the aircraft is back on the ground after a
+// recovery boot (see updateAirborneState()). Requires a fresh, valid fix: if GPS
+// is unavailable the recapture simply does not fire and the conservative
+// airspeed-only latch stays in effect.
+bool gpsSlowConfirmed(uint32_t nowUs) {
+  return latestGpsFixValid &&
+         lastGpsFixUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastGpsFixUpdateUs) <= CENTRIPETAL_GPS_FIX_TIMEOUT_US &&
+         latestGpsGroundSpeedMps <= RECOVERY_GROUND_RECAPTURE_GROUNDSPEED_MPS;
+}
+
 // Maintain the latched airborne estimate used to gate the centripetal feed-forward.
 // Engage once the baro shows a real climb above the captured ground level and
 // airspeed is in the flight range; stay engaged through low-altitude maneuvering
@@ -1448,6 +1472,32 @@ void updateAirborneState(uint32_t nowUs) {
     // speed stays "airborne" briefly; the call site's GPS-ground-motion gate and
     // the pilot's manual authority cover that residual window.
     const float airspeedMps = airspeedInputFresh(nowUs) ? (airSpeedCms * 0.01f) : 0.0f;
+
+    // Re-arm the barometric height gate once the aircraft is confirmed back on
+    // the ground. Until then this branch latches airborne from airspeed alone,
+    // which would relatch "airborne" during a later gear-constrained TAKEOFF
+    // roll as soon as pitot reaches the engage speed -- the exact case the
+    // height gate excludes. When the aircraft is landed and slow (disengaged,
+    // low airspeed, GPS-confirmed low ground speed, healthy baro) and stays that
+    // way for the hold time, capture the current baro altitude as the ground
+    // reference and hand back to the normal height-gated logic below for the
+    // rest of the session.
+    if (!aircraftAirborne && barometerHealthy &&
+        airspeedMps <= RECOVERY_GROUND_RECAPTURE_AIRSPEED_MPS &&
+        gpsSlowConfirmed(nowUs)) {
+      if (recoveryGroundHoldStartUs == 0) {
+        recoveryGroundHoldStartUs = nowUs;
+      }
+      if ((uint32_t)(nowUs - recoveryGroundHoldStartUs) >= RECOVERY_GROUND_RECAPTURE_HOLD_US) {
+        groundAltitudeM = sensorAltitudeCm * 0.01f;
+        groundAltitudeCaptured = true;   // normal height-gated logic takes over next call
+        recoveryGroundHoldStartUs = 0;
+        return;
+      }
+    } else {
+      recoveryGroundHoldStartUs = 0;     // condition broken; restart the hold
+    }
+
     if (!aircraftAirborne) {
       if (airspeedMps >= AIRBORNE_ENGAGE_AIRSPEED_MPS) {
         aircraftAirborne = true;
