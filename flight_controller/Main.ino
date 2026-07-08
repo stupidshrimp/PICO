@@ -3892,7 +3892,11 @@ void loop() {
         fusionDt = EKF_MAX_CATCHUP_DT_S;        // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
       gEkfRuntimeDt = static_cast<float_prec>(fusionDt);
-      lastEkfFusionUs = controlUpdateUs;
+      // lastEkfFusionUs (the gyro-integration origin) is advanced only after a
+      // SUCCESSFUL bUpdate, or when the filter is hard-reset to a known state --
+      // both below. A failed+restored update leaves it at the last good fusion
+      // time so the next update integrates the true elapsed gap (bounded by
+      // EKF_MAX_CATCHUP_DT_S) instead of measuring dt from the failed attempt.
 #endif
       Matrix predictedX = EKF_IMU.GetX();
       Matrix predictedY(SS_Z_LEN, 1);
@@ -4067,7 +4071,15 @@ void loop() {
           EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
           ekfConsecutiveFailures = 0;
           ekfInnovationGateWarmupUpdates = 0;
+#if !FC_EKF_FAST_PREDICT
+          // Hard reset installs a known state as of now, so move the
+          // gyro-integration origin to now; the next update integrates from this
+          // fresh state rather than a stale pre-reset time.
+          lastEkfFusionUs = controlUpdateUs;
+#endif
         } else {
+          // Soft restore to the last good state: leave lastEkfFusionUs at that
+          // state's time so the next successful update covers the full gap.
           EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
         }
         // Serial.println("Whoop ");
@@ -4077,6 +4089,12 @@ void loop() {
           ++ekfInnovationGateWarmupUpdates;
         }
         lastAttitudeUpdateUs = controlUpdateUs;
+#if !FC_EKF_FAST_PREDICT
+        // Advance the gyro-integration origin only now that the fusion has
+        // succeeded and the state truly corresponds to controlUpdateUs (see the
+        // lastEkfFusionUs note in the single-rate dt block above).
+        lastEkfFusionUs = controlUpdateUs;
+#endif
       }
 #if FC_TIMING_INSTRUMENTATION
       recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
