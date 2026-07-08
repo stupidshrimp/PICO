@@ -345,6 +345,15 @@ uint16_t ekfInnovationGateWarmupUpdates = 0;
 // correction cycles, well past any transient hiccup.
 constexpr uint32_t ATTITUDE_STALE_TIMEOUT_US = 200000UL;
 uint32_t lastAttitudeUpdateUs = 0;
+// Upper bound on the gyro-integration step used to catch up after an IMU-read
+// outage. Set to the attitude-stale window: a recoverable dropout WITHIN that
+// window integrates the TRUE elapsed time so the estimate actually catches up,
+// instead of collapsing to one nominal SS_DT step and silently dropping the
+// rotation accumulated during the gap (which would then be marked fresh and let
+// FBW resume on an attitude that never caught up). A longer gap -- past which
+// the stale-attitude gate has already dropped FBW to pass-through -- is bounded
+// here so a single first-order step cannot wildly over-rotate.
+constexpr float EKF_MAX_CATCHUP_DT_S = ATTITUDE_STALE_TIMEOUT_US * 1.0e-6f;
 #if !FC_EKF_FAST_PREDICT
 // Single-rate mode: timestamp of the last successful fusion, so a cycle
 // skipped on a failed IMU read is covered by the next good sample's dt.
@@ -3751,8 +3760,10 @@ void loop() {
       // Sanity guard only (the timer is cleared, so dt is the real inter-prediction
       // interval, >= one period in steady state): floor a glitched/zero/negative
       // delta and cap an extreme post-stall gap.
-      if (predictDt < 0.0005f || predictDt > 0.050f) {
-        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+      if (predictDt < 0.0005f) {
+        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;  // floor a glitched/zero/negative delta
+      } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
+        predictDt = EKF_MAX_CATCHUP_DT_S;             // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
       lastEkfPredictUs = predictNowUs;
 
@@ -3859,8 +3870,8 @@ void loop() {
                           : static_cast<float>(controlUpdateUs - lastEkfPredictUs) * 1.0e-6f;
       if (predictDt < 0.0f) {
         predictDt = 0.0f;                       // clock guard; a 0 step is a no-op predict
-      } else if (predictDt > 0.050f) {
-        predictDt = static_cast<float>(SS_DT);  // cap an extreme post-stall gap
+      } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
+        predictDt = EKF_MAX_CATCHUP_DT_S;       // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
       gEkfRuntimeDt = static_cast<float_prec>(predictDt);
       ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
@@ -3875,8 +3886,10 @@ void loop() {
       float fusionDt = (lastEkfFusionUs == 0)
                          ? controlDt
                          : static_cast<float>(controlUpdateUs - lastEkfFusionUs) * 1.0e-6f;
-      if (fusionDt < 0.001f || fusionDt > 0.050f) {
-        fusionDt = static_cast<float>(SS_DT);
+      if (fusionDt < 0.001f) {
+        fusionDt = static_cast<float>(SS_DT);   // floor a glitched/zero/negative delta
+      } else if (fusionDt > EKF_MAX_CATCHUP_DT_S) {
+        fusionDt = EKF_MAX_CATCHUP_DT_S;        // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
       gEkfRuntimeDt = static_cast<float_prec>(fusionDt);
       lastEkfFusionUs = controlUpdateUs;
