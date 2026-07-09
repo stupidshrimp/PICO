@@ -224,7 +224,19 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define P_INIT_GYRO_BIAS (0.02)
 #define Q_INIT_QUAT      (1e-6)
 #define Q_INIT_GYRO_BIAS (1e-8)
-#define R_INIT_ACC       (0.0015/10.)
+// Accelerometer measurement noise (variance per unit-vector axis).
+// sigma ~= 0.05 (~2.9 deg of gravity direction), matching R_INIT_YAW's trust
+// level and mainstream AHRS practice. The previous 1.5e-4 (sigma ~0.7 deg)
+// over-trusted the accelerometer as a gravity reference: the accel measures
+// SPECIFIC FORCE, and any sustained linear acceleration tilts the apparent
+// gravity direction while keeping |a| near 1 g -- a 0.3 g takeoff/climb
+// acceleration tilts it ~17 deg at |a| = 1.04 g, inside every gate -- so a
+// tight R dragged pitch confidently toward that error. With sigma at ~3 deg
+// the filter still corrects gyro drift with a ~0.4 s time constant (Q_quat
+// 1e-6/step) but no longer snaps onto short-lived dynamic accelerations.
+// The norm-error R ramp and the kinematic (centripetal + airspeed-rate)
+// compensation still apply on top of this base value.
+#define R_INIT_ACC       (0.0025)
 #define R_INIT_MAG       (0.0015/10.)
 // Measurement noise (variance, rad^2) for the decoupled tilt-compensated heading.
 // sigma ~= 0.05 rad (~2.9 deg). Roughly matches the legacy per-axis mag trust
@@ -274,6 +286,20 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define CENTRIPETAL_MIN_GROUND_SPEED_MPS (5.0f)
 // Maximum age of a GPS fix still trusted to confirm motion for the feed-forward.
 #define CENTRIPETAL_GPS_FIX_TIMEOUT_US (2000000UL)
+// Longitudinal (body-X) kinematic acceleration feed-forward. The full
+// kinematic acceleration of the CG with velocity along body X is
+// a = dV/dt + omega x V = [Vdot, r*V, -q*V]; the omega x V part is handled by
+// the centripetal terms above, and Vdot is estimated as the low-passed
+// derivative of the pitot airspeed. Without it, a sustained throttle change or
+// climb acceleration tilts the apparent gravity direction (~17 deg at 0.3 g)
+// while keeping |a| near 1 g, biasing pitch. Caveat: a wind gust changes
+// pitot airspeed without inertial acceleration, so subtracting Vdot then
+// injects a transient error -- the low-pass, the deadband (which keeps steady
+// cruise untouched by derivative jitter), and the clamp bound that trade-off,
+// and the same flight-state gates as the centripetal terms apply.
+#define AIRSPEED_RATE_FILTER_TAU_S (0.2f)      // ~0.8 Hz first-order low-pass
+#define AIRSPEED_RATE_DEADBAND_MPS2 (0.5f)     // ignore filtered |Vdot| below this
+#define AIRSPEED_RATE_LIMIT_MPS2 (15.0f)       // ~1.5 g; no airframe sustains more
 // The free-flight omega x V model only holds once the airframe is truly flying
 // (velocity along body X, free to rotate about the CG). On a takeoff or landing
 // ground roll the aircraft is gear-constrained, so a rotation would inject a false
@@ -285,6 +311,23 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 #define AIRBORNE_ENGAGE_HEIGHT_M (3.0f)       // climb above ground to latch airborne
 #define AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0f)   // airspeed needed to latch airborne
 #define AIRBORNE_DISENGAGE_HEIGHT_M (1.5f)    // back near the ground -> not airborne
+// A watchdog-recovery boot has no ground/height reference, so its airborne
+// latch disengages on AIRSPEED instead of barometric height (see
+// updateAirborneState()). Set below AIRBORNE_ENGAGE_AIRSPEED_MPS for hysteresis
+// and above typical taxi airspeed so a post-recovery landing roll or taxi drops
+// the latch and stops the kinematic accel compensation.
+#define AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS (6.0f)
+// After a recovery boot, once the aircraft is confirmed back on the ground the
+// airspeed-only latch is retired: the current baro altitude is recaptured as the
+// ground reference and the normal height gate takes over (so a later takeoff
+// roll is not mistaken for flight -- see updateAirborneState()). "On the ground"
+// requires airspeed and GPS ground speed both at/below these thresholds, held
+// for the hold time, with a healthy barometer. Both speeds sit below taxi speed
+// so this can never fire in flight: a fixed-wing cannot sustain near-zero
+// airspeed AND near-zero ground speed aloft.
+#define RECOVERY_GROUND_RECAPTURE_AIRSPEED_MPS (3.0f)
+#define RECOVERY_GROUND_RECAPTURE_GROUNDSPEED_MPS (2.0f)
+#define RECOVERY_GROUND_RECAPTURE_HOLD_US (3000000UL)
 // Reject normalized vector measurements whose direction disagrees with the
 // gyro-propagated attitude by more than these Euclidean innovation gates.
 // For unit vectors, 0.65 is roughly a 38-degree direction error and 0.55 is
@@ -304,6 +347,38 @@ const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
 uint8_t ekfConsecutiveFailures = 0;
 uint16_t ekfInnovationGateWarmupUpdates = 0;
+// micros() timestamp of the last successful EKF state update (a fast-mode
+// gyro prediction or a 125 Hz correction). Fly-by-wire only trusts the
+// attitude estimate while this is fresh: once IMU reads or EKF updates stop
+// (dead sensor, wedged bus, persistent numeric failure), the PID loop must
+// not keep steering against a frozen attitude, so FBW falls back to direct
+// RC pass-through until the estimate updates again. 200 ms = 25 missed
+// correction cycles, well past any transient hiccup.
+constexpr uint32_t ATTITUDE_STALE_TIMEOUT_US = 200000UL;
+uint32_t lastAttitudeUpdateUs = 0;
+// Upper bound on the gyro-integration step used to catch up after an IMU-read
+// outage. Set to the attitude-stale window: a recoverable dropout WITHIN that
+// window integrates the TRUE elapsed time so the estimate actually catches up,
+// instead of collapsing to one nominal SS_DT step and silently dropping the
+// rotation accumulated during the gap (which would then be marked fresh and let
+// FBW resume on an attitude that never caught up). A longer gap -- past which
+// the stale-attitude gate has already dropped FBW to pass-through -- is bounded
+// here so a single first-order step cannot wildly over-rotate.
+constexpr float EKF_MAX_CATCHUP_DT_S = ATTITUDE_STALE_TIMEOUT_US * 1.0e-6f;
+// Catch-up intervals are integrated in sub-steps no longer than this. The
+// quaternion prediction is a single first-order (Euler) step: for constant rate
+// omega it rotates by 2*atan(omega*dt/2) instead of omega*dt, so one big step
+// under-rotates (~4 deg for a full 0.2 s step at ~290 deg/s) and the F*P*F'
+// linearization degrades the same way. Splitting a catch-up into <= 12 ms
+// sub-steps keeps omega*dt small (error < 0.01 deg per step at 300 deg/s) while
+// leaving the nominal 4/8 ms steps as exactly one sub-step (no behavior change
+// in steady state; the threshold sits above 8 ms plus scheduling jitter).
+constexpr float EKF_CATCHUP_SUBSTEP_S = 0.012f;
+#if !FC_EKF_FAST_PREDICT
+// Single-rate mode: timestamp of the last successful fusion, so a cycle
+// skipped on a failed IMU read is covered by the next good sample's dt.
+uint32_t lastEkfFusionUs = 0;
+#endif
 float_prec EKF_PINIT_data[SS_X_LEN*SS_X_LEN] = {
   P_INIT_QUAT, 0, 0, 0, 0, 0, 0,
   0, P_INIT_QUAT, 0, 0, 0, 0, 0,
@@ -345,13 +420,15 @@ Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
 float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
 Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
 
-#if FC_EKF_FAST_PREDICT
-// High-rate gyro-prediction state (see FC_EKF_FAST_PREDICT in konfig.h).
-// EKF_QSCALED holds the process noise scaled by the actual prediction step so the
-// predict/correct trust balance is invariant to the prediction rate (it equals
-// the original Q at dt == SS_DT).
+// EKF_QSCALED holds the process noise scaled by the actual prediction step so
+// the predict/correct trust balance is invariant to the prediction rate and to
+// catch-up step length (it equals the original Q at dt == SS_DT). Used by both
+// builds: the fast-predict high-rate predictor and the sub-stepped catch-up
+// predicts in either mode (see ekfPredictSubstepped()).
 float_prec EKF_QSCALED_data[SS_X_LEN*SS_X_LEN] = {0};
 Matrix EKF_QSCALED(SS_X_LEN, SS_X_LEN, EKF_QSCALED_data);
+#if FC_EKF_FAST_PREDICT
+// High-rate gyro-prediction state (see FC_EKF_FAST_PREDICT in konfig.h).
 uint32_t lastEkfPredictUs = 0;
 #endif
 
@@ -410,6 +487,70 @@ constexpr uint32_t EKF_PREDICT_PERIOD_US = 4000UL;
 // watchdog immediately before emitting it, so a normal (host-reading) print
 // starts with a full 100 ms window and cannot trip the IWDG.
 constexpr uint32_t WATCHDOG_TIMEOUT_US = 100000UL;
+// A watchdog reset in flight must NOT re-run the cold-boot path: the boot-time
+// gyro calibration demands a motionless airframe and every startup sensor
+// fault "fail-stops" into haltStartupWithNeutralServos() -- on the ground
+// that is the safe outcome, but after an in-air IWDG reset it permanently
+// freezes the surfaces and cuts throttle. BUT an IWDG reset does not by itself
+// mean the aircraft is airborne (the watchdog can trip on the bench, during
+// taxi, or on a takeoff roll), and taking the recovery path on the ground would
+// skip calibration and run with uncalibrated/dead sensors.
+//
+// So a watchdog reset DEFAULTS to airborne recovery, and setup() drops to the
+// cold-boot path only when it can POSITIVELY confirm the aircraft is stationary
+// on the ground. Airspeed alone CANNOT confirm this: it is unreliable in both
+// directions -- an uncalibrated positive zero-offset reads high at rest, and a
+// blocked/iced/stuck pitot reads low in flight. The gyro cannot confirm it
+// either -- smooth straight-and-level cruise has near-zero angular rate and
+// would pass a stillness test just like the bench. Only GPS ground speed, which
+// needs no calibration, positively confirms stationary. Boot decision on a
+// watchdog reset:
+//   airspeed low (< RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS) AND a fresh GPS fix
+//     shows the aircraft stationary -> likely on the ground: run the gyro
+//     calibration as the final still check -- still -> ground cold boot
+//     (calibrate, fail-stop); motion -> airborne after all -> recovery;
+//   anything else -- high/unreadable airspeed, GPS-confirmed motion, or no fresh
+//     GPS fix -> airborne recovery: skip gyro cal (zero bias, EKF learns it),
+//     skip the in-air-invalid airspeed/baro zero captures and cosmetic sweeps,
+//     degrade (never halt).
+// This errs to recovery (the safe direction: never sweeps/zero-captures in the
+// air). The cost is that a pitot-offset unit (reads high) or an indoor bench
+// with no GPS lock skips calibration on a watchdog reset -- safe, since recovery
+// runs manual RC and the EKF learns the gyro bias in flight. The airborne path
+// never runs the slow gyro cal, so it can't trip the boot watchdog. The
+// candidate boot is guarded by a temporarily widened watchdog window (armed at
+// the very top of setup()) sized to cover the ~10 s worst-case ground-
+// confirmation cal, and is fed at checkpoints through setup().
+constexpr uint32_t WATCHDOG_RECOVERY_BOOT_TIMEOUT_US = 15000000UL;
+constexpr uint8_t IMU_RECOVERY_INIT_ATTEMPTS = 3;
+// Boot-time airspeed threshold (m/s). At/above this the pitot MIGHT be reading
+// real flight, so a watchdog reset defaults to recovery without even consulting
+// GPS (safe: a ground pitot-offset that reads high just skips calibration). Only
+// BELOW this is GPS asked to confirm the aircraft is stationary before cold
+// booting. Set below stall (~8-10 m/s) so all sustained flight is excluded from
+// the cold-boot path.
+constexpr float RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS = 6.0f;
+// GPS is the only calibration-free positive ground signal, so cold-boot after a
+// watchdog reset requires a fresh GPS fix at/below this ground speed. A wrong
+// "stationary" verdict is the dangerous direction (airborne -> cold boot), so
+// bootGpsConfirmsStationary() only trusts a FRESH RMC fix (fix_update_counter
+// advance) -- never a stale or GGA-only speed of 0.
+constexpr float RECOVERY_PROBE_GROUND_GPS_SPEED_MPS = 2.0f;
+// Bounded window to catch a fresh RMC fix for the veto. The module streams RMC at
+// 5 Hz, so a hot fix usually arrives well within this; if none does (e.g. an
+// indoor bench with no lock) the veto declines and airspeed governs. The airborne
+// case returns as soon as the first fix shows high ground speed, so this full
+// wait is only spent when there is no fix at all.
+constexpr uint32_t RECOVERY_PROBE_GPS_WAIT_MS = 800UL;
+bool watchdogRecoveryBoot = false;
+// Sensor health flags. Always true after a cold boot (failures halt startup);
+// only a watchdog-recovery boot can leave one false, in which case the loop
+// skips that sensor's work and the dependent features degrade: without the
+// IMU there is no EKF/attitude (the stale-attitude gate forces direct RC
+// pass-through in FBW mode), without the barometer there is no altitude
+// telemetry or airborne latch (centripetal compensation stays disabled).
+bool imuHealthy = true;
+bool barometerHealthy = true;
 constexpr uint16_t SERVO_UPDATE_HYSTERESIS_US = 3;
 constexpr uint32_t SERVO_FORCE_REFRESH_PERIOD_US = 100000UL;
 constexpr uint32_t RC_FAILSAFE_TIMEOUT_US = 250000UL;
@@ -569,6 +710,8 @@ struct ControlDebugCounters {
   uint32_t servoLoopStale;
   uint32_t servoLoopHold;
   uint32_t airspeedInvalidReads;
+  uint32_t imuReadFailures;
+  uint32_t fbwStaleAttitudeFallbacks;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -651,6 +794,8 @@ void resetControlDebugCounters() {
   controlDebugCounters.servoLoopStale = 0;
   controlDebugCounters.servoLoopHold = 0;
   controlDebugCounters.airspeedInvalidReads = 0;
+  controlDebugCounters.imuReadFailures = 0;
+  controlDebugCounters.fbwStaleAttitudeFallbacks = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -874,6 +1019,14 @@ float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
 uint32_t lastAirspeedUpdateUs = 0;
 bool latestAirspeedValid = false;
 
+// Low-passed pitot airspeed derivative (m/s^2) for the longitudinal kinematic
+// feed-forward (see AIRSPEED_RATE_* above). Updated per valid airspeed sample
+// in updateAirspeedCache(); reset when the sensor is declared down.
+float airspeedRateMps2 = 0.0f;
+float prevAirspeedMps = 0.0f;
+uint32_t prevAirspeedSampleUs = 0;
+bool prevAirspeedSampleValid = false;
+
 // Callback to capture incoming RC channel packets.
 void rcChannelsCallback(serialReceiverLayer::rcChannels_t *channels) {
   if (channels == nullptr) {
@@ -1029,6 +1182,26 @@ bool airspeedInputFresh(uint32_t nowUs) {
   return latestAirspeedValid &&
          lastAirspeedUpdateUs != 0 &&
          (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
+}
+
+// True while the EKF attitude estimate is live (see lastAttitudeUpdateUs).
+bool attitudeEstimateFresh(uint32_t nowUs) {
+  return lastAttitudeUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastAttitudeUpdateUs) <= ATTITUDE_STALE_TIMEOUT_US;
+}
+
+// True once the attitude estimate is trustworthy enough to close the fly-by-wire
+// loop. A watchdog-recovery boot restarts the EKF in the air and may begin from
+// the identity attitude (TRIAD coarse alignment can fail during a bank/hard
+// maneuver), then needs its innovation-gate warmup window to converge. During
+// that window the estimate is fresh (updating) but may still be swinging in from
+// a TRIAD or identity start, so it is NOT yet safe to steer the PIDs against it.
+// A normal ground boot converges long before takeoff, so only the airborne
+// recovery case is gated here. A dead IMU never increments the warmup counter,
+// so recovery FBW then stays in pass-through indefinitely (as intended).
+bool attitudeEstimateConvergedForFbw(void) {
+  return !watchdogRecoveryBoot ||
+         ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES;
 }
 
 float mapRcToNormalized(uint16_t value) {
@@ -1193,6 +1366,7 @@ float latestAmbientPressurePa = 0.0f;
 float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
 bool groundAltitudeCaptured = false;   // True once the ground reference is set
 bool aircraftAirborne = false;         // Latched airborne state gating the feed-forward
+uint32_t recoveryGroundHoldStartUs = 0;  // hold timer for recovery ground-reference recapture
 
 // ----- Sensor and telemetry timing -----
 elapsedMicros attitudeTelemetryTimer;
@@ -1240,7 +1414,6 @@ static inline void quaternionToEulerDeg(float q0, float q1, float q2, float q3,
   yawDeg   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
 }
 
-#if FC_EKF_FAST_PREDICT
 // Scale the process-noise covariance with the actual prediction step. Q per step
 // is proportional to dt, so the noise injected per unit time -- and therefore the
 // predict/correct trust balance -- matches the original single-rate filter at any
@@ -1256,6 +1429,53 @@ void ekfScaleProcessNoiseForDt(float_prec dt) {
   EKF_IMU.vSetProcessNoise(EKF_QSCALED);
 }
 
+// Number of integration sub-steps for a (possibly catch-up length) predict
+// interval. Nominal 4/8 ms steps return 1; longer gaps split into chunks of at
+// most EKF_CATCHUP_SUBSTEP_S (see its comment for the accuracy rationale). Both
+// the EKF predict and the manual gate prediction MUST use this same subdivision
+// so the innovation gates compare the measurement against exactly the state the
+// filter itself predicts.
+static int ekfCatchupSubsteps(float dtTotal) {
+  if (!(dtTotal > EKF_CATCHUP_SUBSTEP_S)) {
+    return 1;   // nominal step (also covers 0 and non-finite dt: one no-op/normal step)
+  }
+  const int steps = static_cast<int>(ceilf(dtTotal / EKF_CATCHUP_SUBSTEP_S));
+  return steps < 1 ? 1 : steps;
+}
+
+// Run the EKF prediction over dtTotal in bounded sub-steps, scaling Q per
+// sub-step (totals match a single dt-scaled step since Q is additive across
+// predicts). Returns false if any sub-step fails; the caller restores the
+// saved pre-predict state in that case.
+static bool ekfPredictSubstepped(float dtTotal, const Matrix& U) {
+  const int steps = ekfCatchupSubsteps(dtTotal);
+  const float_prec subDt = static_cast<float_prec>(dtTotal / steps);
+  for (int i = 0; i < steps; ++i) {
+    gEkfRuntimeDt = subDt;
+    ekfScaleProcessNoiseForDt(subDt);
+    if (!EKF_IMU.bPredict(U)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Propagate a state vector through the same sub-stepped plant model, in place.
+// Used for the manual gate prediction so predictedX/predictedY match the EKF's
+// internal prediction bit-for-bit (same subdivision, same model, same U).
+static bool substepPredictState(Matrix& X, float dtTotal, const Matrix& U) {
+  const int steps = ekfCatchupSubsteps(dtTotal);
+  const float_prec subDt = static_cast<float_prec>(dtTotal / steps);
+  for (int i = 0; i < steps; ++i) {
+    gEkfRuntimeDt = subDt;
+    if (!Main_bUpdateNonlinearX(X, X, U)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+#if FC_EKF_FAST_PREDICT
 // Convert the current EKF quaternion estimate to Euler decidegrees and publish it
 // to the telemetry attitude cache, so the high-rate prediction keeps
 // latestAttitude* fresh between the 125 Hz corrections.
@@ -1267,7 +1487,11 @@ void ekfRefreshAttitudeCache() {
   latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
   latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
   latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
-  attitudeSampleValid = true;
+  // Only advertise the attitude as valid while it is actually being updated, so
+  // a dead IMU (recovery boot with a failed IMU init) never publishes a frozen
+  // estimate as a live one. Fresh here in normal operation (lastAttitudeUpdateUs
+  // was just set by the successful predict).
+  attitudeSampleValid = attitudeEstimateFresh(micros());
 }
 #endif  // FC_EKF_FAST_PREDICT
 
@@ -1313,12 +1537,77 @@ bool gpsMotionConfirmed(uint32_t nowUs) {
          latestGpsGroundSpeedMps >= CENTRIPETAL_MIN_GROUND_SPEED_MPS;
 }
 
+// True when a fresh GPS fix shows the airframe is nearly stationary. Used with a
+// low airspeed reading to confirm the aircraft is back on the ground after a
+// recovery boot (see updateAirborneState()). Requires a fresh, valid fix: if GPS
+// is unavailable the recapture simply does not fire and the conservative
+// airspeed-only latch stays in effect.
+bool gpsSlowConfirmed(uint32_t nowUs) {
+  return latestGpsFixValid &&
+         lastGpsFixUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastGpsFixUpdateUs) <= CENTRIPETAL_GPS_FIX_TIMEOUT_US &&
+         latestGpsGroundSpeedMps <= RECOVERY_GROUND_RECAPTURE_GROUNDSPEED_MPS;
+}
+
 // Maintain the latched airborne estimate used to gate the centripetal feed-forward.
 // Engage once the baro shows a real climb above the captured ground level and
 // airspeed is in the flight range; stay engaged through low-altitude maneuvering
 // and only drop back to "on ground" once near the captured ground height. This
 // keeps the gear-constrained takeoff/landing roll out of the free-flight model.
 void updateAirborneState(uint32_t nowUs) {
+  if (watchdogRecoveryBoot && !groundAltitudeCaptured) {
+    // Watchdog-recovery boot with no trustworthy ground-height reference: the
+    // ground capture is intentionally skipped (see applyBarometerPressure())
+    // because the first in-flight reading would otherwise fix the recovery
+    // ALTITUDE as "ground". A watchdog reset fires in the air, so the airborne
+    // state is driven by AIRSPEED with hysteresis instead of the usual
+    // barometric height: engage above AIRBORNE_ENGAGE_AIRSPEED_MPS so the
+    // kinematic accel compensation is available in level/descending recovery
+    // flight, and -- unlike a one-way latch -- disengage again below
+    // AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS so a post-recovery landing roll
+    // or taxi (gear-constrained) stops feeding the compensation. Stale airspeed
+    // reads as zero, which disengages. A fast rollout still above the disengage
+    // speed stays "airborne" briefly; the call site's GPS-ground-motion gate and
+    // the pilot's manual authority cover that residual window.
+    const float airspeedMps = airspeedInputFresh(nowUs) ? (airSpeedCms * 0.01f) : 0.0f;
+
+    // Re-arm the barometric height gate once the aircraft is confirmed back on
+    // the ground. Until then this branch latches airborne from airspeed alone,
+    // which would relatch "airborne" during a later gear-constrained TAKEOFF
+    // roll as soon as pitot reaches the engage speed -- the exact case the
+    // height gate excludes. When the aircraft is landed and slow (disengaged,
+    // low airspeed, GPS-confirmed low ground speed, healthy baro) and stays that
+    // way for the hold time, capture the current baro altitude as the ground
+    // reference and hand back to the normal height-gated logic below for the
+    // rest of the session.
+    // latestAmbientPressurePa > 0 confirms the baro cache has produced at least
+    // one valid reading, so a recapture can never latch the 0-default
+    // sensorAltitudeCm as the ground reference.
+    if (!aircraftAirborne && barometerHealthy && latestAmbientPressurePa > 0.0f &&
+        airspeedMps <= RECOVERY_GROUND_RECAPTURE_AIRSPEED_MPS &&
+        gpsSlowConfirmed(nowUs)) {
+      if (recoveryGroundHoldStartUs == 0) {
+        recoveryGroundHoldStartUs = nowUs;
+      }
+      if ((uint32_t)(nowUs - recoveryGroundHoldStartUs) >= RECOVERY_GROUND_RECAPTURE_HOLD_US) {
+        groundAltitudeM = sensorAltitudeCm * 0.01f;
+        groundAltitudeCaptured = true;   // normal height-gated logic takes over next call
+        recoveryGroundHoldStartUs = 0;
+        return;
+      }
+    } else {
+      recoveryGroundHoldStartUs = 0;     // condition broken; restart the hold
+    }
+
+    if (!aircraftAirborne) {
+      if (airspeedMps >= AIRBORNE_ENGAGE_AIRSPEED_MPS) {
+        aircraftAirborne = true;
+      }
+    } else if (airspeedMps <= AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS) {
+      aircraftAirborne = false;
+    }
+    return;
+  }
   if (!groundAltitudeCaptured) {
     aircraftAirborne = false;
     return;
@@ -1353,10 +1642,18 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
-  if (!groundAltitudeCaptured) {
+  if (!groundAltitudeCaptured && !watchdogRecoveryBoot) {
     // First valid reading happens on the ground during startup; use it as the
     // height reference for airborne detection. Baro drift over a flight is small
     // relative to the engage/disengage margins.
+    //
+    // NOT on a watchdog-recovery boot: if the reset happened in flight this
+    // first reading is at the recovery altitude, and capturing it as "ground"
+    // would make updateAirborneState() see ~0 height and refuse to latch
+    // airborne, disabling the kinematic accel compensation for level or
+    // descending recovery flight. The recovery path latches airborne from
+    // airspeed instead (see updateAirborneState()), so groundAltitudeCaptured
+    // is deliberately left false for the whole recovery session.
     groundAltitudeM = altitudeMeters;
     groundAltitudeCaptured = true;
   }
@@ -1465,6 +1762,10 @@ void updateAirspeedCache() {
       latestAirspeedValid = false;
       latestAirspeedMph = 0.0f;
       airSpeedCms = 0.0f;
+      // Sensor declared down: stop feeding the longitudinal feed-forward and
+      // don't differentiate across the outage when the sensor comes back.
+      airspeedRateMps2 = 0.0f;
+      prevAirspeedSampleValid = false;
     }
 #if FC_TIMING_INSTRUMENTATION
     recordTiming(timingAirspeed, timingStartUs);
@@ -1475,6 +1776,26 @@ void updateAirspeedCache() {
   latestAirspeedMph = airspeedMph;
   airSpeedCms = airspeedMph * 44.704f;   // mph to cm/s
   lastAirspeedUpdateUs = micros();
+
+  // Update the low-passed airspeed derivative for the longitudinal kinematic
+  // feed-forward. The raw per-sample derivative is clamped before filtering so
+  // a single glitched reading cannot slew the filter state, and the dt window
+  // skips both glitched timestamps and differentiation across long gaps.
+  const float airspeedMps = airSpeedCms * 0.01f;
+  if (prevAirspeedSampleValid) {
+    const float sampleDtS =
+        static_cast<float>(lastAirspeedUpdateUs - prevAirspeedSampleUs) * 1.0e-6f;
+    if (sampleDtS >= 0.001f && sampleDtS <= 0.5f) {
+      const float rawRate = clampFloat((airspeedMps - prevAirspeedMps) / sampleDtS,
+                                       -AIRSPEED_RATE_LIMIT_MPS2,
+                                       AIRSPEED_RATE_LIMIT_MPS2);
+      const float alpha = sampleDtS / (AIRSPEED_RATE_FILTER_TAU_S + sampleDtS);
+      airspeedRateMps2 += alpha * (rawRate - airspeedRateMps2);
+    }
+  }
+  prevAirspeedMps = airspeedMps;
+  prevAirspeedSampleUs = lastAirspeedUpdateUs;
+  prevAirspeedSampleValid = true;
 #if FC_TIMING_INSTRUMENTATION
   recordTiming(timingAirspeed, timingStartUs);
 #endif
@@ -2309,6 +2630,8 @@ void maybePrintControlDebugStats() {
   Serial.print(" tlm_speed_cms="); Serial.print(airSpeedCms, 2);
   Serial.print(" tlm_speed_mph="); Serial.print(latestAirspeedMph, 1);
   Serial.print(" airspeed_invalid_hz="); Serial.print(controlDebugCounters.airspeedInvalidReads * scale, 1);
+  Serial.print(" imu_read_fail_hz="); Serial.print(controlDebugCounters.imuReadFailures * scale, 1);
+  Serial.print(" fbw_stale_att_hz="); Serial.print(controlDebugCounters.fbwStaleAttitudeFallbacks * scale, 1);
   Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
   Serial.print(" tlm_sats="); Serial.print(satsInUse);
   Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
@@ -3292,13 +3615,90 @@ void initializeCoarseAttitude() {
 }
 
 
+// Quick pitot read for the boot-time airborne probe (see the
+// WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment). A few factory-offset samples --
+// no zero calibration, which cannot run until we know we are on the ground --
+// averaged for noise. Returns m/s, or NAN if the sensor never responded (in
+// which case ground cannot be confirmed from airspeed and the caller defaults
+// to recovery). Requires only that I2C is up; safe before barometer init
+// (getAirspeed with 0 ambient pressure uses the sea-level density default).
+static float readBootAirspeedProbeMps() {
+  float sumMph = 0.0f;
+  uint8_t valid = 0;
+  for (uint8_t i = 0; i < 5; ++i) {
+    const float mph = airspeedSensor.getAirspeed(0.0f);
+    if (isfinite(mph)) {
+      sumMph += mph;
+      ++valid;
+    }
+    delay(10);
+  }
+  if (valid == 0) {
+    return NAN;
+  }
+  return (sumMph / valid) * 0.44704f;  // mph -> m/s
+}
+
+
+// GPS cross-check for the boot airborne probe (see RECOVERY_PROBE_GROUND_GPS_SPEED_MPS).
+// Brings up the GPS UART and drains it for a bounded window looking for a FRESH
+// RMC fix, then reports whether that fix shows the aircraft essentially
+// stationary. Returns true only on a fresh RMC fix at/below the stationary
+// threshold; false if no fresh fix arrives (then airspeed governs) or if the
+// fix shows real ground motion. Requiring the fix_update_counter to advance
+// guarantees the speed came from a parsed RMC, never a stale or GGA-only 0 --
+// so this cannot wrongly veto an airborne boot into a cold boot. Bounded and
+// watchdog-fed so it can never stall startup.
+static bool bootGpsConfirmsStationary() {
+  gpsSerial.begin(FC_GPS_BAUD);
+  gps.begin(FC_GPS_BAUD);
+  const uint32_t startCounter = gps.fix_update_counter;
+  const uint32_t startMs = millis();
+  while ((uint32_t)(millis() - startMs) < RECOVERY_PROBE_GPS_WAIT_MS) {
+    IWatchdog.reload();
+    gps.gatherData();
+    if (gps.fix_update_counter != startCounter && gps.has_valid_fix) {
+      const float groundSpeedMps = static_cast<float>(gps.speed) * 0.514444f;  // knots -> m/s
+      return groundSpeedMps <= RECOVERY_PROBE_GROUND_GPS_SPEED_MPS;
+    }
+    delay(20);
+  }
+  return false;  // no fresh RMC fix in the window -> cannot veto -> airspeed governs
+}
+
+
 void setup() {
+  // Classify this boot before anything else. IWatchdog.isReset(true) reads the
+  // RCC "reset caused by IWDG" flag and clears the (sticky) reset flags so a
+  // later normal reboot cannot be misclassified from a stale flag. This only
+  // marks the reset as a CANDIDATE for recovery; the airborne-vs-ground decision
+  // (and the global watchdogRecoveryBoot the flight loop reads) is made later
+  // from the pitot airspeed probe, with a gyro-cal ground confirmation only when
+  // airspeed already reads low -- see the IMU init block and the
+  // WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment.
+  const bool watchdogResetDetected = IWatchdog.isReset(true);
+  if (watchdogResetDetected) {
+    // Guard the boot itself: if re-initialization hangs (e.g. the same wedged
+    // bus that caused the reset), reset again rather than sitting with dead
+    // surfaces. Widened window because startup I2C/mag init and the low-airspeed
+    // gyro-cal ground confirmation have legitimate multi-hundred-ms-to-~10 s
+    // blocking stretches; the final IWatchdog.begin() at the end of setup()
+    // re-tightens it to the flight window (the IWDG prescaler/reload are
+    // rewritable while running).
+    IWatchdog.begin(WATCHDOG_RECOVERY_BOOT_TIMEOUT_US);
+  }
+
   // ----- Initialize Debug Serial -----
   Serial.begin(115200);
-  // Allow time for a serial connection, but don't block startup
+  // Allow time for a serial connection, but don't block startup -- and never
+  // wait at all on a watchdog-recovery boot, where every startup millisecond
+  // is spent without RC control.
   unsigned long serialStart = millis();
-  while (!Serial && (millis() - serialStart < 3000)) {
+  while (!Serial && !watchdogResetDetected && (millis() - serialStart < 3000)) {
     delay(10);
+  }
+  if (watchdogResetDetected) {
+    Serial.println("WATCHDOG RESET detected; probing airspeed to choose ground cold-boot vs airborne recovery.");
   }
 #if FC_CONTROL_DEBUG_SERIAL_OUTPUT
   Serial.println("FCDBG serial output enabled; emitting control stats once per second.");
@@ -3325,7 +3725,13 @@ void setup() {
   // then return to neutral before any blocking I2C sensor calls. This gives the
   // pilot a visible startup-calibration indication without holding the surfaces
   // near an end stop if a disconnected sensor stalls initialization.
-  signalCalibrationActive();
+  // Skipped on any watchdog reset: we do not yet know whether we are airborne
+  // (the airspeed probe runs later), and deflecting flight surfaces in the air
+  // is an uncommanded control input. Worst case this skips a cosmetic sweep on a
+  // ground watchdog reset -- harmless.
+  if (!watchdogResetDetected) {
+    signalCalibrationActive();
+  }
 
   // ----- Initialize I2C -----
   I2C_Alternate.begin();
@@ -3345,36 +3751,148 @@ void setup() {
   I2C_Alternate.setWireTimeout(25000 /* us */, true /* reset_with_timeout */);
 #endif
 
+  // ----- Airborne probe + IMU init (airspeed-gated recovery decision) -----
+  // A watchdog reset defaults to airborne recovery; we only drop to the
+  // cold-boot path when the pitot POSITIVELY confirms we are not flying. The
+  // gyro cannot make this call (smooth cruise looks as still as the bench), and
+  // its calibration is slow enough (~10 s worst case) to trip the boot watchdog,
+  // so it is used ONLY as a final ground confirmation after airspeed already
+  // says "low", never in the airborne path.
+  //   watchdog reset, airspeed >= threshold (or pitot dead) -> AIRBORNE recovery:
+  //     skip the gyro cal (zero bias; the EKF learns the in-run bias), skip the
+  //     in-air-invalid zero captures/sweeps, degrade (never halt);
+  //   watchdog reset, airspeed low -> attempt cold boot and confirm with the gyro
+  //     cal: still -> ground cold boot (calibrate, fail-stop); motion -> airborne
+  //     after all -> recovery; IMU dead -> recovery (never brick).
+  //   normal (non-watchdog) boot -> unchanged: calibrate, halt on any failure.
+  bool attemptGroundColdBoot = !watchdogResetDetected;   // a normal boot always cold-boots
+  if (watchdogResetDetected) {
+    // Positive ground confirmation is required before cold booting (see the
+    // WATCHDOG_RECOVERY_BOOT_TIMEOUT_US comment): airspeed must read low AND a
+    // fresh GPS fix must show the aircraft stationary. bootGpsConfirmsStationary()
+    // (up to ~800 ms) is short-circuited out unless airspeed is already low, so a
+    // high/dead-pitot reset goes straight to recovery with no GPS wait.
+    const float probeAirspeedMps = readBootAirspeedProbeMps();
+    const bool airspeedLow = isfinite(probeAirspeedMps) &&
+                             probeAirspeedMps < RECOVERY_PROBE_AIRBORNE_AIRSPEED_MPS;
+    if (airspeedLow && bootGpsConfirmsStationary()) {
+      attemptGroundColdBoot = true;   // low airspeed + GPS stationary: confirm with the gyro cal
+      Serial.println("Watchdog reset: low airspeed and GPS stationary -> ground cold boot (gyro cal confirms).");
+    } else {
+      watchdogRecoveryBoot = true;    // no positive ground confirmation: airborne recovery
+      if (!isfinite(probeAirspeedMps)) {
+        Serial.println("Watchdog reset: pitot unavailable -> airborne recovery (no ground confirmation).");
+      } else if (!airspeedLow) {
+        Serial.println("Watchdog reset: airspeed high -> airborne recovery (skip gyro cal, zero bias).");
+      } else {
+        Serial.println("Watchdog reset: low airspeed but GPS not stationary/unavailable -> airborne recovery.");
+      }
+    }
+  } else {
+    Serial.println("Calibrating IMU bias...");
+  }
+
+  int status = -1;
+  if (attemptGroundColdBoot) {
+    // Calibrate; on a watchdog reset this doubles as the ground/motion confirmation.
+    status = IMU.begin(false /* calibrate */);
+    if (!watchdogResetDetected) {
+      // Normal cold boot: any IMU failure halts.
+      if (status < 0) {
+        Serial.println("IMU initialization unsuccessful");
+        if (status == -21) {
+          Serial.println("Airframe was moving during gyro bias calibration -- keep it still and cycle power");
+        } else {
+          Serial.println("Check IMU wiring or try cycling power");
+        }
+        Serial.print("Status: ");
+        Serial.println(status);
+        haltStartupWithNeutralServos();
+      }
+      Serial.println("IMU Calibration complete...");
+    } else if (status >= 0) {
+      // Low airspeed + GPS stationary + gyro still -> confirmed on the ground ->
+      // cold boot (watchdogRecoveryBoot stays false: calibrate + fail-stop on).
+      Serial.println("Ground confirmed (low airspeed, GPS stationary, gyro still): cold boot, IMU calibrated.");
+    } else if (status == -21) {
+      // Confirmed stationary by airspeed + GPS, but the gyro sees motion ->
+      // moving after all (e.g. the bench being handled) -> airborne recovery.
+      watchdogRecoveryBoot = true;
+      Serial.println("Low airspeed but gyro motion: airborne recovery (zero gyro bias).");
+      status = -1;
+      for (uint8_t attempt = 0; attempt < IMU_RECOVERY_INIT_ATTEMPTS && status < 0; ++attempt) {
+        status = IMU.begin(true /* skipGyroBiasCalibration */);
+      }
+      if (status < 0) {
+        imuHealthy = false;
+      }
+    } else {
+      // IMU unresponsive -> cannot confirm ground -> recovery, run without IMU.
+      watchdogRecoveryBoot = true;
+      imuHealthy = false;
+      Serial.println("IMU unresponsive on a watchdog reset: airborne recovery, running without IMU.");
+    }
+  } else {
+    // Airborne recovery (high airspeed / dead pitot): skip the gyro cal entirely
+    // so the slow calibration can never trip the boot watchdog. Zero gyro bias;
+    // the EKF learns the in-run bias.
+    status = -1;
+    for (uint8_t attempt = 0; attempt < IMU_RECOVERY_INIT_ATTEMPTS && status < 0; ++attempt) {
+      status = IMU.begin(true /* skipGyroBiasCalibration */);
+    }
+    if (status < 0) {
+      imuHealthy = false;
+      Serial.println("Airborne recovery: IMU init failed, running without IMU (manual RC only).");
+    } else {
+      Serial.println("Airborne recovery: IMU up with zero gyro bias.");
+    }
+  }
+
+  // Feed the widened watchdog after the (up to ~10 s) ground-confirmation cal.
+  IWatchdog.reload();
+
   // ----- Calibrate Barometer -----
   if (!barometer.begin()) {
     Serial.println("MS5611 initialization unsuccessful");
     Serial.println("Check barometer wiring or try cycling power");
-    haltStartupWithNeutralServos();
+    if (watchdogRecoveryBoot) {
+      // Airborne recovery: never halt on a sensor fault -- restoring RC control
+      // outranks altitude telemetry and the airborne latch.
+      barometerHealthy = false;
+    } else {
+      haltStartupWithNeutralServos();
+    }
   }
-  // Keep conversion latency low so the 60 Hz barometer cache does not starve
-  // the 125 Hz IMU/EKF loop. LOW_POWER uses shorter conversion delays than
-  // HIGH_RES at the cost of some pressure resolution.
-  barometer.setOversampling("LOW_POWER");
-  barometer.calibrate();
+  if (barometerHealthy) {
+    // Keep conversion latency low so the 60 Hz barometer cache does not starve
+    // the 125 Hz IMU/EKF loop. LOW_POWER uses shorter conversion delays than
+    // HIGH_RES at the cost of some pressure resolution.
+    barometer.setOversampling("LOW_POWER");
+    // The sea-level capture assumes the airframe is on the ground; running it
+    // mid-air after a watchdog reset would zero the altitude at the recovery
+    // altitude. A ground boot (including a still watchdog reset) runs it normally.
+    if (!watchdogRecoveryBoot) {
+      barometer.calibrate();
+    }
+  }
 
   // ----- Calibrate Airspeed Sensor -----
-  airspeedSensor.calibrate();
-
-  // ----- Initialize IMU -----
-  Serial.println("Calibrating IMU bias...");
-  int status = IMU.begin();
-  if (status < 0) {
-    Serial.println("IMU initialization unsuccessful");
-    if (status == -21) {
-      Serial.println("Airframe was moving during gyro bias calibration -- keep it still and cycle power");
-    } else {
-      Serial.println("Check IMU wiring or try cycling power");
-    }
-    Serial.print("Status: ");
-    Serial.println(status);
-    haltStartupWithNeutralServos();
+  // The zero-airspeed capture likewise assumes a windless, stationary pitot.
+  // Running it mid-air would capture cruise dynamic pressure as "zero", so
+  // airspeed would read ~0 in flight and an engaged auto-throttle would
+  // command full power chasing its target. Skip only on an airborne recovery.
+  if (!watchdogRecoveryBoot) {
+    airspeedSensor.calibrate();
   }
-  Serial.println("IMU Calibration complete...");
+
+  // Feed the widened watchdog partway through startup. On a watchdog reset the
+  // widened WATCHDOG_RECOVERY_BOOT_TIMEOUT_US window is armed at the top of
+  // setup(), and a reset the probe
+  // classified as a GROUND boot then runs the full cold-boot path (gyro cal,
+  // baro/airspeed calibrate, GPS settle, sweeps) under it; reloading here and
+  // before the sweeps keeps each phase well inside the window. Harmless no-op on
+  // a normal boot (the IWDG is not started until the end of setup()).
+  IWatchdog.reload();
 #if FC_MAG_CALIBRATION_MODE
   runMagnetometerCalibrationDebug();
   Serial.println("MAGCAL complete. Halting startup so calibration mode cannot be used for flight.");
@@ -3384,9 +3902,24 @@ void setup() {
   // ----- Initialize EKF -----
   // Coarse-align the starting attitude from the averaged accel/mag observation
   // (falls back to identity when the observation is unusable), then start the
-  // filter from it.
-  initializeCoarseAttitude();
+  // filter from it. On a recovery boot in steady flight the accel-norm gate
+  // usually passes and TRIAD recovers a usable attitude; in a hard maneuver it
+  // falls back to identity and the (gate-warmup-open) filter re-converges.
+  if (imuHealthy) {
+    initializeCoarseAttitude();
+  } else {
+    quaternionData.vSetToZero();
+    quaternionData[0][0] = 1.0;
+  }
   EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+#if !FC_EKF_FAST_PREDICT
+  // Seed the single-rate fusion-integration origin to the reset instant so the
+  // FIRST successful fusion integrates the true elapsed time since the EKF was
+  // initialized -- not a nominal 8 ms controlDt -- even if startup/recovery IMU
+  // reads fail for a while before that first success. Bounded by
+  // EKF_MAX_CATCHUP_DT_S in the loop, and near-zero on the ground (gyro ~0).
+  lastEkfFusionUs = micros();
+#endif
   snprintf(bufferTxSer, sizeof(bufferTxSer)-1, "Adafruit STM32F405 Feather Express (%s)\r\n",
            (FPU_PRECISION == PRECISION_SINGLE) ? "Float32" : "Double64");
   Serial.print(bufferTxSer);
@@ -3398,12 +3931,19 @@ void setup() {
   // ----- Initialize GPS (gpsSerial) -----
   gpsSerial.begin(FC_GPS_BAUD);
   gps.begin(FC_GPS_BAUD);  // Switch module to NMEA output; enable GGA + RMC on UART1 at the flight GPS baud.
-  delay(1000);
+  if (!watchdogRecoveryBoot) {
+    // Settle time for the module's output-mode switch. On a recovery boot the
+    // module was already configured before the reset and keeps streaming, so
+    // don't spend a second of control-less flight waiting on it.
+    delay(1000);
+  }
   Serial.println("GPS module initialized on USART6.");
 
   // Prime slow-sensor caches so the first GPS telemetry frames do not carry
   // default airspeed/altitude values while waiting for their first timers.
-  updateBarometerCacheBlocking();
+  if (barometerHealthy) {
+    updateBarometerCacheBlocking();
+  }
   updateAirspeedCache();
   updateGpsCache();
 
@@ -3411,7 +3951,21 @@ void setup() {
   // Use a baud rate of 921600 as required.
   if (!crsf.begin(921600)) {
     Serial.println("CRSF for Arduino initialization failed!");
-    haltStartupWithNeutralServos();
+    centerAllServos();
+    // crsf.update() dereferences pointers that a failed begin() never allocated,
+    // so we must NOT fall through into loop() and service a dead link.
+    if (watchdogRecoveryBoot) {
+      // Airborne recovery: the widened IWDG is already running. Spin WITHOUT
+      // reloading it so it RESETS the board and re-runs setup -- retrying the
+      // link -- instead of a reloading halt that would feed the watchdog forever
+      // and permanently brick in the air. Surfaces are centered / throttle cut
+      // (by centerAllServos and re-centered each boot) throughout.
+      while (1) { /* wait for the widened IWDG to reset and retry setup */ }
+    } else {
+      // Normal ground boot: fail-stop with neutral servos (the IWDG is not
+      // started yet, so this is a stable permanent halt -- the safe ground state).
+      haltStartupWithNeutralServos();
+    }
   }
   crsf.setRcChannelsCallback(rcChannelsCallback);
 
@@ -3424,8 +3978,12 @@ void setup() {
 
   // Sweep the ailerons and elevator through full travel once after all startup
   // initialization is complete, then return them to neutral for normal servo
-  // operation.
-  signalCalibrationComplete();
+  // operation. Never in a recovery boot: a full-travel surface sweep in the
+  // air is a violent uncommanded input.
+  IWatchdog.reload();   // second reload of the widened window (see the note above)
+  if (!watchdogRecoveryBoot) {
+    signalCalibrationComplete();
+  }
 
   resetPeriodicTimers();
 
@@ -3435,6 +3993,9 @@ void setup() {
   // (those paths intentionally never reach this line) while protecting the
   // flight loop: if any iteration stalls longer than WATCHDOG_TIMEOUT_US the
   // board resets instead of holding stale servo commands indefinitely.
+  // On a watchdog-recovery boot the IWDG is already running at the widened
+  // recovery window; this call re-tightens it to the flight window (IWDG
+  // prescaler/reload are rewritable while the counter runs).
   IWatchdog.begin(WATCHDOG_TIMEOUT_US);
 
   Serial.println("CRSF Telemetry Ready");
@@ -3455,7 +4016,9 @@ void loop() {
   bool attitudeTelemetrySentThisLoop = false;
   bool gpsTelemetrySentThisLoop = false;
 
-  serviceBarometerCache();
+  if (barometerHealthy) {
+    serviceBarometerCache();
+  }
   serviceCrsfLink();
 
   if (airspeedTimer >= AIRSPEED_PERIOD_US) {
@@ -3497,7 +4060,9 @@ void loop() {
     // its cached gyro, so on failure skip the step entirely -- don't integrate a
     // stale sample and don't advance lastEkfPredictUs, so the next good predict
     // (or the 125 Hz correction) integrates the true elapsed time. Default-on path.
-    if (IMU.readSensor() >= 0) {
+    // imuHealthy is only false after a watchdog-recovery boot with a dead IMU;
+    // skip the bus traffic entirely in that case.
+    if (imuHealthy && IMU.readSensor() >= 0) {
       const uint32_t predictNowUs = micros();
       float predictDt = (lastEkfPredictUs == 0)
                           ? (EKF_PREDICT_PERIOD_US * 1.0e-6f)
@@ -3505,10 +4070,11 @@ void loop() {
       // Sanity guard only (the timer is cleared, so dt is the real inter-prediction
       // interval, >= one period in steady state): floor a glitched/zero/negative
       // delta and cap an extreme post-stall gap.
-      if (predictDt < 0.0005f || predictDt > 0.050f) {
-        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;
+      if (predictDt < 0.0005f) {
+        predictDt = EKF_PREDICT_PERIOD_US * 1.0e-6f;  // floor a glitched/zero/negative delta
+      } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
+        predictDt = EKF_MAX_CATCHUP_DT_S;             // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
-      lastEkfPredictUs = predictNowUs;
 
       // Body-frame gyro (see the imuBody* helpers for the frame definition).
       // Only the gyro is used here; the 125 Hz correction reads its own fresh
@@ -3519,15 +4085,19 @@ void loop() {
       U[1][0] = fastQ;
       U[2][0] = fastR;
 
-      gEkfRuntimeDt = static_cast<float_prec>(predictDt);
-      ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
-
       const Matrix ekfPrePredictX = EKF_IMU.GetX();
       const Matrix ekfPrePredictP = EKF_IMU.GetP();
-      if (!EKF_IMU.bPredict(U)) {
+      if (!ekfPredictSubstepped(predictDt, U)) {
         // A quaternion-norm collapse is extremely unlikely at this step size;
-        // restore the last good state rather than advancing on a bad one.
+        // restore the last good state rather than advancing on a bad one. The
+        // integration origin (lastEkfPredictUs) is deliberately NOT advanced:
+        // the restored state still corresponds to the old origin, so the next
+        // successful predict integrates the full elapsed gap instead of
+        // silently dropping this interval's rotation.
         EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
+      } else {
+        lastEkfPredictUs = predictNowUs;
+        lastAttitudeUpdateUs = predictNowUs;
       }
       ekfRefreshAttitudeCache();
     }
@@ -3562,228 +4132,303 @@ void loop() {
     // correction instant (independent of the high-rate predictor's own reads) so
     // the accel/mag gate, centripetal compensation, and control attitude are never
     // based on a stale sample.
-    IMU.readSensor();
-    // Aircraft body frame samples (proper right-handed Z-down mapping; see the
-    // imuBody* helpers for the frame definition and rationale).
-    float Ax, Ay, Az, Bx, By, Bz, p, q, r;
-    imuBodyAccel(Ax, Ay, Az);
-    imuBodyMag(Bx, By, Bz);
-    imuBodyGyro(p, q, r);
-    // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
-    // sample below rather than fusing it as a heading reference.
-    const bool magOverflow = IMU.magnetometerOverflow();
-    
-    // Populate matrices for EKF update
-    U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
-    Y[0][0] = Ax; Y[1][0] = Ay; Y[2][0] = Az;
+    //
+    // The read is guarded exactly like the high-rate predictor's: a failed I2C
+    // read leaves the driver's cached sample stale, and fusing it as fresh
+    // would integrate a frozen gyro rate (a constant rotation) and correct
+    // toward a frozen gravity vector for as long as the bus is down. On
+    // failure skip the fusion entirely for this cycle -- the EKF keeps its
+    // state and the next good cycle integrates the true elapsed time -- while
+    // the control/servo logic below still runs (FBW falls back to direct RC
+    // pass-through once the attitude estimate goes stale, see
+    // attitudeEstimateFresh()).
+    const bool imuReadOk = imuHealthy && (IMU.readSensor() >= 0);
+    if (!imuReadOk) {
+      ++controlDebugCounters.imuReadFailures;
+    } else {
+      // Aircraft body frame samples (proper right-handed Z-down mapping; see the
+      // imuBody* helpers for the frame definition and rationale).
+      float Ax, Ay, Az, Bx, By, Bz, p, q, r;
+      imuBodyAccel(Ax, Ay, Az);
+      imuBodyMag(Bx, By, Bz);
+      imuBodyGyro(p, q, r);
+      // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
+      // sample below rather than fusing it as a heading reference.
+      const bool magOverflow = IMU.magnetometerOverflow();
+      
+      // Populate matrices for EKF update
+      U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
+      Y[0][0] = Ax; Y[1][0] = Ay; Y[2][0] = Az;
 #if !FC_EKF_DECOUPLE_MAG
-    Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
+      Y[3][0] = Bx; Y[4][0] = By; Y[5][0] = Bz;
 #endif
 
 #if FC_EKF_DECOUPLE_MAG
-    setEkfMeasurementNoise(R_INIT_ACC, R_INIT_YAW);
+      setEkfMeasurementNoise(R_INIT_ACC, R_INIT_YAW);
 #else
-    setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
+      setEkfMeasurementNoise(R_INIT_ACC, R_INIT_MAG);
 #endif
 #if FC_EKF_FAST_PREDICT
-    // Propagate the state to this correction instant, then predict+correct here
-    // (not correct-only). The high-rate predictor may have already advanced the
-    // state partway, so integrate only the time since the most recent prediction
-    // (the predictor or a previous correction): the state is always brought up to
-    // "now" with the fresh sample read above before correcting, and Q is scaled by
-    // that step. Resetting timerEKFPredict stops the predictor from firing again
-    // immediately and double-propagating.
-    float predictDt = (lastEkfPredictUs == 0)
-                        ? controlDt
-                        : static_cast<float>(controlUpdateUs - lastEkfPredictUs) * 1.0e-6f;
-    if (predictDt < 0.0f) {
-      predictDt = 0.0f;                       // clock guard; a 0 step is a no-op predict
-    } else if (predictDt > 0.050f) {
-      predictDt = static_cast<float>(SS_DT);  // cap an extreme post-stall gap
-    }
-    gEkfRuntimeDt = static_cast<float_prec>(predictDt);
-    ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
-    lastEkfPredictUs = controlUpdateUs;
-    timerEKFPredict = 0;
+      // Propagate the state to this correction instant, then predict+correct here
+      // (not correct-only). The high-rate predictor may have already advanced the
+      // state partway, so integrate only the time since the most recent prediction
+      // (the predictor or a previous correction): the state is always brought up to
+      // "now" with the fresh sample read above before correcting, and Q is scaled by
+      // that step. Resetting timerEKFPredict stops the predictor from firing again
+      // immediately and double-propagating.
+      float predictDt = (lastEkfPredictUs == 0)
+                          ? controlDt
+                          : static_cast<float>(controlUpdateUs - lastEkfPredictUs) * 1.0e-6f;
+      if (predictDt < 0.0f) {
+        predictDt = 0.0f;                       // clock guard; a 0 step is a no-op predict
+      } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
+        predictDt = EKF_MAX_CATCHUP_DT_S;       // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
+      }
+      const float ekfStepDt = predictDt;
+      // lastEkfPredictUs (the gyro-integration origin) is advanced only after a
+      // SUCCESSFUL update, or on the hard reset to a known state -- both below.
+      // A failed+restored update leaves it at the last good origin so the next
+      // predict integrates the true elapsed gap instead of measuring dt from
+      // the failed attempt (same policy as the single-rate lastEkfFusionUs).
+      timerEKFPredict = 0;
 #else
-    gEkfRuntimeDt = static_cast<float_prec>(controlDt);
+      // Integrate the time since the last SUCCESSFUL fusion, not since the
+      // last control cycle: when a failed IMU read skips a cycle, the next
+      // good sample must cover the missed interval or the attitude loses that
+      // rotation entirely (same policy as the fast-predict path's
+      // lastEkfPredictUs handling).
+      float fusionDt = (lastEkfFusionUs == 0)
+                         ? controlDt
+                         : static_cast<float>(controlUpdateUs - lastEkfFusionUs) * 1.0e-6f;
+      if (fusionDt < 0.001f) {
+        fusionDt = static_cast<float>(SS_DT);   // floor a glitched/zero/negative delta
+      } else if (fusionDt > EKF_MAX_CATCHUP_DT_S) {
+        fusionDt = EKF_MAX_CATCHUP_DT_S;        // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
+      }
+      const float ekfStepDt = fusionDt;
+      // lastEkfFusionUs (the gyro-integration origin) is advanced only after a
+      // SUCCESSFUL update, or when the filter is hard-reset to a known state --
+      // both below. A failed+restored update leaves it at the last good fusion
+      // time so the next update integrates the true elapsed gap (bounded by
+      // EKF_MAX_CATCHUP_DT_S) instead of measuring dt from the failed attempt.
 #endif
-    Matrix predictedX = EKF_IMU.GetX();
-    Matrix predictedY(SS_Z_LEN, 1);
-    if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
+      // Manual one-step-ahead prediction for the innovation gates, using the
+      // SAME sub-stepped integration as the EKF's own predict below so
+      // predictedX/predictedY equal the filter's internal h(x) exactly (the
+      // decoupled-mag heading innovation relies on that equality).
+      Matrix predictedX = EKF_IMU.GetX();
+      Matrix predictedY(SS_Z_LEN, 1);
+      if (!substepPredictState(predictedX, ekfStepDt, U)) {
+        // Discard the partial propagation: downstream consumers (the
+        // centripetal feed-forward's bias states, the decoupled-mag heading
+        // rotation) read predictedX, which must never hold a failed step.
+        predictedX = EKF_IMU.GetX();
+      }
       Main_bUpdateNonlinearY(predictedY, predictedX, U);
-    } else {
-      Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
-    }
 
-    // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
-    float magCalX, magCalY, magCalZ;
-    applyMagCalibration(Bx, By, Bz, magCalX, magCalY, magCalZ);
+      // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
+      float magCalX, magCalY, magCalZ;
+      applyMagCalibration(Bx, By, Bz, magCalX, magCalY, magCalZ);
 #if !FC_EKF_DECOUPLE_MAG
-    Y[3][0] = magCalX;
-    Y[4][0] = magCalY;
-    Y[5][0] = magCalZ;
+      Y[3][0] = magCalX;
+      Y[4][0] = magCalY;
+      Y[5][0] = magCalZ;
 #endif
 
 #if FC_ACCEL_CENTRIPETAL_COMPENSATION
-    // Subtract the centripetal/transport acceleration (a ~= omega x V) from the
-    // measured specific force before treating it as a gravity reference. In the
-    // right-handed Z-down body frame, a forward velocity V with body pitch rate
-    // q and yaw rate r produces a kinematic acceleration of
-    // omega x V = [0, r*V, -q*V]; removing it leaves the gravity-only specific
-    // force. (Because r's sign flipped with the frame's Z axis, the physical
-    // correction applied is identical to the previous left-handed-frame
-    // derivation.) The body rates are EKF bias-corrected (q,r minus
-    // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
-    // cannot inject a persistent bias*airspeed term in straight flight. Only
-    // applied with a fresh, valid, bounded airspeed, GPS-confirmed ground motion,
-    // and a latched airborne state so a bad pitot reading, wind/prop wash on a
-    // stationary airframe, or a gear-constrained takeoff/landing roll cannot
-    // corrupt attitude.
-    updateAirborneState(controlUpdateUs);
-    if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs) &&
-        aircraftAirborne) {
-      float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
-      if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
-        centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
-        const float pitchRate = U[1][0] - predictedX[5][0];  // q minus est. pitch-gyro bias
-        const float yawRate   = U[2][0] - predictedX[6][0];  // r minus est. yaw-gyro bias
-        Y[1][0] -= yawRate   * centripetalAirspeedMps;   // remove the +r*V term
-        Y[2][0] += pitchRate * centripetalAirspeedMps;   // remove the -q*V term
-      }
-    }
-#endif
-
-    // Normalize the accelerometer vector and weight it as a gravity reference by
-    // how far its magnitude departs from 1 g. Vibration adds broadband specific
-    // force that pushes |a| off gravity, so rather than a single hard accept/
-    // reject cliff the measurement noise is scaled up *smoothly* with the norm
-    // error: a lightly disturbed sample is only mildly de-weighted (it still
-    // contributes) while a heavily disturbed one fades toward negligible. This
-    // degrades gracefully under sustained vibration instead of dropping to
-    // gyro-only coasting (and its drift) the instant a threshold is crossed.
-    //
-    // Two hard backstops remain for genuinely unusable samples and fall back to
-    // the gyro-predicted reference at R_REJECTED: a near-zero norm, and a
-    // magnitude more than ACCEL_NORM_GATE_FRACTION off 1 g. The post-warmup
-    // innovation gate (direction disagreement) is likewise kept as a hard reject.
-    float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
-    float normErrFrac = (normG > NORM_EPSILON)
-                          ? fabsf(normG - GRAVITY_NOMINAL_MSS) / GRAVITY_NOMINAL_MSS
-                          : (ACCEL_NORM_GATE_FRACTION + 1.0f);  // force hard reject
-    bool accelRejected = normErrFrac > ACCEL_NORM_GATE_FRACTION;
-    if (!accelRejected) {
-      Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
-      }
-    }
-    if (accelRejected) {
-      Y[0][0] = predictedY[0][0];
-      Y[1][0] = predictedY[1][0];
-      Y[2][0] = predictedY[2][0];
-      EKF_RACTIVE[0][0] = R_REJECTED;
-      EKF_RACTIVE[1][1] = R_REJECTED;
-      EKF_RACTIVE[2][2] = R_REJECTED;
-    } else {
-      // Geometric ramp from R_INIT_ACC (at |a| == 1 g) to R_REJECTED (at the
-      // gate edge): each increment of norm error multiplies the noise by a
-      // constant factor, so trust falls off smoothly across orders of magnitude.
-      // At zero norm error this reduces exactly to the base R_INIT_ACC set above.
-      float gateFrac = normErrFrac / ACCEL_NORM_GATE_FRACTION;   // [0, 1]
-      float rAcc = R_INIT_ACC * powf(R_REJECTED / R_INIT_ACC, gateFrac);
-      EKF_RACTIVE[0][0] = rAcc;
-      EKF_RACTIVE[1][1] = rAcc;
-      EKF_RACTIVE[2][2] = rAcc;
-    }
-
-#if FC_EKF_DECOUPLE_MAG
-    // Decoupled magnetometer: fuse ONLY a tilt-compensated heading so magnetic
-    // error cannot reach roll/pitch. Rotate the calibrated field into the earth
-    // frame with the predicted attitude, take its horizontal heading, and compare
-    // against the reference declination. The wrapped error becomes the yaw
-    // measurement. predictedY[3] is the EKF's own h(x)[3] at this same predicted
-    // state, so the filter's Err = Y[3] - h(x)[3] equals headingErr exactly and
-    // is immune to the +-pi atan2 wrap.
-    float normM = sqrtf(magCalX*magCalX + magCalY*magCalY + magCalZ*magCalZ);
-    bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
-    if (!magRejected) {
-      float pq0 = predictedX[0][0], pq1 = predictedX[1][0], pq2 = predictedX[2][0], pq3 = predictedX[3][0];
-      // m_e = R_eb^T * m_b : only the earth-horizontal (X,Y) components are needed.
-      float meX = (pq0*pq0+pq1*pq1-pq2*pq2-pq3*pq3)*magCalX
-                + (2*(pq1*pq2-pq0*pq3))*magCalY
-                + (2*(pq1*pq3+pq0*pq2))*magCalZ;
-      float meY = (2*(pq1*pq2+pq0*pq3))*magCalX
-                + (pq0*pq0-pq1*pq1+pq2*pq2-pq3*pq3)*magCalY
-                + (2*(pq2*pq3-pq0*pq1))*magCalZ;
-      if ((meX*meX + meY*meY) <= NORM_EPSILON) {
-        magRejected = true;                 // horizontal field vanished (near-vertical / degenerate)
-      } else {
-        float declRef    = atan2f(IMU_MAG_B0[1][0], IMU_MAG_B0[0][0]);
-        float headingErr = wrapToPi(declRef - atan2f(meY, meX));
-        if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES &&
-            fabsf(headingErr) > MAG_YAW_INNOVATION_GATE) {
-          magRejected = true;
-        } else {
-          Y[3][0] = predictedY[3][0] + headingErr;
+      // Subtract the kinematic acceleration (a ~= dV/dt + omega x V) from the
+      // measured specific force before treating it as a gravity reference. In the
+      // right-handed Z-down body frame, a forward velocity V with body pitch rate
+      // q and yaw rate r produces a kinematic acceleration of
+      // dV/dt + omega x V = [Vdot, r*V, -q*V]; removing it leaves the gravity-only
+      // specific force. (Because r's sign flipped with the frame's Z axis, the physical
+      // correction applied is identical to the previous left-handed-frame
+      // derivation.) The body rates are EKF bias-corrected (q,r minus
+      // the estimated gyro bias, matching Main_bUpdateNonlinearX) so a learned bias
+      // cannot inject a persistent bias*airspeed term in straight flight. Only
+      // applied with a fresh, valid, bounded airspeed, GPS-confirmed ground motion,
+      // and a latched airborne state so a bad pitot reading, wind/prop wash on a
+      // stationary airframe, or a gear-constrained takeoff/landing roll cannot
+      // corrupt attitude.
+      updateAirborneState(controlUpdateUs);
+      if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs) &&
+          aircraftAirborne) {
+        float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
+        if (isfinite(centripetalAirspeedMps) && centripetalAirspeedMps > 0.0f) {
+          centripetalAirspeedMps = fminf(centripetalAirspeedMps, CENTRIPETAL_MAX_AIRSPEED_MPS);
+          const float pitchRate = U[1][0] - predictedX[5][0];  // q minus est. pitch-gyro bias
+          const float yawRate   = U[2][0] - predictedX[6][0];  // r minus est. yaw-gyro bias
+          Y[1][0] -= yawRate   * centripetalAirspeedMps;   // remove the +r*V term
+          Y[2][0] += pitchRate * centripetalAirspeedMps;   // remove the -q*V term
+          // Longitudinal term of the same kinematic acceleration: remove the
+          // low-passed pitot airspeed rate from body X so a sustained
+          // throttle/climb acceleration does not tilt the gravity reference
+          // (see the AIRSPEED_RATE_* comment block). The deadband keeps
+          // steady cruise untouched by residual derivative jitter.
+          if (isfinite(airspeedRateMps2) &&
+              fabsf(airspeedRateMps2) >= AIRSPEED_RATE_DEADBAND_MPS2) {
+            Y[0][0] -= clampFloat(airspeedRateMps2,
+                                  -AIRSPEED_RATE_LIMIT_MPS2,
+                                  AIRSPEED_RATE_LIMIT_MPS2);  // remove the +Vdot term
+          }
         }
       }
-    }
-    if (magRejected) {
-      Y[3][0] = predictedY[3][0];           // zero innovation
-      EKF_RACTIVE[3][3] = R_REJECTED;
-    }
-#else
-    // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
-    float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
-    bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
-    if (!magRejected) {
-      Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
-      if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
-      }
-    }
-    if (magRejected) {
-      Y[3][0] = predictedY[3][0];
-      Y[4][0] = predictedY[4][0];
-      Y[5][0] = predictedY[5][0];
-      EKF_RACTIVE[3][3] = R_REJECTED;
-      EKF_RACTIVE[4][4] = R_REJECTED;
-      EKF_RACTIVE[5][5] = R_REJECTED;
-    }
 #endif
 
-    // Update the EKF and measure computation time
-    Matrix ekfPreviousX = EKF_IMU.GetX();
-    Matrix ekfPreviousP = EKF_IMU.GetP();
-    EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
-    u64compuTime = micros();
-    // bUpdate = predict (the dt-scaled step configured above) + correct. In fast
-    // mode the predict brings the state from the last high-rate prediction up to
-    // this correction instant; in single-rate mode it is the full control step.
-    const bool ekfUpdateOk = EKF_IMU.bUpdate(Y, U);
-    if (!ekfUpdateOk) {
-      ++ekfConsecutiveFailures;
-      if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
-        quaternionData.vSetToZero();
-        quaternionData[0][0] = 1.0;
-        EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
-        ekfConsecutiveFailures = 0;
-        ekfInnovationGateWarmupUpdates = 0;
+      // Normalize the accelerometer vector and weight it as a gravity reference by
+      // how far its magnitude departs from 1 g. Vibration adds broadband specific
+      // force that pushes |a| off gravity, so rather than a single hard accept/
+      // reject cliff the measurement noise is scaled up *smoothly* with the norm
+      // error: a lightly disturbed sample is only mildly de-weighted (it still
+      // contributes) while a heavily disturbed one fades toward negligible. This
+      // degrades gracefully under sustained vibration instead of dropping to
+      // gyro-only coasting (and its drift) the instant a threshold is crossed.
+      //
+      // Two hard backstops remain for genuinely unusable samples and fall back to
+      // the gyro-predicted reference at R_REJECTED: a near-zero norm, and a
+      // magnitude more than ACCEL_NORM_GATE_FRACTION off 1 g. The post-warmup
+      // innovation gate (direction disagreement) is likewise kept as a hard reject.
+      float normG = sqrtf(Y[0][0]*Y[0][0] + Y[1][0]*Y[1][0] + Y[2][0]*Y[2][0]);
+      float normErrFrac = (normG > NORM_EPSILON)
+                            ? fabsf(normG - GRAVITY_NOMINAL_MSS) / GRAVITY_NOMINAL_MSS
+                            : (ACCEL_NORM_GATE_FRACTION + 1.0f);  // force hard reject
+      bool accelRejected = normErrFrac > ACCEL_NORM_GATE_FRACTION;
+      if (!accelRejected) {
+        Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
+        if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+          accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
+        }
+      }
+      if (accelRejected) {
+        Y[0][0] = predictedY[0][0];
+        Y[1][0] = predictedY[1][0];
+        Y[2][0] = predictedY[2][0];
+        EKF_RACTIVE[0][0] = R_REJECTED;
+        EKF_RACTIVE[1][1] = R_REJECTED;
+        EKF_RACTIVE[2][2] = R_REJECTED;
       } else {
-        EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
+        // Geometric ramp from R_INIT_ACC (at |a| == 1 g) to R_REJECTED (at the
+        // gate edge): each increment of norm error multiplies the noise by a
+        // constant factor, so trust falls off smoothly across orders of magnitude.
+        // At zero norm error this reduces exactly to the base R_INIT_ACC set above.
+        float gateFrac = normErrFrac / ACCEL_NORM_GATE_FRACTION;   // [0, 1]
+        float rAcc = R_INIT_ACC * powf(R_REJECTED / R_INIT_ACC, gateFrac);
+        EKF_RACTIVE[0][0] = rAcc;
+        EKF_RACTIVE[1][1] = rAcc;
+        EKF_RACTIVE[2][2] = rAcc;
       }
-      // Serial.println("Whoop ");
-    } else {
-      ekfConsecutiveFailures = 0;
-      if (ekfInnovationGateWarmupUpdates < EKF_INNOVATION_GATE_WARMUP_UPDATES) {
-        ++ekfInnovationGateWarmupUpdates;
+
+#if FC_EKF_DECOUPLE_MAG
+      // Decoupled magnetometer: fuse ONLY a tilt-compensated heading so magnetic
+      // error cannot reach roll/pitch. Rotate the calibrated field into the earth
+      // frame with the predicted attitude, take its horizontal heading, and compare
+      // against the reference declination. The wrapped error becomes the yaw
+      // measurement. predictedY[3] is the EKF's own h(x)[3] at this same predicted
+      // state, so the filter's Err = Y[3] - h(x)[3] equals headingErr exactly and
+      // is immune to the +-pi atan2 wrap.
+      float normM = sqrtf(magCalX*magCalX + magCalY*magCalY + magCalZ*magCalZ);
+      bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
+      if (!magRejected) {
+        float pq0 = predictedX[0][0], pq1 = predictedX[1][0], pq2 = predictedX[2][0], pq3 = predictedX[3][0];
+        // m_e = R_eb^T * m_b : only the earth-horizontal (X,Y) components are needed.
+        float meX = (pq0*pq0+pq1*pq1-pq2*pq2-pq3*pq3)*magCalX
+                  + (2*(pq1*pq2-pq0*pq3))*magCalY
+                  + (2*(pq1*pq3+pq0*pq2))*magCalZ;
+        float meY = (2*(pq1*pq2+pq0*pq3))*magCalX
+                  + (pq0*pq0-pq1*pq1+pq2*pq2-pq3*pq3)*magCalY
+                  + (2*(pq2*pq3-pq0*pq1))*magCalZ;
+        if ((meX*meX + meY*meY) <= NORM_EPSILON) {
+          magRejected = true;                 // horizontal field vanished (near-vertical / degenerate)
+        } else {
+          float declRef    = atan2f(IMU_MAG_B0[1][0], IMU_MAG_B0[0][0]);
+          float headingErr = wrapToPi(declRef - atan2f(meY, meX));
+          if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES &&
+              fabsf(headingErr) > MAG_YAW_INNOVATION_GATE) {
+            magRejected = true;
+          } else {
+            Y[3][0] = predictedY[3][0] + headingErr;
+          }
+        }
       }
-    }
-#if FC_TIMING_INSTRUMENTATION
-    recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
+      if (magRejected) {
+        Y[3][0] = predictedY[3][0];           // zero innovation
+        EKF_RACTIVE[3][3] = R_REJECTED;
+      }
+#else
+      // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
+      float normM = sqrtf(Y[3][0]*Y[3][0] + Y[4][0]*Y[4][0] + Y[5][0]*Y[5][0]);
+      bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
+      if (!magRejected) {
+        Y[3][0] /= normM; Y[4][0] /= normM; Y[5][0] /= normM;
+        if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+          magRejected = vectorInnovationNorm(Y, predictedY, 3) > MAG_INNOVATION_GATE;
+        }
+      }
+      if (magRejected) {
+        Y[3][0] = predictedY[3][0];
+        Y[4][0] = predictedY[4][0];
+        Y[5][0] = predictedY[5][0];
+        EKF_RACTIVE[3][3] = R_REJECTED;
+        EKF_RACTIVE[4][4] = R_REJECTED;
+        EKF_RACTIVE[5][5] = R_REJECTED;
+      }
 #endif
-    u64compuTime = micros() - u64compuTime;
+
+      // Update the EKF and measure computation time
+      Matrix ekfPreviousX = EKF_IMU.GetX();
+      Matrix ekfPreviousP = EKF_IMU.GetP();
+      EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
+      u64compuTime = micros();
+      // Predict up to this correction instant in bounded sub-steps, then
+      // correct. Equivalent to the previous bUpdate (= bPredict + bCorrect) at
+      // nominal dt -- ekfPredictSubstepped takes exactly one step there -- and
+      // splits only genuine catch-up gaps so the first-order integration stays
+      // accurate. In fast mode the predict covers the time since the last
+      // high-rate prediction; in single-rate mode, since the last fusion.
+      const bool ekfUpdateOk =
+          ekfPredictSubstepped(ekfStepDt, U) && EKF_IMU.bCorrect(Y, U);
+      if (!ekfUpdateOk) {
+        ++ekfConsecutiveFailures;
+        if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
+          quaternionData.vSetToZero();
+          quaternionData[0][0] = 1.0;
+          EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
+          ekfConsecutiveFailures = 0;
+          ekfInnovationGateWarmupUpdates = 0;
+          // Hard reset installs a known state as of now, so move the
+          // gyro-integration origin to now; the next update integrates from this
+          // fresh state rather than a stale pre-reset time.
+#if FC_EKF_FAST_PREDICT
+          lastEkfPredictUs = controlUpdateUs;
+#else
+          lastEkfFusionUs = controlUpdateUs;
+#endif
+        } else {
+          // Soft restore to the last good state: leave the integration origin
+          // (lastEkfPredictUs / lastEkfFusionUs) at that state's time so the
+          // next successful update covers the full gap.
+          EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
+        }
+        // Serial.println("Whoop ");
+      } else {
+        ekfConsecutiveFailures = 0;
+        if (ekfInnovationGateWarmupUpdates < EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+          ++ekfInnovationGateWarmupUpdates;
+        }
+        lastAttitudeUpdateUs = controlUpdateUs;
+        // Advance the gyro-integration origin only now that the fusion has
+        // succeeded and the state truly corresponds to controlUpdateUs.
+#if FC_EKF_FAST_PREDICT
+        lastEkfPredictUs = controlUpdateUs;
+#else
+        lastEkfFusionUs = controlUpdateUs;
+#endif
+      }
+#if FC_TIMING_INSTRUMENTATION
+      recordTiming(timingEkf, static_cast<uint32_t>(u64compuTime));
+#endif
+      u64compuTime = micros() - u64compuTime;
+    }  // if (imuReadOk)
     
     // Convert quaternion to Euler angles
     quaternionData = EKF_IMU.GetX();
@@ -3803,7 +4448,12 @@ void loop() {
     latestAttitudeRoll = static_cast<int16_t>(roundf(roll * 10.0f));
     latestAttitudePitch = static_cast<int16_t>(roundf(pitch * 10.0f));
     latestAttitudeYaw = static_cast<int16_t>(roundf(yaw * 10.0f));
-    attitudeSampleValid = true;
+    // Validity tracks freshness, not merely "the control block ran": when the
+    // IMU read failed this cycle (or the IMU is dead on a recovery boot) the
+    // estimate did not update, so once it goes stale telemetry stops
+    // advertising it as a live attitude. In normal operation the update above
+    // set lastAttitudeUpdateUs == controlUpdateUs, so this stays true.
+    attitudeSampleValid = attitudeEstimateFresh(controlUpdateUs);
 
     serviceCrsfLink();
 
@@ -3867,6 +4517,24 @@ void loop() {
         pitchCommandUs = SERVO_CENTER_US;
         yawCommandUs = SERVO_CENTER_US;
       }
+    } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE &&
+               (!attitudeEstimateFresh(servoUpdateUs) || !attitudeEstimateConvergedForFbw())) {
+      // Fall back to direct RC pass-through when the attitude estimate is not
+      // trustworthy enough to close the FBW loop, for either reason:
+      //  - it has stopped updating (dead/failed IMU reads or persistent EKF
+      //    failures) -- steering the PIDs against a frozen attitude would hold
+      //    whatever correction was last commanded; or
+      //  - a watchdog-recovery boot restarted the EKF in the air and it has not
+      //    yet finished its convergence (innovation-gate warmup) window, so the
+      //    estimate is fresh but may still be swinging in from a TRIAD or
+      //    identity start (see attitudeEstimateConvergedForFbw()).
+      // The pilot keeps full manual authority until the estimate is live and
+      // converged.
+      ++controlDebugCounters.fbwStaleAttitudeFallbacks;
+      rollPid.reset();
+      pitchPid.reset();
+      rollCommandUs = mapRcToUs(rcRollRaw);
+      pitchCommandUs = mapRcToUs(rcPitchRaw);
     } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE) {
       // Feed the EKF attitude estimate straight into the PID loop. The EKF
       // output is already smooth, so an extra output low-pass here would only

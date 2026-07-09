@@ -53,7 +53,15 @@ public:
         this->_address = _address;
     }
     
-    int8_t begin(void) {
+    /* skipGyroBiasCalibration: pass true on a watchdog-recovery boot. The
+     * boot-time gyro bias estimate requires a motionless airframe (its
+     * stillness gate rejects rotation with error -8/-21), which can never be
+     * satisfied when the board reset in flight -- and halting on that failure
+     * would permanently freeze the control surfaces. Skipping leaves the
+     * hardware biases at zero and relies on the EKF's in-run gyro-bias states
+     * (bounded by GYRO_BIAS_LIMIT_RADS, which comfortably covers the MPU9250's
+     * +-5 dps zero-rate offset spec) to absorb the offset in the air. */
+    int8_t begin(bool skipGyroBiasCalibration = false) {
         _i2c->begin();
         _i2c->setClock(400000);          /* 400 kHz _i2c bus */
         
@@ -159,7 +167,14 @@ public:
         // instruct the MPU9250 to get 7 bytes of data from the AK8963 at the sample rate
         readAK8963Registers(AK8963_HXL,7,_buffer);
         // estimate gyro bias
-        {
+        if (skipGyroBiasCalibration) {
+            // Watchdog-recovery boot: the airframe is (presumably) flying, so a
+            // stillness-gated bias estimate is impossible. Run with zero
+            // hardware bias and let the EKF bias states learn the offset.
+            _gxb = 0.0f;
+            _gyb = 0.0f;
+            _gzb = 0.0f;
+        } else {
             const int calStatus = calibrateGyro();
             if (calStatus == -8) {
                 return -21;  // airframe moving: bias estimate rejected, keep still and power-cycle
@@ -168,11 +183,20 @@ public:
                 return -20;
             }
         }
-        
-        
-        
-            
-        setAccelRange(ACCEL_RANGE_2G);
+
+
+
+
+        // Flight accel range. 16 g full-scale so the ADC does not clip under
+        // maneuvering load factor or propeller vibration: an 80-deg-bank level
+        // turn (the FBW roll limit) is ~5.7 g, and vibration rides on top of
+        // that. Clipping is worse than the resolution cost -- a symmetric clip
+        // sends |a| into the EKF's norm gate (dropping to gyro-only coasting
+        // exactly when maneuvering hard), while asymmetric vibration clipping
+        // biases the mean accel vector INSIDE the gate and silently tilts the
+        // gravity reference. At 16 g the resolution is ~2048 LSB/g, still well
+        // below the sensor's own noise floor.
+        setAccelRange(ACCEL_RANGE_16G);
         setGyroRange(GYRO_RANGE_2000DPS);
         // Effective runtime DLPF bandwidth (this call, after gyro calibration,
         // is what persists once begin() returns -- the 184Hz writes earlier in
