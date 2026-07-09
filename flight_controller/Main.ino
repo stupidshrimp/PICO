@@ -365,6 +365,15 @@ uint32_t lastAttitudeUpdateUs = 0;
 // the stale-attitude gate has already dropped FBW to pass-through -- is bounded
 // here so a single first-order step cannot wildly over-rotate.
 constexpr float EKF_MAX_CATCHUP_DT_S = ATTITUDE_STALE_TIMEOUT_US * 1.0e-6f;
+// Catch-up intervals are integrated in sub-steps no longer than this. The
+// quaternion prediction is a single first-order (Euler) step: for constant rate
+// omega it rotates by 2*atan(omega*dt/2) instead of omega*dt, so one big step
+// under-rotates (~4 deg for a full 0.2 s step at ~290 deg/s) and the F*P*F'
+// linearization degrades the same way. Splitting a catch-up into <= 12 ms
+// sub-steps keeps omega*dt small (error < 0.01 deg per step at 300 deg/s) while
+// leaving the nominal 4/8 ms steps as exactly one sub-step (no behavior change
+// in steady state; the threshold sits above 8 ms plus scheduling jitter).
+constexpr float EKF_CATCHUP_SUBSTEP_S = 0.012f;
 #if !FC_EKF_FAST_PREDICT
 // Single-rate mode: timestamp of the last successful fusion, so a cycle
 // skipped on a failed IMU read is covered by the next good sample's dt.
@@ -411,13 +420,15 @@ Matrix EKF_RINIT(SS_Z_LEN, SS_Z_LEN, EKF_RINIT_data);
 float_prec EKF_RACTIVE_data[SS_Z_LEN*SS_Z_LEN];
 Matrix EKF_RACTIVE(SS_Z_LEN, SS_Z_LEN, EKF_RACTIVE_data);
 
-#if FC_EKF_FAST_PREDICT
-// High-rate gyro-prediction state (see FC_EKF_FAST_PREDICT in konfig.h).
-// EKF_QSCALED holds the process noise scaled by the actual prediction step so the
-// predict/correct trust balance is invariant to the prediction rate (it equals
-// the original Q at dt == SS_DT).
+// EKF_QSCALED holds the process noise scaled by the actual prediction step so
+// the predict/correct trust balance is invariant to the prediction rate and to
+// catch-up step length (it equals the original Q at dt == SS_DT). Used by both
+// builds: the fast-predict high-rate predictor and the sub-stepped catch-up
+// predicts in either mode (see ekfPredictSubstepped()).
 float_prec EKF_QSCALED_data[SS_X_LEN*SS_X_LEN] = {0};
 Matrix EKF_QSCALED(SS_X_LEN, SS_X_LEN, EKF_QSCALED_data);
+#if FC_EKF_FAST_PREDICT
+// High-rate gyro-prediction state (see FC_EKF_FAST_PREDICT in konfig.h).
 uint32_t lastEkfPredictUs = 0;
 #endif
 
@@ -1403,7 +1414,6 @@ static inline void quaternionToEulerDeg(float q0, float q1, float q2, float q3,
   yawDeg   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * (180.0f / (float)M_PI);
 }
 
-#if FC_EKF_FAST_PREDICT
 // Scale the process-noise covariance with the actual prediction step. Q per step
 // is proportional to dt, so the noise injected per unit time -- and therefore the
 // predict/correct trust balance -- matches the original single-rate filter at any
@@ -1419,6 +1429,53 @@ void ekfScaleProcessNoiseForDt(float_prec dt) {
   EKF_IMU.vSetProcessNoise(EKF_QSCALED);
 }
 
+// Number of integration sub-steps for a (possibly catch-up length) predict
+// interval. Nominal 4/8 ms steps return 1; longer gaps split into chunks of at
+// most EKF_CATCHUP_SUBSTEP_S (see its comment for the accuracy rationale). Both
+// the EKF predict and the manual gate prediction MUST use this same subdivision
+// so the innovation gates compare the measurement against exactly the state the
+// filter itself predicts.
+static int ekfCatchupSubsteps(float dtTotal) {
+  if (!(dtTotal > EKF_CATCHUP_SUBSTEP_S)) {
+    return 1;   // nominal step (also covers 0 and non-finite dt: one no-op/normal step)
+  }
+  const int steps = static_cast<int>(ceilf(dtTotal / EKF_CATCHUP_SUBSTEP_S));
+  return steps < 1 ? 1 : steps;
+}
+
+// Run the EKF prediction over dtTotal in bounded sub-steps, scaling Q per
+// sub-step (totals match a single dt-scaled step since Q is additive across
+// predicts). Returns false if any sub-step fails; the caller restores the
+// saved pre-predict state in that case.
+static bool ekfPredictSubstepped(float dtTotal, const Matrix& U) {
+  const int steps = ekfCatchupSubsteps(dtTotal);
+  const float_prec subDt = static_cast<float_prec>(dtTotal / steps);
+  for (int i = 0; i < steps; ++i) {
+    gEkfRuntimeDt = subDt;
+    ekfScaleProcessNoiseForDt(subDt);
+    if (!EKF_IMU.bPredict(U)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Propagate a state vector through the same sub-stepped plant model, in place.
+// Used for the manual gate prediction so predictedX/predictedY match the EKF's
+// internal prediction bit-for-bit (same subdivision, same model, same U).
+static bool substepPredictState(Matrix& X, float dtTotal, const Matrix& U) {
+  const int steps = ekfCatchupSubsteps(dtTotal);
+  const float_prec subDt = static_cast<float_prec>(dtTotal / steps);
+  for (int i = 0; i < steps; ++i) {
+    gEkfRuntimeDt = subDt;
+    if (!Main_bUpdateNonlinearX(X, X, U)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+#if FC_EKF_FAST_PREDICT
 // Convert the current EKF quaternion estimate to Euler decidegrees and publish it
 // to the telemetry attitude cache, so the high-rate prediction keeps
 // latestAttitude* fresh between the 125 Hz corrections.
@@ -1523,7 +1580,10 @@ void updateAirborneState(uint32_t nowUs) {
     // way for the hold time, capture the current baro altitude as the ground
     // reference and hand back to the normal height-gated logic below for the
     // rest of the session.
-    if (!aircraftAirborne && barometerHealthy &&
+    // latestAmbientPressurePa > 0 confirms the baro cache has produced at least
+    // one valid reading, so a recapture can never latch the 0-default
+    // sensorAltitudeCm as the ground reference.
+    if (!aircraftAirborne && barometerHealthy && latestAmbientPressurePa > 0.0f &&
         airspeedMps <= RECOVERY_GROUND_RECAPTURE_AIRSPEED_MPS &&
         gpsSlowConfirmed(nowUs)) {
       if (recoveryGroundHoldStartUs == 0) {
@@ -3826,7 +3886,8 @@ void setup() {
   }
 
   // Feed the widened watchdog partway through startup. On a watchdog reset the
-  // 8 ms->8 s window is armed at the top of setup(), and a reset the probe
+  // widened WATCHDOG_RECOVERY_BOOT_TIMEOUT_US window is armed at the top of
+  // setup(), and a reset the probe
   // classified as a GROUND boot then runs the full cold-boot path (gyro cal,
   // baro/airspeed calibrate, GPS settle, sweeps) under it; reloading here and
   // before the sweeps keeps each phase well inside the window. Harmless no-op on
@@ -4014,7 +4075,6 @@ void loop() {
       } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
         predictDt = EKF_MAX_CATCHUP_DT_S;             // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
-      lastEkfPredictUs = predictNowUs;
 
       // Body-frame gyro (see the imuBody* helpers for the frame definition).
       // Only the gyro is used here; the 125 Hz correction reads its own fresh
@@ -4025,16 +4085,18 @@ void loop() {
       U[1][0] = fastQ;
       U[2][0] = fastR;
 
-      gEkfRuntimeDt = static_cast<float_prec>(predictDt);
-      ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
-
       const Matrix ekfPrePredictX = EKF_IMU.GetX();
       const Matrix ekfPrePredictP = EKF_IMU.GetP();
-      if (!EKF_IMU.bPredict(U)) {
+      if (!ekfPredictSubstepped(predictDt, U)) {
         // A quaternion-norm collapse is extremely unlikely at this step size;
-        // restore the last good state rather than advancing on a bad one.
+        // restore the last good state rather than advancing on a bad one. The
+        // integration origin (lastEkfPredictUs) is deliberately NOT advanced:
+        // the restored state still corresponds to the old origin, so the next
+        // successful predict integrates the full elapsed gap instead of
+        // silently dropping this interval's rotation.
         EKF_IMU.vReset(ekfPrePredictX, ekfPrePredictP, EKF_QINIT, EKF_RINIT);
       } else {
+        lastEkfPredictUs = predictNowUs;
         lastAttitudeUpdateUs = predictNowUs;
       }
       ekfRefreshAttitudeCache();
@@ -4122,9 +4184,12 @@ void loop() {
       } else if (predictDt > EKF_MAX_CATCHUP_DT_S) {
         predictDt = EKF_MAX_CATCHUP_DT_S;       // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
-      gEkfRuntimeDt = static_cast<float_prec>(predictDt);
-      ekfScaleProcessNoiseForDt(static_cast<float_prec>(predictDt));
-      lastEkfPredictUs = controlUpdateUs;
+      const float ekfStepDt = predictDt;
+      // lastEkfPredictUs (the gyro-integration origin) is advanced only after a
+      // SUCCESSFUL update, or on the hard reset to a known state -- both below.
+      // A failed+restored update leaves it at the last good origin so the next
+      // predict integrates the true elapsed gap instead of measuring dt from
+      // the failed attempt (same policy as the single-rate lastEkfFusionUs).
       timerEKFPredict = 0;
 #else
       // Integrate the time since the last SUCCESSFUL fusion, not since the
@@ -4140,20 +4205,26 @@ void loop() {
       } else if (fusionDt > EKF_MAX_CATCHUP_DT_S) {
         fusionDt = EKF_MAX_CATCHUP_DT_S;        // integrate the real gap, bounded (see EKF_MAX_CATCHUP_DT_S)
       }
-      gEkfRuntimeDt = static_cast<float_prec>(fusionDt);
+      const float ekfStepDt = fusionDt;
       // lastEkfFusionUs (the gyro-integration origin) is advanced only after a
-      // SUCCESSFUL bUpdate, or when the filter is hard-reset to a known state --
+      // SUCCESSFUL update, or when the filter is hard-reset to a known state --
       // both below. A failed+restored update leaves it at the last good fusion
       // time so the next update integrates the true elapsed gap (bounded by
       // EKF_MAX_CATCHUP_DT_S) instead of measuring dt from the failed attempt.
 #endif
+      // Manual one-step-ahead prediction for the innovation gates, using the
+      // SAME sub-stepped integration as the EKF's own predict below so
+      // predictedX/predictedY equal the filter's internal h(x) exactly (the
+      // decoupled-mag heading innovation relies on that equality).
       Matrix predictedX = EKF_IMU.GetX();
       Matrix predictedY(SS_Z_LEN, 1);
-      if (Main_bUpdateNonlinearX(predictedX, predictedX, U)) {
-        Main_bUpdateNonlinearY(predictedY, predictedX, U);
-      } else {
-        Main_bUpdateNonlinearY(predictedY, EKF_IMU.GetX(), U);
+      if (!substepPredictState(predictedX, ekfStepDt, U)) {
+        // Discard the partial propagation: downstream consumers (the
+        // centripetal feed-forward's bias states, the decoupled-mag heading
+        // rotation) read predictedX, which must never hold a failed step.
+        predictedX = EKF_IMU.GetX();
       }
+      Main_bUpdateNonlinearY(predictedY, predictedX, U);
 
       // Compensate for hard-iron and soft-iron magnetometer calibration without changing aircraft axes.
       float magCalX, magCalY, magCalZ;
@@ -4308,10 +4379,14 @@ void loop() {
       Matrix ekfPreviousP = EKF_IMU.GetP();
       EKF_IMU.vSetMeasurementNoise(EKF_RACTIVE);
       u64compuTime = micros();
-      // bUpdate = predict (the dt-scaled step configured above) + correct. In fast
-      // mode the predict brings the state from the last high-rate prediction up to
-      // this correction instant; in single-rate mode it is the full control step.
-      const bool ekfUpdateOk = EKF_IMU.bUpdate(Y, U);
+      // Predict up to this correction instant in bounded sub-steps, then
+      // correct. Equivalent to the previous bUpdate (= bPredict + bCorrect) at
+      // nominal dt -- ekfPredictSubstepped takes exactly one step there -- and
+      // splits only genuine catch-up gaps so the first-order integration stays
+      // accurate. In fast mode the predict covers the time since the last
+      // high-rate prediction; in single-rate mode, since the last fusion.
+      const bool ekfUpdateOk =
+          ekfPredictSubstepped(ekfStepDt, U) && EKF_IMU.bCorrect(Y, U);
       if (!ekfUpdateOk) {
         ++ekfConsecutiveFailures;
         if (ekfConsecutiveFailures >= EKF_MAX_CONSECUTIVE_FAILURES) {
@@ -4320,15 +4395,18 @@ void loop() {
           EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
           ekfConsecutiveFailures = 0;
           ekfInnovationGateWarmupUpdates = 0;
-#if !FC_EKF_FAST_PREDICT
           // Hard reset installs a known state as of now, so move the
           // gyro-integration origin to now; the next update integrates from this
           // fresh state rather than a stale pre-reset time.
+#if FC_EKF_FAST_PREDICT
+          lastEkfPredictUs = controlUpdateUs;
+#else
           lastEkfFusionUs = controlUpdateUs;
 #endif
         } else {
-          // Soft restore to the last good state: leave lastEkfFusionUs at that
-          // state's time so the next successful update covers the full gap.
+          // Soft restore to the last good state: leave the integration origin
+          // (lastEkfPredictUs / lastEkfFusionUs) at that state's time so the
+          // next successful update covers the full gap.
           EKF_IMU.vReset(ekfPreviousX, ekfPreviousP, EKF_QINIT, EKF_RINIT);
         }
         // Serial.println("Whoop ");
@@ -4338,10 +4416,11 @@ void loop() {
           ++ekfInnovationGateWarmupUpdates;
         }
         lastAttitudeUpdateUs = controlUpdateUs;
-#if !FC_EKF_FAST_PREDICT
         // Advance the gyro-integration origin only now that the fusion has
-        // succeeded and the state truly corresponds to controlUpdateUs (see the
-        // lastEkfFusionUs note in the single-rate dt block above).
+        // succeeded and the state truly corresponds to controlUpdateUs.
+#if FC_EKF_FAST_PREDICT
+        lastEkfPredictUs = controlUpdateUs;
+#else
         lastEkfFusionUs = controlUpdateUs;
 #endif
       }
