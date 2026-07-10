@@ -268,9 +268,19 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // inside the norm and innovation gates yet slowly bias roll/pitch back toward
 // wings-level. Subtracting an estimate of that term (built from the body rates
 // and forward airspeed) before normalizing the accel vector recovers a cleaner
-// gravity reference during turns. Set to 0 to fall back to the raw accel vector.
+// gravity reference during turns.
+//
+// Default OFF. The feed-forward feeds three auxiliary sensors -- pitot airspeed,
+// GPS, and barometric height -- into the attitude solution, and those are
+// exactly the sensors that are unproven on a fresh airframe. Until they are
+// validated in flight, a bad pitot/baro/GPS reading could perturb roll/pitch
+// through this path, so it stays off for maiden bring-up: fly the core
+// accel/gyro/mag estimator first. Set to 1 to re-enable once the airspeed, GPS,
+// and baro are trusted, and verify it in sustained banked turns (the only regime
+// where it acts) while watching attitude telemetry. With it off the raw accel
+// vector is used as the gravity reference.
 #ifndef FC_ACCEL_CENTRIPETAL_COMPENSATION
-#define FC_ACCEL_CENTRIPETAL_COMPENSATION 1
+#define FC_ACCEL_CENTRIPETAL_COMPENSATION 0
 #endif
 // Upper bound (m/s) on the airspeed used to build the centripetal correction so
 // a faulty pitot reading cannot inject a large false acceleration into the
