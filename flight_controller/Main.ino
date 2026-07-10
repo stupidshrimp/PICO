@@ -4538,8 +4538,19 @@ void loop() {
       //    yet finished its convergence (innovation-gate warmup) window, so the
       //    estimate is fresh but may still be swinging in from a TRIAD or
       //    identity start (see attitudeEstimateConvergedForFbw()).
-      // The pilot keeps full manual authority until the estimate is live and
-      // converged.
+      // The pilot keeps manual authority until the estimate is live and
+      // converged -- but NOT full-travel authority: while the GS is in FBW mode
+      // it scales the roll/pitch channels by its command limits over the FC hard
+      // limit (default 45/80 roll, 30/80 pitch), and this pass-through maps
+      // those scaled channels directly to servo travel. The FC cannot undo that
+      // scaling (it does not know the GS limits), so surface deflection in this
+      // fallback is limited to that same fraction of full travel; switching the
+      // GS to Manual restores full-range channels. GS-side indication differs
+      // by cause: in the STALE case attitude telemetry stops (attitudeSampleValid
+      // tracks freshness), tripping the GS "telemetry offline" alarm ~1 s later,
+      // but in the CONVERGENCE case (recovery-boot warmup, ~2 s at 125 Hz) the
+      // estimate is fresh, attitude frames keep flowing, and the GS gets no
+      // alarm while this window lasts. Documented in docs/protocol_contract.md.
       ++controlDebugCounters.fbwStaleAttitudeFallbacks;
       rollPid.reset();
       pitchPid.reset();
