@@ -3312,11 +3312,22 @@ class MainWindow(QMainWindow):
             self.debug_page.log_packet(packet_type, values)
 
         self._update_packet_rates(packet_type, now)
-        self._update_rate_labels()
+        # The rate labels are refreshed by the 14 ms label_update_timer
+        # (update_labels), so refreshing them again per packet would rewrite
+        # three QLabel texts at the combined telemetry rate (~180 Hz) on the
+        # GUI thread for no visible benefit.
         self._record_telemetry_sample(packet_type)
 
     def _log_attitude_frequency(self, timestamp: float) -> None:
-        """Print the instantaneous attitude packet frequency to the terminal."""
+        """Print the attitude packet frequency while debug monitoring."""
+
+        # Attitude telemetry arrives at ~125 Hz on the GUI thread; an
+        # unconditional flushed print per packet stalls that thread (which also
+        # drives the control-channel updates), so only log when the operator is
+        # actively debug-monitoring attitude packets -- the same gate used by
+        # _log_control_update_frequency.
+        if not self._debug_monitoring or "attitude" not in self._debug_packets:
+            return
 
         if self._last_attitude_packet_timestamp is None:
             self._last_attitude_packet_timestamp = timestamp
@@ -5932,6 +5943,7 @@ class MainWindow(QMainWindow):
         self._debug_telemetry_all = telemetry_all
         self._debug_monitoring = True
         self._last_control_update_debug_timestamp = None
+        self._last_attitude_packet_timestamp = None
         self._set_crsf_raw_serial_debug(self._debug_serial_all)
         self.debug_page.begin_monitoring(
             self._debug_packets,
@@ -5955,6 +5967,7 @@ class MainWindow(QMainWindow):
             return
         self._debug_monitoring = False
         self._last_control_update_debug_timestamp = None
+        self._last_attitude_packet_timestamp = None
         self._debug_packets.clear()
         self._debug_include_joystick = False
         self._debug_serial_all = False
