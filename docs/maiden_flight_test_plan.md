@@ -265,7 +265,69 @@ only**, defer autonomy features to a later flight.
 
 ---
 
-## 7. Traceability
+## 7. In-flight automated verification
+
+"Automated in flight" means **passive monitoring and assertion by GS code while
+the aircraft flies** — never active fault injection. You cannot safely cut the
+link, unplug the joystick, or freeze the IMU in the air, so every destructive
+failsafe test (R-FS-01/02/03/05/06/07/08/09/10 and the deliberate FBW
+sign-injection) stays a **Phase 0 ground gate**. But their *occurrence* can be
+auto-detected and logged if they happen unexpectedly, and most of the
+non-destructive requirements can be continuously checked in flight.
+
+The GS already provides the hooks: a **telemetry-offline indicator**, four live
+**alarms** (stall, altitude, bank-angle, sink-rate), and **sortie (blackbox) CSV
+recording** with a review/plot page. The items below extend that infrastructure.
+
+### 7.1 Already automated today (turn on and record)
+
+| Requirement | Existing GS mechanism |
+| --- | --- |
+| R-TLM-06 (attitude freshness) | Telemetry-offline indicator + attitudeSampleValid |
+| R-TLM-07 (alarms) | Stall, altitude, bank-angle, sink-rate alarms |
+| All (post-flight review) | Start sortie recording before launch → CSV of the full flight for offline pass/fail |
+
+**Action:** enable all four alarms and start sortie recording before every
+flight so the maiden is captured end-to-end.
+
+### 7.2 Automatable in flight (passive assertions — recommended additions)
+
+| # | In-flight auto-check | Verifies | Method (all from telemetry the GS already receives) |
+| --- | --- | --- | --- |
+| 1 | **Link-health monitor** | R-LNK-04/05 | Threshold LQ/RSSI/SNR from `0x14`; count and timestamp every dropout / LQ-drop event. |
+| 2 | **Telemetry-rate & decode-health monitor** | R-LNK-03, R-TLM-06 | Measure actual attitude (~125 Hz) and GPS (~50 Hz) arrival rates; track CRC/length-reject rate; flag frozen (unchanging) fields. |
+| 3 | **Attitude sanity monitor** | R-TLM-01/06 | Assert values finite and in range; detect stuck/NaN; log every staleness event (also flags an unexpected R-FS-06 fallback). |
+| 4 | **GPS ↔ airspeed cross-check** | R-TLM-02/03 | Plausibility of pitot airspeed vs GPS ground speed; log fix-state transitions and sat count. |
+| 5 | **Battery sag monitor** | R-TLM-05 | Min-voltage / sag-under-load alarm from `0x08`. |
+| 6 | **Mode-transition logger** | R-MODE-03 | Timestamp every CH6/CH7 crossing of the 1550 threshold (with the 150 deadband); confirm no chatter. |
+| 7 | **FBW closed-loop monitor** ⭐ | R-MODE-02/05 (partial) | The GS knows the commanded roll/pitch (its own transmitted CH1/CH2 scaled through the 45°/30° FBW limits) **and** the measured attitude (`0x1E`). Compute tracking error; auto-flag **divergence**, **sustained wrong-sign correlation** (inverted loop), or **limit-cycle oscillation**. This is the one check that can catch a bad FBW loop *in the air* — but it is a monitor, not a substitute for the mandatory R-MODE-05 ground gate. |
+| 8 | **Auto-throttle monitor** | R-MODE-04, R-FS-07 (detect) | Compare commanded target airspeed (CH3 mapping) to measured airspeed; assert error trends toward zero; detect the 50 %/s decay signature if pitot goes stale. |
+| 9 | **GS TX-watchdog event logger** | R-FS-04 (detect) | Log whenever the GS transmit pacer halts on the 2 s channel-staleness watchdog. |
+
+### 7.3 Not automatable in flight (must stay Phase 0 ground gates)
+
+R-FS-01/02/03 (RC/link loss), R-FS-05 (joystick loss), R-FS-06 (attitude-stale
+fallback, *inducing* it), R-FS-07 (pitot occlusion, *inducing* it),
+R-FS-08/09 (watchdog), R-FS-10 (startup fault), and the deliberate **R-MODE-05
+sign injection** — all require a destructive stimulus that would risk the
+aircraft. Verify these on the bench; in the air the GS only *detects and logs*
+them if they occur.
+
+R-CMD-03 (command latency) also stays off the maiden: the GS receives no echo of
+the applied surface command (only attitude, which is coupled to airframe
+dynamics), so true end-to-end latency is measured by the host test
+(`tests/test_joystick_latency.py`), not in flight.
+
+### 7.4 Priority if you automate one thing
+
+Item **7 (FBW closed-loop monitor)** and items **1–3** (link + telemetry
+health) give the most safety value for the least code, and all run purely off
+telemetry the GS already decodes. Everything else is incremental logging on top
+of the existing sortie recorder.
+
+---
+
+## 8. Traceability
 
 Every requirement traces to the protocol contract and firmware:
 
