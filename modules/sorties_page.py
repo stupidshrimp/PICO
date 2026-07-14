@@ -84,6 +84,14 @@ class SortiesPage:
         self.refresh_button.clicked.connect(self.refresh_sortie_list)
         controls.addWidget(self.refresh_button)
 
+        self.analyze_button = QPushButton("Analyze")
+        self.analyze_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.analyze_button.setToolTip(
+            "Run the automated post-flight tests over the selected sortie."
+        )
+        self.analyze_button.clicked.connect(self._analyze_selected_sortie)
+        controls.addWidget(self.analyze_button)
+
         controls.addItem(QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
         layout.addLayout(controls)
 
@@ -270,6 +278,23 @@ class SortiesPage:
                 "No piggyback telemetry was recorded in link statistics packets."
             )
         self.piggyback_label.show()
+
+    def _analyze_selected_sortie(self) -> None:
+        """Run the post-flight analysis tests over the selected sortie."""
+
+        path = self.sortie_combo.currentData()
+        if not path:
+            self.status_label.setText("Select a sortie to analyze.")
+            return
+        if self._main_window.start_sortie_analysis(path):
+            self.status_label.setText(
+                f"Analyzing {os.path.basename(path)} — the post-flight report "
+                "will open when finished."
+            )
+        else:
+            self.status_label.setText(
+                "A sortie analysis is already running; try again shortly."
+            )
 
     # ------------------------------------------------------------------
     # Data parsing and plotting
