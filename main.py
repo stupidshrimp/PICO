@@ -256,6 +256,9 @@ class MainWindow(QMainWindow):
             "stick_roll",
             "stick_yaw",
             "stick_throttle",
+            "control_mode",
+            "fbw_setpoint_roll",
+            "fbw_setpoint_pitch",
             "latitude",
             "longitude",
             "altitude_ft",
@@ -1789,6 +1792,14 @@ class MainWindow(QMainWindow):
         # Ensure the recorded stick state reflects the most recent inputs.
         if time.monotonic() - self._stick_last_update > 0.2:
             self._capture_stick_state()
+
+        # Snapshot the control mode and the FBW attitude setpoints actually
+        # commanded to the FC (already scaled by the configured FBW limits).
+        # These let post-flight analysis grade Fly-By-Wire tracking directly;
+        # in Manual mode the setpoints record blank.
+        self.telemetry_state["control_mode"] = self.control_mode
+        self.telemetry_state["fbw_setpoint_roll"] = self.desired_fbw_roll
+        self.telemetry_state["fbw_setpoint_pitch"] = self.desired_fbw_pitch
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         row = [timestamp, packet_type]

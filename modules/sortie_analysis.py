@@ -15,6 +15,9 @@ recording stops and look at the whole flight at once:
                           link keeps delivering packets.
 * Control response      - cross-correlation of recorded stick commands
                           against the attitude the aircraft actually flew.
+* Fly-By-Wire tracking  - RMS error, offset, ringing, envelope compliance,
+                          and saturation of the flown attitude against the
+                          recorded FBW setpoints.
 * Link budget           - RSSI modelled against distance from the first GPS
                           fix, antenna A/B divergence, and link-quality lows.
 
@@ -86,7 +89,15 @@ class _Stream:
 # so a stream only samples the columns that its own packet actually updates -
 # reading e.g. attitude off a link_stats row would just repeat stale values.
 _STREAM_FIELDS = {
-    "attitude": ("pitch", "roll", "yaw", "stick_pitch", "stick_roll"),
+    "attitude": (
+        "pitch",
+        "roll",
+        "yaw",
+        "stick_pitch",
+        "stick_roll",
+        "fbw_setpoint_roll",
+        "fbw_setpoint_pitch",
+    ),
     "gps": (
         "latitude",
         "longitude",
@@ -153,6 +164,18 @@ def load_sortie_streams(path: str) -> dict[str, _Stream]:
                 stream.fields.setdefault(name, []).append(
                     _parse_float(row.get(name))
                 )
+            if packet_type == "attitude":
+                # control_mode is a string column; encode it numerically so
+                # it rides in the same float streams (1 = Fly-By-Wire,
+                # 0 = Manual, NaN = not recorded / pre-FBW-logging file).
+                mode_raw = (row.get("control_mode") or "").strip().lower()
+                if not mode_raw:
+                    mode_value = math.nan
+                elif mode_raw.startswith("fly"):
+                    mode_value = 1.0
+                else:
+                    mode_value = 0.0
+                stream.fields.setdefault("fbw_active", []).append(mode_value)
 
     return streams
 
@@ -493,6 +516,248 @@ def _test_control_response(streams: dict[str, _Stream]) -> Finding:
     return Finding("Control response", status, summary, details)
 
 
+# Keep in lockstep with FBW_FC_MAX_*_ANGLE_DEG in main.py / Main.ino: attitude
+# beyond this while in Fly-By-Wire means the FC-side limiter is not working.
+_FBW_FC_ABSOLUTE_LIMIT_DEG = 80.0
+# Ignore this long after each FBW engagement so the engage transient does not
+# count against steady tracking quality (it is graded separately).
+_FBW_ENGAGE_SETTLE_S = 1.0
+
+
+def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
+    """Grade how well the aircraft flew its Fly-By-Wire attitude setpoints."""
+
+    attitude = streams["attitude"]
+    times = attitude.times
+    mode = attitude.column("fbw_active")
+    if len(mode) != len(times) or not any(
+        v == 1.0 for v in mode if math.isfinite(v)
+    ):
+        return Finding(
+            "Fly-By-Wire tracking",
+            "no_data",
+            "No Fly-By-Wire flight was recorded (never engaged, or the log "
+            "predates FBW setpoint logging).",
+        )
+
+    # Contiguous runs of FBW samples, as (start, end) index pairs.
+    segments: list[tuple[int, int]] = []
+    start_index: Optional[int] = None
+    for i, value in enumerate(mode):
+        if value == 1.0:
+            if start_index is None:
+                start_index = i
+        elif start_index is not None:
+            segments.append((start_index, i - 1))
+            start_index = None
+    if start_index is not None:
+        segments.append((start_index, len(mode) - 1))
+
+    fbw_time = sum(times[end] - times[start] for start, end in segments)
+    details = [
+        f"{len(segments)} Fly-By-Wire segment(s) totalling {fbw_time:.0f} s."
+    ]
+    if fbw_time < 10.0:
+        return Finding(
+            "Fly-By-Wire tracking",
+            "no_data",
+            "Fly-By-Wire was engaged too briefly to grade tracking.",
+            details,
+        )
+
+    dt = _CORRELATION_DT_S
+    max_lag = int(1.0 / dt)
+    status = "pass"
+    worst_rms: Optional[float] = None
+
+    for axis, setpoint_field in (
+        ("roll", "fbw_setpoint_roll"),
+        ("pitch", "fbw_setpoint_pitch"),
+    ):
+        setpoints = attitude.column(setpoint_field)
+        actuals = attitude.column(axis)
+        if len(setpoints) != len(times):
+            details.append(f"{axis}: setpoints were not recorded.")
+            continue
+
+        # Resample each segment (minus the engage settle window) onto a
+        # uniform grid so tracking error can be measured at the aircraft's
+        # actual response lag instead of penalising that lag as error.
+        grids: list[tuple[list[float], list[float]]] = []
+        max_abs_setpoint = 0.0
+        max_abs_actual = 0.0
+        saturated = 0
+        total = 0
+        engage_bump = 0.0
+        for start, end in segments:
+            settle_end = times[start] + _FBW_ENGAGE_SETTLE_S
+            seg_times: list[float] = []
+            seg_sp: list[float] = []
+            seg_att: list[float] = []
+            for i in range(start, end + 1):
+                sp, att = setpoints[i], actuals[i]
+                if not (math.isfinite(sp) and math.isfinite(att)):
+                    continue
+                if times[i] < settle_end:
+                    engage_bump = max(engage_bump, abs(att - sp))
+                    continue
+                seg_times.append(times[i])
+                seg_sp.append(sp)
+                seg_att.append(att)
+                max_abs_setpoint = max(max_abs_setpoint, abs(sp))
+                max_abs_actual = max(max_abs_actual, abs(att))
+                total += 1
+            sp_grid = _resample(seg_times, seg_sp, dt)
+            att_grid = _resample(seg_times, seg_att, dt)
+            n = min(len(sp_grid), len(att_grid))
+            if n >= 40:
+                grids.append((sp_grid[:n], att_grid[:n]))
+
+        if max_abs_setpoint > 0.0:
+            for start, end in segments:
+                for i in range(start, end + 1):
+                    sp = setpoints[i]
+                    if math.isfinite(sp) and abs(sp) >= 0.95 * max_abs_setpoint:
+                        saturated += 1
+
+        if not grids:
+            details.append(
+                f"{axis}: FBW segments were too short or sparse to grade."
+            )
+            continue
+
+        # Pick the response lag that minimises RMS error, then report the
+        # error statistics at that lag.
+        best: Optional[tuple[float, int, list[float]]] = None
+        for lag in range(0, max_lag + 1):
+            errors: list[float] = []
+            for sp_grid, att_grid in grids:
+                span = len(sp_grid) - lag
+                if span < 40:
+                    continue
+                errors.extend(
+                    att_grid[i + lag] - sp_grid[i] for i in range(span)
+                )
+            if len(errors) < 40:
+                continue
+            rms = math.sqrt(sum(e * e for e in errors) / len(errors))
+            if best is None or rms < best[0]:
+                best = (rms, lag, errors)
+        if best is None:
+            details.append(
+                f"{axis}: FBW segments were too short or sparse to grade."
+            )
+            continue
+
+        rms, lag, errors = best
+        offset = _mean(errors)
+        details.append(
+            f"{axis}: RMS tracking error {rms:.1f}° at {lag * dt:.2f} s "
+            f"response lag, steady offset {offset:+.1f}°."
+        )
+        if worst_rms is None or rms > worst_rms:
+            worst_rms = rms
+
+        if abs(offset) > 5.0:
+            if status == "pass":
+                status = "warn"
+            details.append(
+                f"{axis}: persistent {offset:+.1f}° offset from the "
+                "commanded attitude — check trim, rigging, or CG."
+            )
+
+        # Ringing: how often the (demeaned) error swings through zero by
+        # more than a degree. Frequent swings with real amplitude mean the
+        # FC angle PID is oscillating around the setpoint.
+        flips = 0
+        previous = 0.0
+        for error in errors:
+            centred = error - offset
+            if abs(centred) < 1.0:
+                continue
+            if previous and (centred > 0) != (previous > 0):
+                flips += 1
+            previous = centred
+        duration = len(errors) * dt
+        flip_rate = flips / duration if duration > 0 else 0.0
+        if flip_rate > 1.5 and rms > 3.0:
+            if status == "pass":
+                status = "warn"
+            details.append(
+                f"{axis}: error oscillated {flip_rate:.1f} times/s around "
+                "the setpoint — possible over-tuned FC angle PID."
+            )
+
+        if max_abs_actual > _FBW_FC_ABSOLUTE_LIMIT_DEG:
+            status = "fail"
+            details.append(
+                f"{axis}: attitude reached {max_abs_actual:.0f}° in FBW — "
+                f"beyond the FC's {_FBW_FC_ABSOLUTE_LIMIT_DEG:.0f}° hard "
+                "ceiling; the FC-side limiter is not enforcing the envelope."
+            )
+        elif max_abs_actual > max_abs_setpoint + 10.0:
+            if status != "fail":
+                status = "warn"
+            details.append(
+                f"{axis}: attitude reached {max_abs_actual:.0f}° while only "
+                f"{max_abs_setpoint:.0f}° was commanded — the aircraft flew "
+                "outside its commanded envelope."
+            )
+
+        if total > 0 and max_abs_setpoint >= 15.0:
+            saturation = saturated / total
+            if saturation > 0.3:
+                if status == "pass":
+                    status = "warn"
+                details.append(
+                    f"{axis}: setpoint sat at its limit "
+                    f"{saturation * 100.0:.0f}% of the time — the configured "
+                    "FBW angle limits may be too tight for how the aircraft "
+                    "is being flown."
+                )
+
+        if engage_bump > 20.0:
+            if status == "pass":
+                status = "warn"
+            details.append(
+                f"{axis}: up to {engage_bump:.0f}° of attitude error during "
+                "FBW engagement — the mode switch is not bumpless."
+            )
+
+    if worst_rms is None:
+        return Finding(
+            "Fly-By-Wire tracking",
+            "no_data",
+            "Fly-By-Wire setpoints were not recorded for the engaged "
+            "segments.",
+            details,
+        )
+
+    if status == "fail":
+        summary = (
+            "Fly-By-Wire flew outside its commanded envelope "
+            f"(worst-axis RMS error {worst_rms:.1f}°)."
+        )
+    elif worst_rms > 10.0:
+        status = "fail"
+        summary = (
+            "Fly-By-Wire tracked its setpoints poorly "
+            f"(worst-axis RMS error {worst_rms:.1f}°)."
+        )
+    elif status == "warn" or worst_rms > 5.0:
+        status = "warn"
+        summary = (
+            "Fly-By-Wire tracking needs attention "
+            f"(worst-axis RMS error {worst_rms:.1f}°)."
+        )
+    else:
+        summary = (
+            "Fly-By-Wire tracked its commanded attitude "
+            f"(worst-axis RMS error {worst_rms:.1f}°)."
+        )
+    return Finding("Fly-By-Wire tracking", status, summary, details)
+
+
 _FEET_TO_METERS = 0.3048
 _METERS_PER_DEG_LAT = 111_132.0
 _METERS_PER_DEG_LON_EQUATOR = 111_320.0
@@ -692,6 +957,7 @@ def analyze_sortie(path: str) -> SortieReport:
     report.findings.append(_test_continuity(streams))
     report.findings.append(_test_frozen_sensors(streams))
     report.findings.append(_test_control_response(streams))
+    report.findings.append(_test_fbw_tracking(streams))
     report.findings.append(_test_link_budget(streams))
     return report
 
