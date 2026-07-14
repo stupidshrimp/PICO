@@ -618,6 +618,7 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
         grids: list[tuple[list[float], list[float]]] = []
         max_abs_setpoint = 0.0
         max_abs_actual = 0.0
+        max_abs_actual_all = 0.0
         saturated = 0
         limited_total = 0
         last_limit = math.nan
@@ -631,6 +632,9 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
                 sp, att = setpoints[i], actuals[i]
                 if not (math.isfinite(sp) and math.isfinite(att)):
                     continue
+                # The FC hard ceiling is a safety envelope: every FBW sample
+                # counts, including the engage transient skipped below.
+                max_abs_actual_all = max(max_abs_actual_all, abs(att))
                 if times[i] < settle_end:
                     engage_bump = max(engage_bump, abs(att - sp))
                     continue
@@ -722,11 +726,11 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
                 "the setpoint — possible over-tuned FC angle PID."
             )
 
-        if max_abs_actual > _FBW_FC_ABSOLUTE_LIMIT_DEG:
+        if max_abs_actual_all > _FBW_FC_ABSOLUTE_LIMIT_DEG:
             status = "fail"
             details.append(
-                f"{axis}: attitude reached {max_abs_actual:.0f}° in FBW — "
-                f"beyond the FC's {_FBW_FC_ABSOLUTE_LIMIT_DEG:.0f}° hard "
+                f"{axis}: attitude reached {max_abs_actual_all:.0f}° in FBW "
+                f"— beyond the FC's {_FBW_FC_ABSOLUTE_LIMIT_DEG:.0f}° hard "
                 "ceiling; the FC-side limiter is not enforcing the envelope."
             )
         elif max_abs_actual > max_abs_setpoint + 10.0:

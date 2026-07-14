@@ -13,16 +13,9 @@
 # https://doc.qt.io/qtforpython/licenses.html
 #
 # ///////////////////////////////////////////////////////////////
-from PySide6.QtCore import *
-from PySide6.QtGui import *
-from PySide6.QtWidgets import *
 
-# GUI FILE
-from . ui_main import Ui_MainWindow
-
-# APP SETTINGS
-from . app_settings import Settings
-
-# IMPORT FUNCTIONS
-from . ui_functions import *
-
+# Deliberately no imports here. Everything in this project imports submodules
+# directly (``from modules.data_page import DataPage``), and keeping this
+# initializer empty lets Qt-free submodules such as ``modules.sortie_analysis``
+# be imported in headless environments (tests, scripts) where PySide6 or its
+# system libraries (libGL) are unavailable.
