@@ -126,6 +126,7 @@ from config import (
 
 from modules.data_page import DataPage
 from modules.debug_page import DebugPage
+from modules.sortie_analysis import SortieAnalysisWorker, report_html
 from modules.sorties_page import SortiesPage
 from modules.documentation_page import DocumentationPage
 from modules.preflight_page import PreFlightChecklistPage
@@ -1667,7 +1668,7 @@ class MainWindow(QMainWindow):
             )
             return
         date_str = datetime.now().strftime("%m-%d-%Y")
-        pattern = re.compile(rf"{re.escape(date_str)}-sortie_(\\d+)\\.csv$")
+        pattern = re.compile(rf"{re.escape(date_str)}-sortie_(\d+)\.csv$")
 
         next_index = 1
         try:
@@ -1713,10 +1714,16 @@ class MainWindow(QMainWindow):
         self._update_blackbox_indicator()
 
     def stop_sortie_recording(self) -> None:
-        """Stop telemetry sortie recording and close the file handle."""
+        """Stop telemetry sortie recording, close the file, and analyse it."""
 
         if not self.sortie_recording:
             return
+
+        finished_path = (
+            os.path.join(self.sortie_directory, self.sortie_filename)
+            if self.sortie_filename
+            else None
+        )
 
         if self.sortie_file:
             try:
@@ -1731,6 +1738,56 @@ class MainWindow(QMainWindow):
         self.sortie_filename = None
         self._update_sortie_button_availability(force=True)
         self._update_blackbox_indicator()
+
+        if finished_path and os.path.isfile(finished_path):
+            self.start_sortie_analysis(finished_path)
+
+    def _battery_cell_count(self) -> Optional[int]:
+        """Parse the configured cell count ('3s' -> 3) for battery analysis."""
+
+        selection = str(self.aircraft_cfg.get("battery_cells", "3s")).lower().strip()
+        match = re.fullmatch(r"(\d+)s", selection)
+        return int(match.group(1)) if match else None
+
+    def start_sortie_analysis(self, filepath: str) -> bool:
+        """Run the post-flight tests over a sortie CSV on a background thread.
+
+        Returns ``False`` when an analysis is already in progress; the report
+        dialog is shown from the GUI thread when the worker finishes.
+        """
+
+        worker = getattr(self, "_sortie_analysis_worker", None)
+        if worker is not None and worker.isRunning():
+            return False
+
+        worker = SortieAnalysisWorker(
+            filepath, self._battery_cell_count(), parent=self
+        )
+        worker.report_ready.connect(self._show_sortie_analysis_report)
+        self._sortie_analysis_worker = worker
+        worker.start()
+        return True
+
+    def _show_sortie_analysis_report(self, report) -> None:
+        """Display the post-flight analysis report for a finished sortie."""
+
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle(
+            f"Post-flight report — {os.path.basename(report.path)}"
+        )
+        message_box.setTextFormat(Qt.TextFormat.RichText)
+        message_box.setText(report_html(report))
+        self._set_message_box_icon_without_alert(
+            message_box,
+            QMessageBox.Icon.Information
+            if report.overall_status() in ("pass", "no_data")
+            else QMessageBox.Icon.Warning,
+        )
+        # Non-modal on purpose: recording can be stopped mid-flight, and the
+        # report must never steal focus from the flight controls.
+        message_box.setWindowModality(Qt.WindowModality.NonModal)
+        message_box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        message_box.show()
 
     def _record_telemetry_sample(self, packet_type: str) -> None:
         """Write the current telemetry snapshot to the sortie log."""

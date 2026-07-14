@@ -217,6 +217,30 @@ class DocumentationPage:
         )
         self._add_paragraph(frame_layout, persistence_block)
 
+        postflight_block = (
+            "When a blackbox recording is stopped, the GCS automatically runs a set of "
+            "post-flight tests over the file it just wrote and pops up a report card "
+            "(the same tests can be run on any older log with the Analyze button on the "
+            "Sorties page). These are the diagnostic counterpart to the live warning "
+            "alarms: instead of shouting during flight, they look at the whole flight at "
+            "once and grade each area pass / warn / fail. A test that the flight did not "
+            "exercise — sticks never moved, no GPS fix, battery telemetry absent — "
+            "reports 'no data' rather than guessing."
+        )
+        self._add_paragraph(frame_layout, postflight_block)
+
+        self._add_subsection(
+            frame_layout,
+            "The automated post-flight tests",
+            (
+                "<b>Telemetry continuity</b> &mdash; scans every stream (attitude, GPS, link, battery) for reception gaps and reports the effective packet rates. A gap over 1 second is a warning; over 5 seconds is a failure, because the aircraft was effectively invisible for that time.",
+                "<b>Frozen sensors</b> &mdash; looks for values that stopped changing while packets kept arriving. Attitude frozen for more than 2 seconds means the IMU or flight-controller loop hung even though the radio stayed up &mdash; a fault the live link monitor cannot see.",
+                "<b>Control response</b> &mdash; cross-correlates the recorded stick commands against the attitude the aircraft actually flew, in both manual (rate) and Fly-By-Wire (angle) senses. Weak correlation while the sticks were active points at a control surface, servo, or uplink problem.",
+                "<b>Battery health</b> &mdash; reports consumed capacity, sag, and the lowest per-cell voltage for the configured cell count (below 3.5&nbsp;V/cell warns, below 3.3&nbsp;V/cell fails), and estimates the pack's internal resistance from how voltage sagged with current. Rising internal resistance across flights means the pack or its connectors are wearing out.",
+                "<b>Link budget</b> &mdash; models RSSI against distance from the first GPS fix. Signal falling off much faster than free space, or scattering widely at similar distances, points at antenna placement or blanking problems. It also flags diversity antennas that disagree (a damaged antenna) and how low link quality dipped.",
+            ),
+        )
+
         degrade_block = (
             "Finally, the GCS is built to fail gracefully. Background workers report "
             "problems through an error signal instead of crashing the window. When the "
