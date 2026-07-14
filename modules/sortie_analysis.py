@@ -15,14 +15,12 @@ recording stops and look at the whole flight at once:
                           link keeps delivering packets.
 * Control response      - cross-correlation of recorded stick commands
                           against the attitude the aircraft actually flew.
-* Battery health        - consumed capacity, voltage sag, and a pack
-                          internal-resistance estimate from V/I regression.
 * Link budget           - RSSI modelled against distance from the first GPS
                           fix, antenna A/B divergence, and link-quality lows.
 
 Each test degrades gracefully: if the flight did not exercise the data a test
-needs (no stick activity, no GPS fix, battery telemetry absent) the test
-reports ``no_data`` instead of guessing.
+needs (no stick activity, no GPS fix) the test reports ``no_data`` instead of
+guessing.
 """
 
 from __future__ import annotations
@@ -96,7 +94,6 @@ _STREAM_FIELDS = {
         "airspeed_mph",
         "satellites",
     ),
-    "battery": ("battery_voltage", "battery_current", "battery_capacity"),
     "link_stats": (
         "rssi_a",
         "rssi_b",
@@ -306,19 +303,15 @@ def _test_continuity(streams: dict[str, _Stream]) -> Finding:
     worst_gap = 0.0
     worst_stream = ""
 
-    required = ("attitude", "gps", "link_stats")
-    for name in ("attitude", "gps", "link_stats", "battery"):
+    for name in ("attitude", "gps", "link_stats"):
         stream = streams[name]
         times = stream.times
         if len(times) < 2:
-            if name in required:
-                worst_status = "warn"
-                details.append(
-                    f"{name}: fewer than two packets recorded — stream "
-                    "missing or recording was too short."
-                )
-            else:
-                details.append(f"{name}: not recorded (optional stream).")
+            worst_status = "warn"
+            details.append(
+                f"{name}: fewer than two packets recorded — stream "
+                "missing or recording was too short."
+            )
             continue
         duration = times[-1] - times[0]
         rate = (len(times) - 1) / duration if duration > 0 else 0.0
@@ -337,11 +330,10 @@ def _test_continuity(streams: dict[str, _Stream]) -> Finding:
         if max_gap > worst_gap:
             worst_gap = max_gap
             worst_stream = name
-        if name in required:
-            if max_gap > 5.0:
-                worst_status = "fail"
-            elif max_gap > 1.0 and worst_status != "fail":
-                worst_status = "warn"
+        if max_gap > 5.0:
+            worst_status = "fail"
+        elif max_gap > 1.0 and worst_status != "fail":
+            worst_status = "warn"
 
     if worst_status == "pass":
         summary = (
@@ -499,99 +491,6 @@ def _test_control_response(streams: dict[str, _Stream]) -> Finding:
             "surface, servo, or uplink failure."
         )
     return Finding("Control response", status, summary, details)
-
-
-def _test_battery_health(
-    streams: dict[str, _Stream], cell_count: Optional[int]
-) -> Finding:
-    """Report consumption, sag, and estimated pack internal resistance."""
-
-    battery = streams["battery"]
-    voltages_all = battery.column("battery_voltage")
-    currents_all = battery.column("battery_current")
-    pairs = [
-        (v, i)
-        for v, i in zip(voltages_all, currents_all)
-        if math.isfinite(v) and v > 0.0 and math.isfinite(i)
-    ]
-    if len(pairs) < 5:
-        return Finding(
-            "Battery health",
-            "no_data",
-            "Battery telemetry was missing or too sparse to analyse.",
-        )
-
-    voltages = [v for v, _ in pairs]
-    currents = [i for _, i in pairs]
-    details: list[str] = []
-    status = "pass"
-
-    v_min = min(voltages)
-    v_max = max(voltages)
-    details.append(
-        f"Pack voltage {v_max:.2f} V → {v_min:.2f} V "
-        f"(sag/discharge {v_max - v_min:.2f} V); "
-        f"current avg {_mean(currents):.1f} A, peak {max(currents):.1f} A."
-    )
-
-    if cell_count and cell_count > 0:
-        per_cell_min = v_min / cell_count
-        if per_cell_min < 3.3:
-            status = "fail"
-            details.append(
-                f"Lowest per-cell voltage {per_cell_min:.2f} V ({cell_count}S) "
-                "— below 3.30 V under load; land earlier or reduce load."
-            )
-        elif per_cell_min < 3.5:
-            status = "warn"
-            details.append(
-                f"Lowest per-cell voltage {per_cell_min:.2f} V ({cell_count}S) "
-                "— close to the 3.30 V floor."
-            )
-        else:
-            details.append(
-                f"Lowest per-cell voltage {per_cell_min:.2f} V ({cell_count}S) "
-                "— healthy margin."
-            )
-
-    capacities = _finite(battery.column("battery_capacity"))
-    duration = battery.times[-1] - battery.times[0] if battery.times else 0.0
-    if capacities and duration > 30.0:
-        consumed = max(capacities) - min(capacities)
-        if consumed > 0:
-            per_minute = consumed / (duration / 60.0)
-            details.append(
-                f"Consumed {consumed:.0f} mAh over {duration / 60.0:.1f} min "
-                f"({per_minute:.0f} mAh/min)."
-            )
-
-    # Pack internal resistance from V/I regression: sag per amp. Needs the
-    # throttle to have actually varied, otherwise the fit is meaningless.
-    if _std(currents) > 0.5:
-        _, slope, _ = _linear_fit(currents, voltages)
-        resistance_mohm = -slope * 1000.0
-        if 0.0 < resistance_mohm < 1000.0:
-            details.append(
-                f"Estimated pack internal resistance {resistance_mohm:.0f} mΩ "
-                "(track this between flights — a rising trend means the pack "
-                "or its connectors are degrading)."
-            )
-        else:
-            details.append(
-                "Internal-resistance estimate was not physically plausible "
-                "(voltage did not sag with current as expected)."
-            )
-    else:
-        details.append(
-            "Current draw varied too little to estimate internal resistance."
-        )
-
-    summary = {
-        "pass": f"Battery stayed healthy (lowest pack voltage {v_min:.2f} V).",
-        "warn": f"Battery ran close to its limit (lowest {v_min:.2f} V).",
-        "fail": f"Battery was over-discharged under load (lowest {v_min:.2f} V).",
-    }[status]
-    return Finding("Battery health", status, summary, details)
 
 
 _FEET_TO_METERS = 0.3048
@@ -776,7 +675,7 @@ def _test_link_budget(streams: dict[str, _Stream]) -> Finding:
 # ----------------------------------------------------------------------
 # Entry points
 # ----------------------------------------------------------------------
-def analyze_sortie(path: str, cell_count: Optional[int] = None) -> SortieReport:
+def analyze_sortie(path: str) -> SortieReport:
     """Run every post-flight test over one sortie CSV."""
 
     report = SortieReport(path=path)
@@ -793,7 +692,6 @@ def analyze_sortie(path: str, cell_count: Optional[int] = None) -> SortieReport:
     report.findings.append(_test_continuity(streams))
     report.findings.append(_test_frozen_sensors(streams))
     report.findings.append(_test_control_response(streams))
-    report.findings.append(_test_battery_health(streams, cell_count))
     report.findings.append(_test_link_budget(streams))
     return report
 
@@ -852,13 +750,12 @@ try:
 
         report_ready = Signal(object)
 
-        def __init__(self, path: str, cell_count: Optional[int] = None, parent=None):
+        def __init__(self, path: str, parent=None):
             super().__init__(parent)
             self._path = path
-            self._cell_count = cell_count
 
         def run(self) -> None:  # pragma: no cover - thin Qt wrapper
-            self.report_ready.emit(analyze_sortie(self._path, self._cell_count))
+            self.report_ready.emit(analyze_sortie(self._path))
 
 except ImportError:  # pragma: no cover - headless analysis still works
     SortieAnalysisWorker = None

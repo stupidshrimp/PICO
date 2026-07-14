@@ -1742,13 +1742,6 @@ class MainWindow(QMainWindow):
         if finished_path and os.path.isfile(finished_path):
             self.start_sortie_analysis(finished_path)
 
-    def _battery_cell_count(self) -> Optional[int]:
-        """Parse the configured cell count ('3s' -> 3) for battery analysis."""
-
-        selection = str(self.aircraft_cfg.get("battery_cells", "3s")).lower().strip()
-        match = re.fullmatch(r"(\d+)s", selection)
-        return int(match.group(1)) if match else None
-
     def start_sortie_analysis(self, filepath: str) -> bool:
         """Run the post-flight tests over a sortie CSV on a background thread.
 
@@ -1760,9 +1753,7 @@ class MainWindow(QMainWindow):
         if worker is not None and worker.isRunning():
             return False
 
-        worker = SortieAnalysisWorker(
-            filepath, self._battery_cell_count(), parent=self
-        )
+        worker = SortieAnalysisWorker(filepath, parent=self)
         worker.report_ready.connect(self._show_sortie_analysis_report)
         self._sortie_analysis_worker = worker
         worker.start()
