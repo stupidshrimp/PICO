@@ -319,12 +319,23 @@ def _longest_constant_run(
 # Individual tests
 # ----------------------------------------------------------------------
 def _test_continuity(streams: dict[str, _Stream]) -> Finding:
-    """Scan every stream for reception gaps and report effective rates."""
+    """Scan every stream for reception gaps and report effective rates.
+
+    Gaps are measured against the whole sortie's time span, not just each
+    stream's own first/last packet — otherwise a stream that dies mid-flight
+    (or starts late) would report a healthy rate and no dropout while it was
+    actually silent for most of the recording.
+    """
 
     details: list[str] = []
     worst_status = "pass"
     worst_gap = 0.0
     worst_stream = ""
+
+    populated = [stream.times for stream in streams.values() if stream.times]
+    sortie_start = min(times[0] for times in populated)
+    sortie_end = max(times[-1] for times in populated)
+    sortie_duration = sortie_end - sortie_start
 
     for name in ("attitude", "gps", "link_stats"):
         stream = streams[name]
@@ -336,20 +347,35 @@ def _test_continuity(streams: dict[str, _Stream]) -> Finding:
                 "missing or recording was too short."
             )
             continue
-        duration = times[-1] - times[0]
-        rate = (len(times) - 1) / duration if duration > 0 else 0.0
-        max_gap = max(
+        rate = (
+            (len(times) - 1) / sortie_duration if sortie_duration > 0 else 0.0
+        )
+        leading_gap = times[0] - sortie_start
+        trailing_gap = sortie_end - times[-1]
+        inter_gap = max(
             times[i] - times[i - 1] for i in range(1, len(times))
         )
+        max_gap = max(inter_gap, leading_gap, trailing_gap)
         long_gaps = sum(
             1
             for i in range(1, len(times))
             if times[i] - times[i - 1] > 1.0
         )
+        long_gaps += sum(1 for gap in (leading_gap, trailing_gap) if gap > 1.0)
         details.append(
             f"{name}: {len(times)} packets at {rate:.1f} Hz average, "
             f"longest gap {max_gap:.2f} s, {long_gaps} gap(s) over 1 s."
         )
+        if trailing_gap > 1.0 and trailing_gap == max_gap:
+            details.append(
+                f"{name}: went silent for the last {trailing_gap:.0f} s of "
+                "the sortie."
+            )
+        elif leading_gap > 1.0 and leading_gap == max_gap:
+            details.append(
+                f"{name}: first packet only arrived {leading_gap:.0f} s into "
+                "the sortie."
+            )
         if max_gap > worst_gap:
             worst_gap = max_gap
             worst_stream = name

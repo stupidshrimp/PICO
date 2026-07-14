@@ -1752,6 +1752,9 @@ class MainWindow(QMainWindow):
         dialog is shown from the GUI thread when the worker finishes.
         """
 
+        if getattr(self, "_shutting_down", False):
+            return False
+
         worker = getattr(self, "_sortie_analysis_worker", None)
         if worker is not None and worker.isRunning():
             return False
@@ -1764,6 +1767,9 @@ class MainWindow(QMainWindow):
 
     def _show_sortie_analysis_report(self, report) -> None:
         """Display the post-flight analysis report for a finished sortie."""
+
+        if getattr(self, "_shutting_down", False):
+            return
 
         message_box = QMessageBox(self)
         message_box.setWindowTitle(
@@ -6052,7 +6058,11 @@ class MainWindow(QMainWindow):
         relying on a ``__del__`` finaliser, whose timing during interpreter
         shutdown is unreliable.
         """
+        # Block new analysis workers before stopping the recording, because
+        # stop_sortie_recording would otherwise launch one during shutdown.
+        self._shutting_down = True
         self.stop_sortie_recording()
+        self._teardown_sortie_analysis_worker()
         self.stop_debug_monitoring()
         processor = getattr(self, "crsf_processor", None)
         if processor is not None:
@@ -6067,6 +6077,25 @@ class MainWindow(QMainWindow):
         if self.joystick:
             self.joystick.close()
             self.joystick = None
+
+    def _teardown_sortie_analysis_worker(self) -> None:
+        """Wait out any running post-flight analysis before teardown.
+
+        Without this a still-running analysis ``QThread`` gets destroyed with
+        its parent window and Qt aborts with "Destroyed while thread is still
+        running".  The analysis is read-only CPU work that normally finishes
+        in seconds, so waiting is safe; termination is a last resort for a
+        pathologically large file.
+        """
+
+        worker = getattr(self, "_sortie_analysis_worker", None)
+        if worker is None:
+            return
+        if worker.isRunning():
+            if not worker.wait(10000):
+                worker.terminate()
+                worker.wait()
+        self._sortie_analysis_worker = None
 
     def closeEvent(self, event):
         """
