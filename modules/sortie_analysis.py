@@ -97,6 +97,8 @@ _STREAM_FIELDS = {
         "stick_roll",
         "fbw_setpoint_roll",
         "fbw_setpoint_pitch",
+        "fbw_limit_roll",
+        "fbw_limit_pitch",
     ),
     "gps": (
         "latitude",
@@ -341,7 +343,8 @@ def _test_continuity(streams: dict[str, _Stream]) -> Finding:
         stream = streams[name]
         times = stream.times
         if len(times) < 2:
-            worst_status = "warn"
+            if worst_status != "fail":
+                worst_status = "warn"
             details.append(
                 f"{name}: fewer than two packets recorded — stream "
                 "missing or recording was too short."
@@ -596,12 +599,15 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
     status = "pass"
     worst_rms: Optional[float] = None
 
-    for axis, setpoint_field in (
-        ("roll", "fbw_setpoint_roll"),
-        ("pitch", "fbw_setpoint_pitch"),
+    for axis, setpoint_field, limit_field in (
+        ("roll", "fbw_setpoint_roll", "fbw_limit_roll"),
+        ("pitch", "fbw_setpoint_pitch", "fbw_limit_pitch"),
     ):
         setpoints = attitude.column(setpoint_field)
         actuals = attitude.column(axis)
+        limits = attitude.column(limit_field)
+        if len(limits) != len(times):
+            limits = [math.nan] * len(times)
         if len(setpoints) != len(times):
             details.append(f"{axis}: setpoints were not recorded.")
             continue
@@ -613,7 +619,8 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
         max_abs_setpoint = 0.0
         max_abs_actual = 0.0
         saturated = 0
-        total = 0
+        limited_total = 0
+        last_limit = math.nan
         engage_bump = 0.0
         for start, end in segments:
             settle_end = times[start] + _FBW_ENGAGE_SETTLE_S
@@ -632,19 +639,20 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
                 seg_att.append(att)
                 max_abs_setpoint = max(max_abs_setpoint, abs(sp))
                 max_abs_actual = max(max_abs_actual, abs(att))
-                total += 1
+                # Saturation is judged against the recorded configured FBW
+                # limit, not the flight's own maximum command — holding a
+                # steady moderate bank must not read as "pinned at the limit".
+                limit = limits[i]
+                if math.isfinite(limit) and limit >= 5.0:
+                    limited_total += 1
+                    last_limit = limit
+                    if abs(sp) >= 0.95 * limit:
+                        saturated += 1
             sp_grid = _resample(seg_times, seg_sp, dt)
             att_grid = _resample(seg_times, seg_att, dt)
             n = min(len(sp_grid), len(att_grid))
             if n >= 40:
                 grids.append((sp_grid[:n], att_grid[:n]))
-
-        if max_abs_setpoint > 0.0:
-            for start, end in segments:
-                for i in range(start, end + 1):
-                    sp = setpoints[i]
-                    if math.isfinite(sp) and abs(sp) >= 0.95 * max_abs_setpoint:
-                        saturated += 1
 
         if not grids:
             details.append(
@@ -730,16 +738,16 @@ def _test_fbw_tracking(streams: dict[str, _Stream]) -> Finding:
                 "outside its commanded envelope."
             )
 
-        if total > 0 and max_abs_setpoint >= 15.0:
-            saturation = saturated / total
+        if limited_total > 0:
+            saturation = saturated / limited_total
             if saturation > 0.3:
                 if status == "pass":
                     status = "warn"
                 details.append(
-                    f"{axis}: setpoint sat at its limit "
-                    f"{saturation * 100.0:.0f}% of the time — the configured "
-                    "FBW angle limits may be too tight for how the aircraft "
-                    "is being flown."
+                    f"{axis}: setpoint sat at the configured "
+                    f"{last_limit:.0f}° limit {saturation * 100.0:.0f}% of "
+                    "the time — the FBW angle limits may be too tight for "
+                    "how the aircraft is being flown."
                 )
 
         if engage_bump > 20.0:

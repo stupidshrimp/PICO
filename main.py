@@ -259,6 +259,8 @@ class MainWindow(QMainWindow):
             "control_mode",
             "fbw_setpoint_roll",
             "fbw_setpoint_pitch",
+            "fbw_limit_roll",
+            "fbw_limit_pitch",
             "latitude",
             "longitude",
             "altitude_ft",
@@ -1806,6 +1808,8 @@ class MainWindow(QMainWindow):
         self.telemetry_state["control_mode"] = self.control_mode
         self.telemetry_state["fbw_setpoint_roll"] = self.desired_fbw_roll
         self.telemetry_state["fbw_setpoint_pitch"] = self.desired_fbw_pitch
+        self.telemetry_state["fbw_limit_roll"] = self.fbw_max_roll_angle_deg
+        self.telemetry_state["fbw_limit_pitch"] = self.fbw_max_pitch_angle_deg
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         row = [timestamp, packet_type]
