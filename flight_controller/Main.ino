@@ -14,6 +14,10 @@
 #include <Wire.h>
 #include <elapsedMillis.h>
 #include <IWatchdog.h>
+// Emulated-flash EEPROM (stm32duino core) for persisting the in-field
+// magnetometer calibration across power cycles. Only the buffered API is
+// used (single sector erase per save; see saveMagCalToFlash).
+#include <EEPROM.h>
 
 // Arduino IDE sketch-local debug toggles must be defined before including
 // konfig.h because konfig.h supplies guarded defaults. Defaults to off so a
@@ -35,10 +39,12 @@
 #include "ms4525d0.h" 
 #include "m8n.h"
 #include "control_mode.h"
+#include "mag_cal_fit.h"
 #include <CRSFforArduino.hpp>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 // Define additional hardware serial ports if the core does not provide them.
 // These mappings correspond to the STM32F405 feather board where
@@ -872,6 +878,61 @@ const uint16_t THROTTLE_CUT_US = THROTTLE_MIN_US;
 const uint16_t SERVO_HALF_TRAVEL_US = (SERVO_MAX_US - SERVO_MIN_US) / 2;
 const uint16_t SERVO_CALIBRATION_ACTIVE_US = SERVO_CENTER_US + ((SERVO_HALF_TRAVEL_US * 9) / 10);
 const uint16_t SERVO_INDICATOR_HOLD_MS = 350;
+
+// ----- In-field magnetometer calibration (MAGCAL) -----
+// CH7/AUX3 carries three bands instead of two: low = manual throttle,
+// high = auto throttle (unchanged), and a narrow band around center = the
+// ground station's "Calibrate compass" request. The center band maps to
+// THROTTLE_MODE_MANUAL in updateThrottleMode() (it is below
+// THROTTLE_MODE_AUTO_MIN), so a calibration request can never engage the
+// throttle PID, and the request itself is only honored on the ground: not
+// airborne-latched, Manual control mode, throttle stick at minimum, RC fresh,
+// and the band held for a full trigger-hold period. See
+// docs/protocol_contract.md for the channel contract.
+//
+// While sampling, the roll/pitch surfaces hold the distinctive
+// SERVO_CALIBRATION_ACTIVE_US pose (the same "calibration running" cue the
+// boot-time sensor calibration uses) to tell the operator to rotate the
+// aircraft through every orientation. Leaving the band finishes the run: a
+// valid fit is applied to the live HARD_IRON_BIAS / SOFT_IRON_MATRIX, saved
+// to emulated-flash EEPROM (reloaded on every boot), and acknowledged with a
+// slow min->max->center sweep; an invalid fit keeps the previous constants
+// and is signalled with a rapid surface flutter instead.
+const uint16_t MAG_CAL_REQUEST_BAND_HALF_WIDTH = 100;
+const uint16_t MAG_CAL_REQUEST_MIN = RC_INPUT_CENTER - MAG_CAL_REQUEST_BAND_HALF_WIDTH;
+const uint16_t MAG_CAL_REQUEST_MAX = RC_INPUT_CENTER + MAG_CAL_REQUEST_BAND_HALF_WIDTH;
+// Throttle stick (CH3) must be at minimum to start a calibration.
+const uint16_t MAG_CAL_THROTTLE_STICK_MAX = RC_INPUT_MIN + 50;
+// The request band must be held this long before sampling starts, so a value
+// transiting the band (or a brief GS glitch) cannot trigger a calibration.
+const uint32_t MAG_CAL_TRIGGER_HOLD_US = 1000000UL;
+// Sampling hard cap: abort (keeping the old constants) if the operator never
+// ends the run.
+const uint32_t MAG_CAL_MAX_DURATION_US = 180000000UL;
+// Minimum valid samples for a trustworthy min/max fit (~4 s at 125 Hz); the
+// per-axis span gate below is the real coverage check, this only rejects
+// obviously truncated runs.
+const uint32_t MAG_CAL_MIN_SAMPLES = 500;
+// Completion signal timing (non-blocking; the 100 ms flight watchdog forbids
+// the blocking delay() sweeps the boot-time signals use).
+const uint32_t MAG_CAL_SIGNAL_SWEEP_STEP_US = 350000UL;  // success: min, max, center
+const uint32_t MAG_CAL_SIGNAL_WAG_STEP_US = 150000UL;    // failure: rapid flutter
+const uint8_t MAG_CAL_SIGNAL_WAG_STEPS = 4;
+
+enum MagCalState : uint8_t {
+  MAG_CAL_IDLE = 0,
+  MAG_CAL_SAMPLING,
+  MAG_CAL_SIGNAL_SUCCESS,
+  MAG_CAL_SIGNAL_FAILURE,
+};
+MagCalState magCalState = MAG_CAL_IDLE;
+uint32_t magCalRequestStartUs = 0;   // 0 = request band not currently held
+uint32_t magCalSamplingStartUs = 0;
+uint32_t magCalSignalStartUs = 0;
+// Require CH7 to leave the request band between runs so holding it after a
+// finished calibration cannot immediately re-trigger a new one.
+bool magCalRearmed = true;
+MagCalAccumulator magCalAccumulator;
 
 // Fly-by-wire tuning constants.
 const float FBW_MAX_ROLL_ANGLE_DEG = 80.0f;
@@ -1834,7 +1895,9 @@ void resetPeriodicTimers() {
 }
 
 
-#if FC_MAG_CALIBRATION_MODE
+// Shared by the bench-only MAGCAL helper and the in-field calibration's
+// success log, so a field-fitted constant set can still be copied into the
+// compiled-in defaults if desired.
 void printMagCalibrationConstantSet(float hardX, float hardY, float hardZ,
                                     float softX, float softY, float softZ) {
   Serial.println("MAGCAL copy these constants into Main.ino after verifying the fit:");
@@ -1850,6 +1913,7 @@ void printMagCalibrationConstantSet(float hardX, float hardY, float hardZ,
   Serial.println("};");
 }
 
+#if FC_MAG_CALIBRATION_MODE
 void runMagnetometerCalibrationDebug() {
   Serial.println();
   Serial.println("MAGCAL mode is ENABLED. This is a bench-only helper; do not fly with FC_MAG_CALIBRATION_MODE=1.");
@@ -1878,14 +1942,8 @@ void runMagnetometerCalibrationDebug() {
 
   Serial.println("MAGCAL sampling started. Keep rotating slowly: nose up/down, left/right wing down, inverted, and yaw sweeps.");
 
-  float minX = 0.0f;
-  float minY = 0.0f;
-  float minZ = 0.0f;
-  float maxX = 0.0f;
-  float maxY = 0.0f;
-  float maxZ = 0.0f;
-  bool haveSample = false;
-  uint32_t sampleCount = 0;
+  MagCalAccumulator acc;
+  acc.reset();
   uint32_t rejectedCount = 0;
   uint32_t sampleStartMs = millis();
   uint32_t lastSampleMs = sampleStartMs;
@@ -1903,20 +1961,7 @@ void runMagnetometerCalibrationDebug() {
         imuBodyMag(x, y, z);
         float norm = sqrt(x*x + y*y + z*z);
         if (norm > NORM_EPSILON) {
-          if (!haveSample) {
-            minX = maxX = x;
-            minY = maxY = y;
-            minZ = maxZ = z;
-            haveSample = true;
-          } else {
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-            if (z < minZ) minZ = z;
-            if (z > maxZ) maxZ = z;
-          }
-          ++sampleCount;
+          acc.add(x, y, z);
         } else {
           ++rejectedCount;
         }
@@ -1931,7 +1976,7 @@ void runMagnetometerCalibrationDebug() {
       uint32_t remainingMs = (elapsedMs >= FC_MAG_CALIBRATION_DURATION_MS)
                                ? 0UL
                                : (FC_MAG_CALIBRATION_DURATION_MS - elapsedMs);
-      Serial.print("MAGCAL samples="); Serial.print(sampleCount);
+      Serial.print("MAGCAL samples="); Serial.print(acc.sampleCount);
       Serial.print(" rejected="); Serial.print(rejectedCount);
       Serial.print(" remaining_s="); Serial.println((remainingMs + 999UL) / 1000UL);
     }
@@ -1939,45 +1984,316 @@ void runMagnetometerCalibrationDebug() {
   }
 
   Serial.println("MAGCAL sampling complete.");
-  if (!haveSample || sampleCount < 50) {
+  MagCalFit fit;
+  const MagCalFitStatus fitStatus =
+      magCalComputeFit(acc, 50, FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT, fit);
+  if (fitStatus == MAG_CAL_FIT_TOO_FEW_SAMPLES) {
     Serial.println("MAGCAL failed: not enough valid magnetometer samples. Check IMU wiring and rerun calibration.");
     return;
   }
 
-  float hardX = (maxX + minX) * 0.5f;
-  float hardY = (maxY + minY) * 0.5f;
-  float hardZ = (maxZ + minZ) * 0.5f;
-  float spanX = maxX - minX;
-  float spanY = maxY - minY;
-  float spanZ = maxZ - minZ;
-  float radiusX = spanX * 0.5f;
-  float radiusY = spanY * 0.5f;
-  float radiusZ = spanZ * 0.5f;
+  Serial.print("MAGCAL raw_min_uT="); Serial.print(acc.minX, 3); Serial.print(','); Serial.print(acc.minY, 3); Serial.print(','); Serial.println(acc.minZ, 3);
+  Serial.print("MAGCAL raw_max_uT="); Serial.print(acc.maxX, 3); Serial.print(','); Serial.print(acc.maxY, 3); Serial.print(','); Serial.println(acc.maxZ, 3);
+  Serial.print("MAGCAL hard_iron_uT="); Serial.print(fit.hardIron[0], 6); Serial.print(','); Serial.print(fit.hardIron[1], 6); Serial.print(','); Serial.println(fit.hardIron[2], 6);
+  Serial.print("MAGCAL span_uT="); Serial.print(fit.span[0], 6); Serial.print(','); Serial.print(fit.span[1], 6); Serial.print(','); Serial.println(fit.span[2], 6);
+  Serial.print("MAGCAL radii_uT="); Serial.print(fit.radius[0], 6); Serial.print(','); Serial.print(fit.radius[1], 6); Serial.print(','); Serial.println(fit.radius[2], 6);
 
-  Serial.print("MAGCAL raw_min_uT="); Serial.print(minX, 3); Serial.print(','); Serial.print(minY, 3); Serial.print(','); Serial.println(minZ, 3);
-  Serial.print("MAGCAL raw_max_uT="); Serial.print(maxX, 3); Serial.print(','); Serial.print(maxY, 3); Serial.print(','); Serial.println(maxZ, 3);
-  Serial.print("MAGCAL hard_iron_uT="); Serial.print(hardX, 6); Serial.print(','); Serial.print(hardY, 6); Serial.print(','); Serial.println(hardZ, 6);
-  Serial.print("MAGCAL span_uT="); Serial.print(spanX, 6); Serial.print(','); Serial.print(spanY, 6); Serial.print(','); Serial.println(spanZ, 6);
-  Serial.print("MAGCAL radii_uT="); Serial.print(radiusX, 6); Serial.print(','); Serial.print(radiusY, 6); Serial.print(','); Serial.println(radiusZ, 6);
-
-  if (spanX < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT ||
-      spanY < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT ||
-      spanZ < FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT) {
+  if (fitStatus == MAG_CAL_FIT_SPAN_TOO_SMALL) {
     Serial.print("MAGCAL failed: each axis must span at least ");
     Serial.print(FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT, 1);
     Serial.println(" uT. Rerun and rotate through all orientations.");
     return;
   }
 
-  float averageRadius = (radiusX + radiusY + radiusZ) / 3.0f;
-  float softX = averageRadius / radiusX;
-  float softY = averageRadius / radiusY;
-  float softZ = averageRadius / radiusZ;
   Serial.println("MAGCAL note: this helper computes hard-iron plus diagonal soft-iron from min/max coverage.");
   Serial.println("MAGCAL note: for off-diagonal soft-iron terms, export raw samples and run a full ellipsoid fit offboard.");
-  printMagCalibrationConstantSet(hardX, hardY, hardZ, softX, softY, softZ);
+  printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
+                                 fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);
 }
 #endif
+
+// ----- In-field magnetometer calibration: persistence and state machine -----
+// See the MAG_CAL_* constants block for the operator-facing behavior. The
+// fitted constants are stored in the stm32duino emulated-flash EEPROM so a
+// field calibration survives power cycles; a missing/corrupt record falls
+// back to the compiled-in HARD_IRON_BIAS / SOFT_IRON_MATRIX defaults.
+
+// Fixed-layout record (no padding: all members naturally aligned).
+struct MagCalFlashRecord {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t reserved;
+  float hardIron[3];
+  float softIronDiag[3];
+  uint32_t crc;  // CRC-32 over every byte above this field
+};
+const uint32_t MAG_CAL_FLASH_MAGIC = 0x4C43474DUL;  // "MGCL"
+const uint16_t MAG_CAL_FLASH_VERSION = 1;
+const uint32_t MAG_CAL_FLASH_BASE_ADDR = 0;
+// Loaded-record sanity bounds: reject a record whose values could not have
+// come from a plausible fit even if the CRC matches (e.g. a stale layout).
+const float MAG_CAL_HARD_IRON_LIMIT_UT = 1000.0f;
+const float MAG_CAL_SOFT_IRON_MIN = 0.2f;
+const float MAG_CAL_SOFT_IRON_MAX = 5.0f;
+
+// Bitwise CRC-32 (reflected, poly 0xEDB88320). Small and table-free; runs
+// over 32 bytes only on boot and after a calibration, never in the loop.
+uint32_t magCalCrc32(const uint8_t *data, size_t length) {
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < length; ++i) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+    }
+  }
+  return crc ^ 0xFFFFFFFFUL;
+}
+
+uint32_t magCalRecordCrc(const MagCalFlashRecord &rec) {
+  return magCalCrc32(reinterpret_cast<const uint8_t *>(&rec),
+                     offsetof(MagCalFlashRecord, crc));
+}
+
+// Apply a fit to the live calibration used by applyMagCalibration(). The fit
+// is diagonal, so the off-diagonal soft-iron terms are explicitly zeroed.
+void applyMagCalFit(const MagCalFit &fit) {
+  for (int axis = 0; axis < 3; ++axis) {
+    HARD_IRON_BIAS[axis][0] = fit.hardIron[axis];
+  }
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < 3; ++col) {
+      SOFT_IRON_MATRIX[row][col] =
+          (row == col) ? fit.softIronDiag[row] : (float_prec)0.0;
+    }
+  }
+}
+
+bool magCalRecordValuesSane(const MagCalFlashRecord &rec) {
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!isfinite(rec.hardIron[axis]) ||
+        fabsf(rec.hardIron[axis]) > MAG_CAL_HARD_IRON_LIMIT_UT) {
+      return false;
+    }
+    if (!isfinite(rec.softIronDiag[axis]) ||
+        rec.softIronDiag[axis] < MAG_CAL_SOFT_IRON_MIN ||
+        rec.softIronDiag[axis] > MAG_CAL_SOFT_IRON_MAX) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void magCalReadFlashRecord(MagCalFlashRecord &rec) {
+  uint8_t *bytes = reinterpret_cast<uint8_t *>(&rec);
+  for (size_t i = 0; i < sizeof(rec); ++i) {
+    bytes[i] = eeprom_buffered_read_byte(MAG_CAL_FLASH_BASE_ADDR + i);
+  }
+}
+
+// Load a persisted calibration into the live matrices. Called once from
+// setup() before the EKF is aligned; returns true when a valid record was
+// applied. Any invalid record leaves the compiled-in defaults untouched.
+bool loadMagCalFromFlash() {
+  eeprom_buffer_fill();
+  MagCalFlashRecord rec;
+  magCalReadFlashRecord(rec);
+  if (rec.magic != MAG_CAL_FLASH_MAGIC || rec.version != MAG_CAL_FLASH_VERSION ||
+      rec.crc != magCalRecordCrc(rec) || !magCalRecordValuesSane(rec)) {
+    Serial.println("MAGCAL no valid stored calibration; using compiled-in constants.");
+    return false;
+  }
+  MagCalFit fit;
+  for (int axis = 0; axis < 3; ++axis) {
+    fit.hardIron[axis] = rec.hardIron[axis];
+    fit.softIronDiag[axis] = rec.softIronDiag[axis];
+  }
+  applyMagCalFit(fit);
+  Serial.println("MAGCAL loaded stored calibration from flash:");
+  printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
+                                 fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);
+  return true;
+}
+
+// Persist a fit. GROUND ONLY: the emulated-EEPROM sector erase inside
+// eeprom_buffer_flush() stalls code execution well past the 100 ms flight
+// watchdog window (up to ~1-2 s on this flash), so the IWDG is temporarily
+// re-armed with the wide recovery window around the flush -- the same
+// IWatchdog.begin() re-arm pattern setup() uses -- and RC will briefly go
+// stale, which is harmless on the ground (failsafe holds surfaces neutral
+// with throttle cut until packets resume). Returns true when the re-read
+// record verifies.
+bool saveMagCalToFlash(const MagCalFit &fit) {
+  MagCalFlashRecord rec;
+  rec.magic = MAG_CAL_FLASH_MAGIC;
+  rec.version = MAG_CAL_FLASH_VERSION;
+  rec.reserved = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    rec.hardIron[axis] = fit.hardIron[axis];
+    rec.softIronDiag[axis] = fit.softIronDiag[axis];
+  }
+  rec.crc = magCalRecordCrc(rec);
+
+  eeprom_buffer_fill();
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&rec);
+  for (size_t i = 0; i < sizeof(rec); ++i) {
+    eeprom_buffered_write_byte(MAG_CAL_FLASH_BASE_ADDR + i, bytes[i]);
+  }
+
+  IWatchdog.begin(WATCHDOG_RECOVERY_BOOT_TIMEOUT_US);
+  IWatchdog.reload();
+  eeprom_buffer_flush();
+  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
+  IWatchdog.reload();
+
+  // Verify the sector actually took the record (flush has no return value).
+  eeprom_buffer_fill();
+  MagCalFlashRecord readBack;
+  magCalReadFlashRecord(readBack);
+  return memcmp(&readBack, &rec, sizeof(rec)) == 0;
+}
+
+bool magCalChannelInRequestBand() {
+  const size_t modeChannelIndex = 6;  // CH7/AUX3, same channel updateThrottleMode() reads
+  const size_t channelCount =
+      sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if (modeChannelIndex >= channelCount) {
+    return false;
+  }
+  const uint16_t value = latestRcChannels.value[modeChannelIndex];
+  return value >= MAG_CAL_REQUEST_MIN && value <= MAG_CAL_REQUEST_MAX;
+}
+
+// Servo command for the calibration pose and the completion signals. Only
+// meaningful while magCalState != MAG_CAL_IDLE; the state machine below owns
+// the transitions, this just maps (state, elapsed) to a surface position.
+uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
+  switch (magCalState) {
+    case MAG_CAL_SAMPLING:
+      return SERVO_CALIBRATION_ACTIVE_US;
+    case MAG_CAL_SIGNAL_SUCCESS: {
+      const uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
+      if (elapsedUs < MAG_CAL_SIGNAL_SWEEP_STEP_US) return SERVO_MIN_US;
+      if (elapsedUs < 2UL * MAG_CAL_SIGNAL_SWEEP_STEP_US) return SERVO_MAX_US;
+      return SERVO_CENTER_US;
+    }
+    case MAG_CAL_SIGNAL_FAILURE: {
+      const uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
+      const uint32_t step = elapsedUs / MAG_CAL_SIGNAL_WAG_STEP_US;
+      if (step >= MAG_CAL_SIGNAL_WAG_STEPS) return SERVO_CENTER_US;
+      return (step & 1UL) ? SERVO_MAX_US : SERVO_MIN_US;
+    }
+    default:
+      return SERVO_CENTER_US;
+  }
+}
+
+// Advance the in-field calibration. Called once per 125 Hz control cycle,
+// before the servo logic, with that cycle's RC-freshness verdict.
+void updateMagCalState(uint32_t nowUs, bool rcFresh) {
+  switch (magCalState) {
+    case MAG_CAL_IDLE: {
+      if (!rcFresh) {
+        magCalRequestStartUs = 0;
+        return;
+      }
+      if (!magCalChannelInRequestBand()) {
+        magCalRequestStartUs = 0;
+        magCalRearmed = true;
+        return;
+      }
+      if (!magCalRearmed) {
+        return;  // still holding the band from a finished run
+      }
+      // Ground-only gates, re-checked every cycle while the hold accrues.
+      const size_t channelCount =
+          sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+      const uint16_t throttleStickRaw =
+          (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_MAX;
+      if (aircraftAirborne || controlMode != CONTROL_MODE_MANUAL ||
+          throttleStickRaw > MAG_CAL_THROTTLE_STICK_MAX) {
+        magCalRequestStartUs = 0;
+        return;
+      }
+      if (magCalRequestStartUs == 0) {
+        magCalRequestStartUs = nowUs;
+        return;
+      }
+      if ((uint32_t)(nowUs - magCalRequestStartUs) < MAG_CAL_TRIGGER_HOLD_US) {
+        return;
+      }
+      magCalAccumulator.reset();
+      magCalSamplingStartUs = nowUs;
+      magCalRequestStartUs = 0;
+      magCalRearmed = false;
+      magCalState = MAG_CAL_SAMPLING;
+      Serial.println("MAGCAL in-field calibration started: rotate the aircraft through every orientation (nose up/down, each wing down, inverted, yaw sweeps).");
+      break;
+    }
+    case MAG_CAL_SAMPLING: {
+      // Abort (keep the previous constants) if the link dies, the airborne
+      // latch somehow engages, the pilot leaves Manual, or the run times out.
+      if (!rcFresh || aircraftAirborne || controlMode != CONTROL_MODE_MANUAL ||
+          (uint32_t)(nowUs - magCalSamplingStartUs) > MAG_CAL_MAX_DURATION_US) {
+        Serial.println("MAGCAL aborted (RC stale, airborne, non-Manual mode, or timeout); keeping previous calibration.");
+        magCalSignalStartUs = nowUs;
+        magCalState = MAG_CAL_SIGNAL_FAILURE;
+        return;
+      }
+      if (magCalChannelInRequestBand()) {
+        return;  // still sampling (accumulation happens in the IMU read path)
+      }
+      // Operator ended the run: fit, and on success apply + persist.
+      MagCalFit fit;
+      const MagCalFitStatus fitStatus =
+          magCalComputeFit(magCalAccumulator, MAG_CAL_MIN_SAMPLES,
+                           FC_MAG_CALIBRATION_MIN_AXIS_SPAN_UT, fit);
+      Serial.print("MAGCAL run finished: samples=");
+      Serial.print(magCalAccumulator.sampleCount);
+      Serial.print(" span_uT=");
+      Serial.print(fit.span[0], 2); Serial.print(',');
+      Serial.print(fit.span[1], 2); Serial.print(',');
+      Serial.println(fit.span[2], 2);
+      if (fitStatus == MAG_CAL_FIT_OK) {
+        applyMagCalFit(fit);
+        Serial.println("MAGCAL fit applied to the live calibration:");
+        printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
+                                       fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);
+        if (saveMagCalToFlash(fit)) {
+          Serial.println("MAGCAL calibration saved to flash; it will reload on every boot.");
+        } else {
+          Serial.println("MAGCAL WARNING: flash save failed to verify; calibration is active for this session only.");
+        }
+        // Timestamp AFTER the flash flush so the stall does not eat the sweep.
+        magCalSignalStartUs = micros();
+        magCalState = MAG_CAL_SIGNAL_SUCCESS;
+      } else {
+        Serial.println(fitStatus == MAG_CAL_FIT_TOO_FEW_SAMPLES
+                           ? "MAGCAL failed: not enough valid samples; keeping previous calibration."
+                           : "MAGCAL failed: axis coverage too small (rotate through all orientations); keeping previous calibration.");
+        magCalSignalStartUs = nowUs;
+        magCalState = MAG_CAL_SIGNAL_FAILURE;
+      }
+      break;
+    }
+    case MAG_CAL_SIGNAL_SUCCESS: {
+      // min, max, then a center hold, all one sweep step long.
+      if ((uint32_t)(nowUs - magCalSignalStartUs) >=
+          3UL * MAG_CAL_SIGNAL_SWEEP_STEP_US) {
+        magCalState = MAG_CAL_IDLE;
+      }
+      break;
+    }
+    case MAG_CAL_SIGNAL_FAILURE: {
+      // The wag steps, then a center hold before releasing the surfaces.
+      if ((uint32_t)(nowUs - magCalSignalStartUs) >=
+          (uint32_t)MAG_CAL_SIGNAL_WAG_STEPS * MAG_CAL_SIGNAL_WAG_STEP_US +
+              MAG_CAL_SIGNAL_SWEEP_STEP_US) {
+        magCalState = MAG_CAL_IDLE;
+      }
+      break;
+    }
+  }
+}
 
 
 #if FC_GPS_DIAGNOSTIC_MODE
@@ -3909,6 +4225,14 @@ void setup() {
   haltStartupWithNeutralServos();
 #endif
 
+  // ----- Load persisted magnetometer calibration -----
+  // An in-field calibration run (updateMagCalState) stores its fit in the
+  // emulated-flash EEPROM; prefer it over the compiled-in constants whenever
+  // a valid record exists so a field calibration survives power cycles. Must
+  // run before the TRIAD coarse alignment below, which consumes the
+  // calibrated field.
+  loadMagCalFromFlash();
+
   // ----- Initialize EKF -----
   // Coarse-align the starting attitude from the averaged accel/mag observation
   // (falls back to identity when the observation is unusable), then start the
@@ -4165,7 +4489,18 @@ void loop() {
       // A saturated magnetometer (AK8963 HOFL) reports a garbage field; reject the
       // sample below rather than fusing it as a heading reference.
       const bool magOverflow = IMU.magnetometerOverflow();
-      
+
+      // Feed the in-field magnetometer calibration from the same raw
+      // body-frame samples the bench MAGCAL helper fits (pre-hard/soft-iron;
+      // the fitted constants drop straight into HARD_IRON_BIAS /
+      // SOFT_IRON_MATRIX), with the same validity gates.
+      if (magCalState == MAG_CAL_SAMPLING && !magOverflow) {
+        const float magNorm = sqrtf(Bx*Bx + By*By + Bz*Bz);
+        if (magNorm > NORM_EPSILON) {
+          magCalAccumulator.add(Bx, By, Bz);
+        }
+      }
+
       // Populate matrices for EKF update
       U[0][0] = p;  U[1][0] = q;  U[2][0] = r;
       Y[0][0] = Ax; Y[1][0] = Ay; Y[2][0] = Az;
@@ -4500,6 +4835,11 @@ void loop() {
       rcServoHoldBlendActive = false;
     }
 
+    // Advance the in-field magnetometer calibration before the servo logic so
+    // its entry/abort decisions and the surface override below act on this
+    // same cycle's RC snapshot.
+    updateMagCalState(servoUpdateUs, rcFresh);
+
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
     uint16_t rcThrottleRaw = (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_MIN;
@@ -4527,6 +4867,18 @@ void loop() {
         pitchCommandUs = SERVO_CENTER_US;
         yawCommandUs = SERVO_CENTER_US;
       }
+    } else if (magCalState != MAG_CAL_IDLE) {
+      // In-field magnetometer calibration owns the surfaces: hold the
+      // distinctive calibration pose while sampling (the "rotate the
+      // aircraft" cue), then play the success sweep / failure wag. Throttle
+      // is forced to cut below, and the FBW PIDs stay cleared exactly like
+      // Manual mode so no attitude correction can bleed into the pose.
+      rollPid.reset();
+      pitchPid.reset();
+      const uint16_t indicatorUs = magCalIndicatorCommandUs(servoUpdateUs);
+      rollCommandUs = indicatorUs;
+      pitchCommandUs = indicatorUs;
+      yawCommandUs = SERVO_CENTER_US;
     } else if (controlMode == CONTROL_MODE_FLY_BY_WIRE &&
                (!attitudeEstimateFresh(servoUpdateUs) || !attitudeEstimateConvergedForFbw())) {
       // Fall back to direct RC pass-through when the attitude estimate is not
@@ -4585,7 +4937,9 @@ void loop() {
       pitchCommandUs = mapRcToUs(rcPitchRaw);
     }
 
-    if (!rcFresh) {
+    if (!rcFresh || magCalState != MAG_CAL_IDLE) {
+      // Throttle stays cut for the whole magnetometer calibration (the
+      // operator is handling the aircraft), not just on a stale link.
       throttleCommandUs = THROTTLE_CUT_US;
     } else if (throttleMode == THROTTLE_MODE_AUTO) {
       latestAutoThrottleTargetMph = mapRcToAutoThrottleTargetMph(rcThrottleRaw);
