@@ -894,10 +894,12 @@ const uint16_t SERVO_INDICATOR_HOLD_MS = 350;
 // SERVO_CALIBRATION_ACTIVE_US pose (the same "calibration running" cue the
 // boot-time sensor calibration uses) to tell the operator to rotate the
 // aircraft through every orientation. Leaving the band finishes the run: a
-// valid fit is applied to the live HARD_IRON_BIAS / SOFT_IRON_MATRIX, saved
-// to emulated-flash EEPROM (reloaded on every boot), and acknowledged with a
-// slow min->max->center sweep; an invalid fit keeps the previous constants
-// and is signalled with a rapid surface flutter instead.
+// valid fit is first saved to emulated-flash EEPROM and, once the record
+// verifies, applied to the live HARD_IRON_BIAS / SOFT_IRON_MATRIX and
+// acknowledged with a slow min->max->center sweep (which therefore strictly
+// means "applied AND reloads on every boot"); an invalid fit OR a save that
+// fails to verify keeps the previous constants and is signalled with a rapid
+// surface flutter instead.
 const uint16_t MAG_CAL_REQUEST_BAND_HALF_WIDTH = 100;
 const uint16_t MAG_CAL_REQUEST_MIN = RC_INPUT_CENTER - MAG_CAL_REQUEST_BAND_HALF_WIDTH;
 const uint16_t MAG_CAL_REQUEST_MAX = RC_INPUT_CENTER + MAG_CAL_REQUEST_BAND_HALF_WIDTH;
@@ -2254,18 +2256,25 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
       Serial.print(fit.span[1], 2); Serial.print(',');
       Serial.println(fit.span[2], 2);
       if (fitStatus == MAG_CAL_FIT_OK) {
-        applyMagCalFit(fit);
-        Serial.println("MAGCAL fit applied to the live calibration:");
-        printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
-                                       fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);
+        // Persist FIRST, apply only after the record verifies: the success
+        // sweep must strictly mean "applied AND will reload on every boot".
+        // A save that fails to verify keeps the previous constants entirely
+        // (live and stored) and answers with the failure flutter, so the
+        // operator retries instead of trusting a calibration that would
+        // silently evaporate on the next power cycle.
         if (saveMagCalToFlash(fit)) {
-          Serial.println("MAGCAL calibration saved to flash; it will reload on every boot.");
+          applyMagCalFit(fit);
+          Serial.println("MAGCAL fit applied to the live calibration and saved to flash (reloads on every boot):");
+          printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
+                                         fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);
+          // Timestamp AFTER the flash flush so the stall does not eat the sweep.
+          magCalSignalStartUs = micros();
+          magCalState = MAG_CAL_SIGNAL_SUCCESS;
         } else {
-          Serial.println("MAGCAL WARNING: flash save failed to verify; calibration is active for this session only.");
+          Serial.println("MAGCAL failed: flash save did not verify; keeping previous calibration. Rerun the calibration.");
+          magCalSignalStartUs = micros();
+          magCalState = MAG_CAL_SIGNAL_FAILURE;
         }
-        // Timestamp AFTER the flash flush so the stall does not eat the sweep.
-        magCalSignalStartUs = micros();
-        magCalState = MAG_CAL_SIGNAL_SUCCESS;
       } else {
         Serial.println(fitStatus == MAG_CAL_FIT_TOO_FEW_SAMPLES
                            ? "MAGCAL failed: not enough valid samples; keeping previous calibration."

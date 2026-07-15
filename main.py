@@ -2334,7 +2334,8 @@ class MainWindow(QMainWindow):
             "they move, rotate the aircraft slowly through every orientation "
             "(nose up/down, each wing down, inverted, and full yaw sweeps), "
             "then click Finish. Success = one slow full sweep of the "
-            "surfaces; failure = a rapid flutter (previous calibration kept)."
+            "surfaces (calibration applied and saved to the FC's flash); "
+            "failure = a rapid flutter (previous calibration kept)."
         )
 
     def _finish_compass_cal(self, reason: str | None = None) -> None:
@@ -2352,8 +2353,9 @@ class MainWindow(QMainWindow):
             self._set_compass_cal_status(
                 "Finishing calibration. Watch the control surfaces: one slow "
                 "full sweep means the new calibration is applied and saved to "
-                "the FC's flash; a rapid flutter means the fit was rejected "
-                "and the previous calibration is kept."
+                "the FC's flash; a rapid flutter means it was not applied "
+                "(bad fit or flash-save failure) and the previous calibration "
+                "is kept."
             )
 
     def _update_compass_cal_button(self) -> None:
@@ -3656,6 +3658,15 @@ class MainWindow(QMainWindow):
                 0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
             ) / 100.0
         channels[2] = int(channel_fraction * throttle_span + throttle_min)
+        if self.compass_cal_active:
+            # Defense-in-depth while a compass calibration is requested: the
+            # FC cuts throttle once its run starts, but between the request
+            # going out and the FC entering the run (1 s trigger hold plus
+            # ground gates) CH3 is still live manual throttle. Hold it at
+            # minimum so a bumped throttle cannot spin the motor while the
+            # operator is handling the aircraft; this also satisfies the FC's
+            # throttle-stick-at-minimum entry gate.
+            channels[2] = throttle_min
 
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
