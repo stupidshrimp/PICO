@@ -2264,6 +2264,16 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
         // silently evaporate on the next power cycle.
         if (saveMagCalToFlash(fit)) {
           applyMagCalFit(fit);
+          // Re-open the innovation-gate warmup window: a large calibration
+          // correction can move the measured heading further from the current
+          // yaw estimate than MAG_YAW_INNOVATION_GATE allows, and a warmed-up
+          // gate would then reject the newly calibrated magnetometer forever
+          // (gyro-only yaw) -- exactly the big-bias case this feature fixes.
+          // During warmup the innovation gates are bypassed (magnitude gates
+          // still apply), so the filter re-converges onto the new field in
+          // ~2 s on the ground; attitudeEstimateConvergedForFbw() correctly
+          // reports "not converged" for that window.
+          ekfInnovationGateWarmupUpdates = 0;
           Serial.println("MAGCAL fit applied to the live calibration and saved to flash (reloads on every boot):");
           printMagCalibrationConstantSet(fit.hardIron[0], fit.hardIron[1], fit.hardIron[2],
                                          fit.softIronDiag[0], fit.softIronDiag[1], fit.softIronDiag[2]);

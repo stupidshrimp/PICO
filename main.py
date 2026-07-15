@@ -2326,6 +2326,9 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Zero the queued throttle state (not just the masked channel) so
+        # nothing accumulated before the click can surface later.
+        self.cut_throttle()
         self.compass_cal_active = True
         self._update_compass_cal_button()
         self._set_compass_cal_status(
@@ -2343,6 +2346,12 @@ class MainWindow(QMainWindow):
         if not self.compass_cal_active:
             return
         self.compass_cal_active = False
+        # CH3 was only masked while the request was active; throttle hotkeys
+        # and the mode shortcut can still have queued state during the run.
+        # Cut throttle (zero percent AND target, back to Manual throttle) so
+        # the first unmasked packet cannot spin the motor while the operator
+        # is still handling the aircraft.
+        self.cut_throttle()
         self._update_compass_cal_button()
         if reason:
             self._set_compass_cal_status(
@@ -5438,6 +5447,11 @@ class MainWindow(QMainWindow):
         intact, so a later re-plug reconnects to the same device automatically
         instead of the saved port being overwritten with "Not connected".
         """
+        # Any CRSF teardown (hot-unplug or manual reselect) invalidates an
+        # active compass-calibration request: without this, the stale flag
+        # would put CH7 straight back into the request band on auto-reconnect
+        # and could restart the FC calibration with nobody at the button.
+        self._finish_compass_cal(reason="CRSF link disconnected or reselected")
         if not preserve_preference:
             self.crsf_cfg["port"] = port
             self._crsf_desired_port = port
