@@ -2070,19 +2070,27 @@ void applyMagCalFit(const MagCalFit &fit) {
   }
 }
 
-bool magCalRecordValuesSane(const MagCalFlashRecord &rec) {
+// Plausibility bounds shared by the boot loader and the save path: a fit is
+// only persisted/applied if the exact same check would accept it again on
+// reload, so the success sweep can never promise a calibration the next boot
+// would silently reject.
+bool magCalFitValuesSane(const float hardIron[3], const float softIronDiag[3]) {
   for (int axis = 0; axis < 3; ++axis) {
-    if (!isfinite(rec.hardIron[axis]) ||
-        fabsf(rec.hardIron[axis]) > MAG_CAL_HARD_IRON_LIMIT_UT) {
+    if (!isfinite(hardIron[axis]) ||
+        fabsf(hardIron[axis]) > MAG_CAL_HARD_IRON_LIMIT_UT) {
       return false;
     }
-    if (!isfinite(rec.softIronDiag[axis]) ||
-        rec.softIronDiag[axis] < MAG_CAL_SOFT_IRON_MIN ||
-        rec.softIronDiag[axis] > MAG_CAL_SOFT_IRON_MAX) {
+    if (!isfinite(softIronDiag[axis]) ||
+        softIronDiag[axis] < MAG_CAL_SOFT_IRON_MIN ||
+        softIronDiag[axis] > MAG_CAL_SOFT_IRON_MAX) {
       return false;
     }
   }
   return true;
+}
+
+bool magCalRecordValuesSane(const MagCalFlashRecord &rec) {
+  return magCalFitValuesSane(rec.hardIron, rec.softIronDiag);
 }
 
 void magCalReadFlashRecord(MagCalFlashRecord &rec) {
@@ -2255,6 +2263,20 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
       Serial.print(fit.span[0], 2); Serial.print(',');
       Serial.print(fit.span[1], 2); Serial.print(',');
       Serial.println(fit.span[2], 2);
+      if (fitStatus == MAG_CAL_FIT_OK &&
+          !magCalFitValuesSane(fit.hardIron, fit.softIronDiag)) {
+        // The sample/span gates bound coverage, not magnitude: a glitched
+        // magnetometer sample can stretch the min/max extremes into values
+        // the boot loader's plausibility bounds would reject. Without this
+        // pre-check the record still verifies bitwise and the success sweep
+        // plays, but loadMagCalFromFlash() would silently discard the same
+        // record on the next boot -- so enforce the loader's bounds BEFORE
+        // saving/applying and report the run as failed instead.
+        Serial.println("MAGCAL failed: fit outside plausibility bounds (glitched magnetometer samples?); keeping previous calibration.");
+        magCalSignalStartUs = nowUs;
+        magCalState = MAG_CAL_SIGNAL_FAILURE;
+        return;
+      }
       if (fitStatus == MAG_CAL_FIT_OK) {
         // Persist FIRST, apply only after the record verifies: the success
         // sweep must strictly mean "applied AND will reload on every boot".
