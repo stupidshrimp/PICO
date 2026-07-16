@@ -1438,7 +1438,7 @@ float latestAmbientPressurePa = 0.0f;
 // Airborne detection for the centripetal feed-forward (see thresholds above).
 float groundAltitudeM = 0.0f;          // Baro altitude captured on the ground at boot
 bool groundAltitudeCaptured = false;   // True once the ground reference is set
-bool aircraftAirborne = false;         // Latched airborne state gating the feed-forward
+bool aircraftAirborne = false;         // Latched airborne state; gates the centripetal feed-forward AND the in-field mag calibration
 uint32_t recoveryGroundHoldStartUs = 0;  // hold timer for recovery ground-reference recapture
 
 // ----- Sensor and telemetry timing -----
@@ -4621,6 +4621,15 @@ void loop() {
       Y[5][0] = magCalZ;
 #endif
 
+      // Maintain the airborne latch in EVERY build, not just when the
+      // centripetal feed-forward (its original consumer) is compiled in: the
+      // in-field magnetometer calibration's ground-only entry/abort gates
+      // read aircraftAirborne, and with the update left inside the
+      // (default-off) FC_ACCEL_CENTRIPETAL_COMPENSATION block the latch would
+      // stay false forever and those gates could not veto an in-flight
+      // calibration request.
+      updateAirborneState(controlUpdateUs);
+
 #if FC_ACCEL_CENTRIPETAL_COMPENSATION
       // Subtract the kinematic acceleration (a ~= dV/dt + omega x V) from the
       // measured specific force before treating it as a gravity reference. In the
@@ -4636,7 +4645,6 @@ void loop() {
       // and a latched airborne state so a bad pitot reading, wind/prop wash on a
       // stationary airframe, or a gear-constrained takeoff/landing roll cannot
       // corrupt attitude.
-      updateAirborneState(controlUpdateUs);
       if (airspeedInputFresh(controlUpdateUs) && gpsMotionConfirmed(controlUpdateUs) &&
           aircraftAirborne) {
         float centripetalAirspeedMps = airSpeedCms * 0.01f;  // cm/s -> m/s
