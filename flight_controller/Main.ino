@@ -2050,6 +2050,41 @@ enum MagCalSaveStatus {
   // falls back to the compiled-in constants.
   MAG_CAL_SAVE_FAILED_STORE_LOST,
 };
+
+// --- Firmware/EEPROM flash-collision guard ---
+// stm32duino's emulated EEPROM programs only a FLASH_PAGE_SIZE buffer at the
+// very top of flash, but eeprom_buffer_flush() ERASES the entire last flash
+// sector (FLASH_SECTOR_TOTAL - 1; 128 KiB on this F4) before reprogramming
+// it. Nothing in the Arduino build reserves that sector from the sketch, so
+// if the linked image ever grows into it, a calibration save would erase
+// live firmware code and never restore it. Guard at runtime: compute the
+// image's flash end from the linker symbols (the .data init load image at
+// _sidata follows .text/.rodata at the end of the used flash) and refuse to
+// run/save a calibration whenever it reaches the EEPROM sector. Reads
+// (boot load) touch nothing and stay allowed.
+#ifndef MAG_CAL_EEPROM_SECTOR_SIZE
+// Largest F4 sector; deriving the sector base as (end of flash - 128 KiB) is
+// exact on 512 KiB/1 MiB/2 MiB F4 parts and conservative anywhere else.
+#define MAG_CAL_EEPROM_SECTOR_SIZE (128UL * 1024UL)
+#endif
+extern "C" {
+extern uint8_t _sidata;  // LMA of .data: end of .text/.rodata in flash
+extern uint8_t _sdata;
+extern uint8_t _edata;
+}
+bool magCalFlashStoreSafe() {
+#if defined(FLASH_END)
+  const uint32_t imageEndAddr =
+      (uint32_t)(uintptr_t)&_sidata +
+      (uint32_t)((uintptr_t)&_edata - (uintptr_t)&_sdata);
+  const uint32_t eepromSectorBase =
+      ((uint32_t)FLASH_END + 1UL) - MAG_CAL_EEPROM_SECTOR_SIZE;
+  return imageEndAddr <= eepromSectorBase;
+#else
+  // Unknown flash layout: never risk a runtime erase of program flash.
+  return false;
+#endif
+}
 // Loaded-record sanity bounds: reject a record whose values could not have
 // come from a plausible fit even if the CRC matches (e.g. a stale layout).
 const float MAG_CAL_HARD_IRON_LIMIT_UT = 1000.0f;
@@ -2178,6 +2213,11 @@ bool loadMagCalFromFlash() {
 // stale, which is harmless on the ground (failsafe holds surfaces neutral
 // with throttle cut until packets resume).
 MagCalSaveStatus saveMagCalToFlash(const MagCalFit &fit) {
+  if (!magCalFlashStoreSafe()) {
+    // Never touch flash when the image overlaps the EEPROM sector (see
+    // magCalFlashStoreSafe); the stored record, if any, is untouched.
+    return MAG_CAL_SAVE_FAILED_OLD_INTACT;
+  }
   eeprom_buffer_fill();
   MagCalFlashRecord recs[MAG_CAL_FLASH_SLOT_COUNT];
   const int8_t newest = magCalNewestValidSlot(recs);
@@ -2272,6 +2312,18 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
       }
       if (!magCalRearmed) {
         return;  // still holding the band from a finished run
+      }
+      // Refuse to start at all when a save could erase program flash: a run
+      // whose result cannot be persisted would end in a misleading failure
+      // flutter at best and must never reach the flash path at worst.
+      if (!magCalFlashStoreSafe()) {
+        static bool warnedFlashUnsafe = false;
+        if (!warnedFlashUnsafe) {
+          warnedFlashUnsafe = true;
+          Serial.println("MAGCAL disabled: firmware image overlaps the emulated-EEPROM flash sector; a save could erase program flash. Shrink the image or relocate the store.");
+        }
+        magCalRequestStartUs = 0;
+        return;
       }
       // Ground-only gates, re-checked every cycle while the hold accrues.
       const size_t channelCount =
@@ -4335,6 +4387,9 @@ void setup() {
   // run before the TRIAD coarse alignment below, which consumes the
   // calibrated field.
   loadMagCalFromFlash();
+  if (!magCalFlashStoreSafe()) {
+    Serial.println("MAGCAL WARNING: firmware image overlaps the emulated-EEPROM flash sector; in-field calibration is disabled for this build (saves could erase program flash).");
+  }
 
   // ----- Initialize EKF -----
   // Coarse-align the starting attitude from the averaged accel/mag observation
