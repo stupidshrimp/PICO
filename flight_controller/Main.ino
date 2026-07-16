@@ -2020,11 +2020,19 @@ void runMagnetometerCalibrationDebug() {
 // field calibration survives power cycles; a missing/corrupt record falls
 // back to the compiled-in HARD_IRON_BIAS / SOFT_IRON_MATRIX defaults.
 
-// Fixed-layout record (no padding: all members naturally aligned).
+// Fixed-layout record (no padding: all members naturally aligned). Two slots
+// are kept in the emulated EEPROM and saves alternate between them, writing
+// only the slot that does NOT hold the newest valid record: the previous
+// calibration therefore survives a save whose programming fails verification.
+// (Honest limit: stm32duino EEPROM emulation is a single flash sector, so the
+// flush erases the whole sector before reprogramming it from the RAM buffer.
+// A power loss mid-flush can still destroy both slots; boot then falls back
+// to the compiled-in constants -- the fail-safe direction.)
 struct MagCalFlashRecord {
   uint32_t magic;
   uint16_t version;
   uint16_t reserved;
+  uint32_t sequence;  // monotonically increasing; newest valid record wins
   float hardIron[3];
   float softIronDiag[3];
   uint32_t crc;  // CRC-32 over every byte above this field
@@ -2032,6 +2040,16 @@ struct MagCalFlashRecord {
 const uint32_t MAG_CAL_FLASH_MAGIC = 0x4C43474DUL;  // "MGCL"
 const uint16_t MAG_CAL_FLASH_VERSION = 1;
 const uint32_t MAG_CAL_FLASH_BASE_ADDR = 0;
+const uint8_t MAG_CAL_FLASH_SLOT_COUNT = 2;
+
+enum MagCalSaveStatus {
+  MAG_CAL_SAVE_OK = 0,
+  // New record failed to verify but the previous stored record is intact.
+  MAG_CAL_SAVE_FAILED_OLD_INTACT,
+  // New record failed to verify AND no stored record survives; the next boot
+  // falls back to the compiled-in constants.
+  MAG_CAL_SAVE_FAILED_STORE_LOST,
+};
 // Loaded-record sanity bounds: reject a record whose values could not have
 // come from a plausible fit even if the CRC matches (e.g. a stale layout).
 const float MAG_CAL_HARD_IRON_LIMIT_UT = 1000.0f;
@@ -2093,29 +2111,54 @@ bool magCalRecordValuesSane(const MagCalFlashRecord &rec) {
   return magCalFitValuesSane(rec.hardIron, rec.softIronDiag);
 }
 
-void magCalReadFlashRecord(MagCalFlashRecord &rec) {
+uint32_t magCalSlotAddr(uint8_t slot) {
+  return MAG_CAL_FLASH_BASE_ADDR + (uint32_t)slot * sizeof(MagCalFlashRecord);
+}
+
+// Read a slot from the (already filled) EEPROM RAM buffer.
+void magCalReadSlot(uint8_t slot, MagCalFlashRecord &rec) {
   uint8_t *bytes = reinterpret_cast<uint8_t *>(&rec);
+  const uint32_t base = magCalSlotAddr(slot);
   for (size_t i = 0; i < sizeof(rec); ++i) {
-    bytes[i] = eeprom_buffered_read_byte(MAG_CAL_FLASH_BASE_ADDR + i);
+    bytes[i] = eeprom_buffered_read_byte(base + i);
   }
+}
+
+bool magCalRecordValid(const MagCalFlashRecord &rec) {
+  return rec.magic == MAG_CAL_FLASH_MAGIC &&
+         rec.version == MAG_CAL_FLASH_VERSION &&
+         rec.crc == magCalRecordCrc(rec) && magCalRecordValuesSane(rec);
+}
+
+// Read both slots from the (already filled) buffer and return the index of
+// the newest valid record, or -1 when neither slot holds one.
+int8_t magCalNewestValidSlot(MagCalFlashRecord recs[MAG_CAL_FLASH_SLOT_COUNT]) {
+  int8_t newest = -1;
+  for (uint8_t slot = 0; slot < MAG_CAL_FLASH_SLOT_COUNT; ++slot) {
+    magCalReadSlot(slot, recs[slot]);
+    if (magCalRecordValid(recs[slot]) &&
+        (newest < 0 || recs[slot].sequence > recs[newest].sequence)) {
+      newest = (int8_t)slot;
+    }
+  }
+  return newest;
 }
 
 // Load a persisted calibration into the live matrices. Called once from
 // setup() before the EKF is aligned; returns true when a valid record was
-// applied. Any invalid record leaves the compiled-in defaults untouched.
+// applied. With no valid record the compiled-in defaults stay untouched.
 bool loadMagCalFromFlash() {
   eeprom_buffer_fill();
-  MagCalFlashRecord rec;
-  magCalReadFlashRecord(rec);
-  if (rec.magic != MAG_CAL_FLASH_MAGIC || rec.version != MAG_CAL_FLASH_VERSION ||
-      rec.crc != magCalRecordCrc(rec) || !magCalRecordValuesSane(rec)) {
+  MagCalFlashRecord recs[MAG_CAL_FLASH_SLOT_COUNT];
+  const int8_t newest = magCalNewestValidSlot(recs);
+  if (newest < 0) {
     Serial.println("MAGCAL no valid stored calibration; using compiled-in constants.");
     return false;
   }
   MagCalFit fit;
   for (int axis = 0; axis < 3; ++axis) {
-    fit.hardIron[axis] = rec.hardIron[axis];
-    fit.softIronDiag[axis] = rec.softIronDiag[axis];
+    fit.hardIron[axis] = recs[newest].hardIron[axis];
+    fit.softIronDiag[axis] = recs[newest].softIronDiag[axis];
   }
   applyMagCalFit(fit);
   Serial.println("MAGCAL loaded stored calibration from flash:");
@@ -2124,29 +2167,37 @@ bool loadMagCalFromFlash() {
   return true;
 }
 
-// Persist a fit. GROUND ONLY: the emulated-EEPROM sector erase inside
+// Persist a fit into the slot NOT holding the newest valid record, so the
+// previous calibration stays stored until the new record verifies (see the
+// MagCalFlashRecord comment for the two-slot scheme and its single-sector
+// limits). GROUND ONLY: the emulated-EEPROM sector erase inside
 // eeprom_buffer_flush() stalls code execution well past the 100 ms flight
 // watchdog window (up to ~1-2 s on this flash), so the IWDG is temporarily
 // re-armed with the wide recovery window around the flush -- the same
 // IWatchdog.begin() re-arm pattern setup() uses -- and RC will briefly go
 // stale, which is harmless on the ground (failsafe holds surfaces neutral
-// with throttle cut until packets resume). Returns true when the re-read
-// record verifies.
-bool saveMagCalToFlash(const MagCalFit &fit) {
+// with throttle cut until packets resume).
+MagCalSaveStatus saveMagCalToFlash(const MagCalFit &fit) {
+  eeprom_buffer_fill();
+  MagCalFlashRecord recs[MAG_CAL_FLASH_SLOT_COUNT];
+  const int8_t newest = magCalNewestValidSlot(recs);
+  const uint8_t targetSlot = (newest == 0) ? 1 : 0;
+
   MagCalFlashRecord rec;
   rec.magic = MAG_CAL_FLASH_MAGIC;
   rec.version = MAG_CAL_FLASH_VERSION;
   rec.reserved = 0;
+  rec.sequence = (newest < 0) ? 1UL : recs[newest].sequence + 1UL;
   for (int axis = 0; axis < 3; ++axis) {
     rec.hardIron[axis] = fit.hardIron[axis];
     rec.softIronDiag[axis] = fit.softIronDiag[axis];
   }
   rec.crc = magCalRecordCrc(rec);
 
-  eeprom_buffer_fill();
   const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&rec);
+  const uint32_t base = magCalSlotAddr(targetSlot);
   for (size_t i = 0; i < sizeof(rec); ++i) {
-    eeprom_buffered_write_byte(MAG_CAL_FLASH_BASE_ADDR + i, bytes[i]);
+    eeprom_buffered_write_byte(base + i, bytes[i]);
   }
 
   IWatchdog.begin(WATCHDOG_RECOVERY_BOOT_TIMEOUT_US);
@@ -2158,8 +2209,16 @@ bool saveMagCalToFlash(const MagCalFit &fit) {
   // Verify the sector actually took the record (flush has no return value).
   eeprom_buffer_fill();
   MagCalFlashRecord readBack;
-  magCalReadFlashRecord(readBack);
-  return memcmp(&readBack, &rec, sizeof(rec)) == 0;
+  magCalReadSlot(targetSlot, readBack);
+  if (memcmp(&readBack, &rec, sizeof(rec)) == 0) {
+    return MAG_CAL_SAVE_OK;
+  }
+  // The new record did not take. Report whether the previous stored
+  // calibration survived the sector rewrite so the operator log is truthful
+  // about what the next boot will load.
+  MagCalFlashRecord after[MAG_CAL_FLASH_SLOT_COUNT];
+  return (magCalNewestValidSlot(after) >= 0) ? MAG_CAL_SAVE_FAILED_OLD_INTACT
+                                             : MAG_CAL_SAVE_FAILED_STORE_LOST;
 }
 
 bool magCalChannelInRequestBand() {
@@ -2284,7 +2343,8 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
         // (live and stored) and answers with the failure flutter, so the
         // operator retries instead of trusting a calibration that would
         // silently evaporate on the next power cycle.
-        if (saveMagCalToFlash(fit)) {
+        const MagCalSaveStatus saveStatus = saveMagCalToFlash(fit);
+        if (saveStatus == MAG_CAL_SAVE_OK) {
           applyMagCalFit(fit);
           // Re-open the innovation-gate warmup window: a large calibration
           // correction can move the measured heading further from the current
@@ -2303,7 +2363,9 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
           magCalSignalStartUs = micros();
           magCalState = MAG_CAL_SIGNAL_SUCCESS;
         } else {
-          Serial.println("MAGCAL failed: flash save did not verify; keeping previous calibration. Rerun the calibration.");
+          Serial.println(saveStatus == MAG_CAL_SAVE_FAILED_OLD_INTACT
+                             ? "MAGCAL failed: flash save did not verify; previous stored calibration intact. Rerun the calibration."
+                             : "MAGCAL failed: flash save did not verify AND no stored calibration survives (next boot uses compiled-in constants). Rerun the calibration.");
           magCalSignalStartUs = micros();
           magCalState = MAG_CAL_SIGNAL_FAILURE;
         }
@@ -4502,7 +4564,15 @@ void loop() {
       controlDt = static_cast<float>(SS_DT);
     }
     lastControlUpdateUs = controlUpdateUs;
-    
+
+    // Maintain the airborne latch on EVERY control cycle, before and
+    // independent of the IMU read below: the latch is built purely from
+    // baro/airspeed/GPS state, and the in-field magnetometer calibration's
+    // ground-only gates rely on it staying live even while the IMU/bus is
+    // failing (an IMU fault must not be able to freeze the latch at "on the
+    // ground" and let an in-flight calibration request through).
+    updateAirborneState(controlUpdateUs);
+
     // Read sensor data from the IMU. In fast mode this is a fresh read at the
     // correction instant (independent of the high-rate predictor's own reads) so
     // the accel/mag gate, centripetal compensation, and control attitude are never
@@ -4620,15 +4690,6 @@ void loop() {
       Y[4][0] = magCalY;
       Y[5][0] = magCalZ;
 #endif
-
-      // Maintain the airborne latch in EVERY build, not just when the
-      // centripetal feed-forward (its original consumer) is compiled in: the
-      // in-field magnetometer calibration's ground-only entry/abort gates
-      // read aircraftAirborne, and with the update left inside the
-      // (default-off) FC_ACCEL_CENTRIPETAL_COMPENSATION block the latch would
-      // stay false forever and those gates could not veto an in-flight
-      // calibration request.
-      updateAirborneState(controlUpdateUs);
 
 #if FC_ACCEL_CENTRIPETAL_COMPENSATION
       // Subtract the kinematic acceleration (a ~= dV/dt + omega x V) from the
