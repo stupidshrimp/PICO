@@ -14,14 +14,12 @@
 
 
 /* Decouple the magnetometer from roll & pitch.
- *   0           = legacy 3-axis magnetometer fusion. The full body-frame field
+ *   0 (default) = legacy 3-axis magnetometer fusion. The full body-frame field
  *                 is a measurement, so its Jacobian couples into every attitude
  *                 DOF and magnetic disturbances (hard/soft-iron residual, motor
  *                 current, local anomalies, a wrong inclination constant) bleed
- *                 into roll & pitch. This is the primary source of the
- *                 heading-dependent roll/pitch offset and the slow attitude
- *                 drift observed near magnetic disturbances.
- *   1 (default) = the magnetometer feeds ONLY a tilt-compensated heading
+ *                 into roll & pitch. This is the flight-proven, tuned path.
+ *   1           = the magnetometer feeds ONLY a tilt-compensated heading
  *                 measurement (a scalar yaw), so roll & pitch come purely from
  *                 the accelerometer + gyro and are immune to magnetic error.
  *                 This is how mainstream autopilots (PX4/ArduPilot-style AHRS)
@@ -31,11 +29,20 @@
  *                 proof (yaw Jacobian vs finite difference, innovation sign,
  *                 and the decoupling property through the real EKF class).
  *
- * Default ON. Set to 0 for a one-line rollback to the legacy 3-axis fusion;
- * that path is bit-for-bit unchanged. R_INIT_YAW and the heading gate
- * (MAG_YAW_INNOVATION_GATE) may still benefit from flight tuning. */
+ * DISABLED pending flight debugging. The measurement model is numerically
+ * correct and passes the host tests, but in flight the attitude estimate went
+ * unstable ("haywire"): decoupling makes roll & pitch depend ENTIRELY on the
+ * accel/gyro path while the mag provides only a weakly observable scalar yaw,
+ * and R_INIT_YAW plus the heading gate (MAG_YAW_INNOVATION_GATE) were never
+ * flight-tuned -- unlike the legacy 3-axis path, which was. Reproducing the
+ * divergence needs flight logs, not code inspection, so the default reverts to
+ * the proven fusion.
+ *
+ * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Do not re-enable
+ * for flight until the instability is root-caused from logs and R_INIT_YAW /
+ * MAG_YAW_INNOVATION_GATE are tuned on the airframe. */
 #ifndef FC_EKF_DECOUPLE_MAG
-#define FC_EKF_DECOUPLE_MAG 1
+#define FC_EKF_DECOUPLE_MAG 0
 #endif
 
 /* State Space dimension */
@@ -51,8 +58,8 @@
 
 
 /* High-rate gyro prediction for the attitude EKF.
- *   0 (default) = the proven single-rate predict+correct cycle at 125 Hz.
- *   1           = run the cheap gyro PREDICTION at EKF_PREDICT_PERIOD_US (lower
+ *   0           = the proven single-rate predict+correct cycle at 125 Hz.
+ *   1 (default) = run the cheap gyro PREDICTION at EKF_PREDICT_PERIOD_US (lower
  *                 output latency and a smaller integration step) while the
  *                 noisier accel/mag CORRECTION still runs at the original 125 Hz,
  *                 on the latest sample and through the identical gates.
@@ -67,11 +74,7 @@
  * stays identical to the proven filter.
  *
  * Default ON. Set to 0 for a one-line rollback to the proven single-rate filter;
- * that path is bit-for-bit identical to the previous behavior.
- *
- * Before flying, confirm CPU/I2C headroom at the prediction rate (~2x the IMU
- * reads/predicts), that the IWDG watchdog stays happy, and that attitude
- * tracks correctly (no lag, no periodic snap) while rotating. */
+ * that path is bit-for-bit identical to the previous behavior. */
 #ifndef FC_EKF_FAST_PREDICT
 #define FC_EKF_FAST_PREDICT 1
 #endif
