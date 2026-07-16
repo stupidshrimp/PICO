@@ -2290,6 +2290,21 @@ uint16_t magCalRampUs(uint16_t fromUs, uint16_t toUs,
   return (uint16_t)((int32_t)fromUs + (deltaUs * elapsedMs) / durationMs);
 }
 
+// Elapsed since the current signal started, clamped at zero. The
+// SIGNAL_SUCCESS and save-failed SIGNAL_FAILURE transitions set
+// magCalSignalStartUs = micros() AFTER saveMagCalToFlash() blocks ~1-2 s, but
+// the servo loop captured this cycle's nowUs BEFORE that stall -- so on the
+// transition cycle nowUs precedes magCalSignalStartUs and the raw unsigned
+// difference underflows to a near-2^32 value. A signed clamp holds elapsed at
+// zero for that one cycle (the surfaces stay at the pose they already hold /
+// the flutter starts cleanly at SERVO_MIN_US) instead of blipping to center;
+// the signal windows are only a few seconds, so the int32 interpretation
+// never overflows for a legitimate elapsed.
+uint32_t magCalSignalElapsedUs(uint32_t nowUs) {
+  const int32_t elapsed = (int32_t)(nowUs - magCalSignalStartUs);
+  return (elapsed > 0) ? (uint32_t)elapsed : 0UL;
+}
+
 // Servo command for the calibration pose and the completion signals. Only
 // meaningful while magCalState != MAG_CAL_IDLE; the state machine below owns
 // the transitions, this just maps (state, elapsed) to a surface position.
@@ -2301,7 +2316,7 @@ uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
       // One continuous slow glide starting from the sampling pose the
       // surfaces are already holding (no jump anywhere in the signal):
       // pose -> min -> max -> center.
-      uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
+      uint32_t elapsedUs = magCalSignalElapsedUs(nowUs);
       if (elapsedUs < MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US) {
         return magCalRampUs(SERVO_CALIBRATION_ACTIVE_US, SERVO_MIN_US,
                             elapsedUs, MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US);
@@ -2319,7 +2334,7 @@ uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
       return SERVO_CENTER_US;
     }
     case MAG_CAL_SIGNAL_FAILURE: {
-      const uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
+      const uint32_t elapsedUs = magCalSignalElapsedUs(nowUs);
       const uint32_t step = elapsedUs / MAG_CAL_SIGNAL_WAG_STEP_US;
       if (step >= magCalFailureWagSteps) return SERVO_CENTER_US;
       return (step & 1UL) ? SERVO_MAX_US : SERVO_MIN_US;
