@@ -130,6 +130,10 @@ from modules.sortie_analysis import SortieAnalysisWorker, report_html
 from modules.sorties_page import SortiesPage
 from modules.documentation_page import DocumentationPage
 from modules.preflight_page import PreFlightChecklistPage
+from modules.compass_cal import (
+    compass_cal_start_blockers,
+    throttle_mode_channel_value,
+)
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -223,6 +227,10 @@ class MainWindow(QMainWindow):
         self.throttle_target_airspeed_mph = 20.0
         self.throttle_mode_channel = 6  # Channel 7/AUX3 (0-based index), CH5 is reserved.
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
+        # CH7/AUX3 also carries the on-ground compass-calibration request as a
+        # distinct center-band value while this flag is set (see
+        # modules/compass_cal.py and the FC's ground-only entry gates).
+        self.compass_cal_active = False
         self._setup_throttle_mode_indicator()
         self.update_throttle_mode_label()
         self.throttle_mode_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
@@ -2269,6 +2277,10 @@ class MainWindow(QMainWindow):
                     self._airborne_takeoff_start_time = None
                     self._airborne_landing_start_time = None
                     self._update_airborne_indicator()
+                    # A compass-calibration request must never ride into
+                    # flight; the FC gates this itself, but drop the request
+                    # band immediately so CH7 returns to the throttle mode.
+                    self._finish_compass_cal(reason="aircraft airborne")
             else:
                 self._airborne_takeoff_start_time = None
             return
@@ -2291,6 +2303,85 @@ class MainWindow(QMainWindow):
 
     def _is_airborne(self) -> bool:
         return self.airborne_state == "airborne"
+
+    # ------------------------------------------------------------------
+    # Compass calibration (configuration page)
+    # ------------------------------------------------------------------
+    def _on_compass_cal_button_clicked(self) -> None:
+        """Start or finish the FC's on-ground compass calibration."""
+        if self.compass_cal_active:
+            self._finish_compass_cal()
+            return
+
+        blockers = compass_cal_start_blockers(
+            transmission_active=bool(self.transmission_active),
+            airborne_state=self.airborne_state,
+            control_mode=self.control_mode,
+            throttle_mode=self.throttle_mode,
+            throttle_percent=float(getattr(self, "throttle_percent", 0) or 0),
+        )
+        if blockers:
+            self._set_compass_cal_status(
+                "Cannot start compass calibration: " + "; ".join(blockers) + "."
+            )
+            return
+
+        # Zero the queued throttle state (not just the masked channel) so
+        # nothing accumulated before the click can surface later.
+        self.cut_throttle()
+        self.compass_cal_active = True
+        self._update_compass_cal_button()
+        self._set_compass_cal_status(
+            "Calibration requested. The FC holds the control surfaces in the "
+            "calibration pose about a second after the request arrives; once "
+            "they move, rotate the aircraft slowly through every orientation "
+            "(nose up/down, each wing down, inverted, and full yaw sweeps), "
+            "then click Finish. Success = one slow full sweep of the "
+            "surfaces (calibration applied and saved to the FC's flash); "
+            "failure = a rapid flutter (previous calibration kept)."
+        )
+
+    def _finish_compass_cal(self, reason: str | None = None) -> None:
+        """Drop the CH7 request band so the FC ends (or never starts) the run."""
+        if not self.compass_cal_active:
+            return
+        self.compass_cal_active = False
+        # CH3 was only masked while the request was active; throttle hotkeys
+        # and the mode shortcut can still have queued state during the run.
+        # Cut throttle (zero percent AND target, back to Manual throttle) so
+        # the first unmasked packet cannot spin the motor while the operator
+        # is still handling the aircraft.
+        self.cut_throttle()
+        self._update_compass_cal_button()
+        if reason:
+            self._set_compass_cal_status(
+                f"Compass calibration cancelled: {reason}. The FC keeps its "
+                "previous calibration unless a run had already finished."
+            )
+        else:
+            self._set_compass_cal_status(
+                "Finishing calibration. Watch the control surfaces: one slow "
+                "full sweep means the new calibration is applied and saved to "
+                "the FC's flash; a rapid flutter means it was not applied "
+                "(bad fit or flash-save failure) and the previous calibration "
+                "is kept."
+            )
+
+    def _update_compass_cal_button(self) -> None:
+        button = getattr(self, "compass_cal_button", None)
+        if button is None:
+            return
+        button.setText(
+            "Finish compass calibration" if self.compass_cal_active else "Calibrate compass"
+        )
+        styles = getattr(self, "_compass_cal_button_styles", None)
+        if styles:
+            button.setStyleSheet(styles[self.compass_cal_active])
+
+    def _set_compass_cal_status(self, message: str) -> None:
+        label = getattr(self, "compass_cal_status_label", None)
+        if label is not None:
+            label.setText(message)
 
     def update_yaw(self) -> None:
         """Gradually move the yaw indicator toward its target value."""
@@ -3576,6 +3667,15 @@ class MainWindow(QMainWindow):
                 0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
             ) / 100.0
         channels[2] = int(channel_fraction * throttle_span + throttle_min)
+        if self.compass_cal_active:
+            # Defense-in-depth while a compass calibration is requested: the
+            # FC cuts throttle once its run starts, but between the request
+            # going out and the FC entering the run (1 s trigger hold plus
+            # ground gates) CH3 is still live manual throttle. Hold it at
+            # minimum so a bumped throttle cannot spin the motor while the
+            # operator is handling the aircraft; this also satisfies the FC's
+            # throttle-stick-at-minimum entry gate.
+            channels[2] = throttle_min
 
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
@@ -3589,9 +3689,12 @@ class MainWindow(QMainWindow):
         channels[self.control_mode_channel] = mode_value
 
         # Throttle mode channel: AUX3/CH7 avoids CH5/AUX1 arming and CH6/AUX2
-        # flight-control mode. Low is manual throttle, high is FC auto throttle.
-        throttle_mode_value = 1700 if self.throttle_mode == "Auto Throttle" else 400
-        channels[self.throttle_mode_channel] = throttle_mode_value
+        # flight-control mode. Low is manual throttle, high is FC auto
+        # throttle, and the center band requests the FC's on-ground compass
+        # calibration while the configuration-page calibration is running.
+        channels[self.throttle_mode_channel] = throttle_mode_channel_value(
+            self.throttle_mode, self.compass_cal_active
+        )
 
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)
@@ -3827,6 +3930,53 @@ class MainWindow(QMainWindow):
         self.preflight_verification_button.clicked.connect(
             self._show_preflight_verification
         )
+
+        self.compass_cal_button = QPushButton("Calibrate compass")
+        self.compass_cal_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.compass_cal_button.setMinimumHeight(44)
+        self.compass_cal_button.setSizePolicy(button_policy)
+        self._compass_cal_button_styles = {
+            # Idle: purple, to stand apart from the transmission and preflight
+            # buttons. Active: amber "in progress" like the transmission hold.
+            False: (
+                "QPushButton {"
+                "background-color: rgb(106, 27, 154);"
+                "color: white;"
+                "font-weight: bold;"
+                "border-radius: 8px;"
+                "padding: 8px 16px;"
+                "}"
+                "QPushButton:hover {background-color: rgb(123, 31, 162);}"
+                "QPushButton:pressed {background-color: rgb(74, 20, 140);}"
+                "QPushButton:disabled {background-color: rgb(80, 80, 80); color: rgb(180, 180, 180);}"
+            ),
+            True: (
+                "QPushButton {"
+                "background-color: rgb(255, 140, 0);"
+                "color: white;"
+                "font-weight: bold;"
+                "border-radius: 8px;"
+                "padding: 8px 16px;"
+                "}"
+                "QPushButton:hover {background-color: rgb(255, 160, 16);}"
+                "QPushButton:pressed {background-color: rgb(204, 112, 0);}"
+            ),
+        }
+        self.compass_cal_button.setStyleSheet(self._compass_cal_button_styles[False])
+        layout.addWidget(self.compass_cal_button)
+
+        self.compass_cal_status_label = QLabel(
+            "Compass calibration writes new magnetometer constants to the FC. "
+            "Run it on the ground with the throttle at zero and both modes Manual."
+        )
+        self.compass_cal_status_label.setWordWrap(True)
+        self.compass_cal_status_label.setStyleSheet(
+            "color: rgb(220, 220, 220); padding: 4px 2px;"
+        )
+        layout.addWidget(self.compass_cal_status_label)
+        layout.addSpacing(12)
+
+        self.compass_cal_button.clicked.connect(self._on_compass_cal_button_clicked)
 
         ports = ["Not connected"] + [p.device for p in list_ports.comports()]
 
@@ -4994,6 +5144,9 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
+        # Without RC frames the FC aborts any running compass calibration on
+        # its own (stale-link abort); reflect that in the button state.
+        self._finish_compass_cal(reason="packet transmission stopped")
         self._transmission_pressed_while_inactive = False
         self._transmission_hold_in_progress = False
         self._transmission_hold_timer.stop()
@@ -5294,6 +5447,11 @@ class MainWindow(QMainWindow):
         intact, so a later re-plug reconnects to the same device automatically
         instead of the saved port being overwritten with "Not connected".
         """
+        # Any CRSF teardown (hot-unplug or manual reselect) invalidates an
+        # active compass-calibration request: without this, the stale flag
+        # would put CH7 straight back into the request band on auto-reconnect
+        # and could restart the FC calibration with nobody at the button.
+        self._finish_compass_cal(reason="CRSF link disconnected or reselected")
         if not preserve_preference:
             self.crsf_cfg["port"] = port
             self._crsf_desired_port = port
