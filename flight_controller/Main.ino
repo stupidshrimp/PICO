@@ -897,10 +897,10 @@ const uint16_t SERVO_INDICATOR_HOLD_MS = 350;
 // aircraft through every orientation. Leaving the band finishes the run: a
 // valid fit is first saved to emulated-flash EEPROM and, once the record
 // verifies, applied to the live HARD_IRON_BIAS / SOFT_IRON_MATRIX and
-// acknowledged with a slow min->max->center sweep (which therefore strictly
-// means "applied AND reloads on every boot"); an invalid fit OR a save that
-// fails to verify keeps the previous constants and is signalled with a rapid
-// surface flutter instead.
+// acknowledged with one continuous SLOW ramp of the surfaces (which therefore
+// strictly means "applied AND reloads on every boot"); an invalid fit OR a
+// save that fails to verify keeps the previous constants and is signalled
+// with a rapid surface flutter instead.
 const uint16_t MAG_CAL_REQUEST_BAND_HALF_WIDTH = 100;
 const uint16_t MAG_CAL_REQUEST_MIN = RC_INPUT_CENTER - MAG_CAL_REQUEST_BAND_HALF_WIDTH;
 const uint16_t MAG_CAL_REQUEST_MAX = RC_INPUT_CENTER + MAG_CAL_REQUEST_BAND_HALF_WIDTH;
@@ -918,9 +918,30 @@ const uint32_t MAG_CAL_MAX_DURATION_US = 180000000UL;
 const uint32_t MAG_CAL_MIN_SAMPLES = 500;
 // Completion signal timing (non-blocking; the 100 ms flight watchdog forbids
 // the blocking delay() sweeps the boot-time signals use).
-const uint32_t MAG_CAL_SIGNAL_SWEEP_STEP_US = 350000UL;  // success: min, max, center
+//
+// SUCCESS is one continuous SLOW ramp (sampling pose -> min -> max -> center):
+// the surfaces glide and never jump. FAILURE stays a rapid full-travel
+// flutter. The two must be unmistakable from across a field: the original
+// success signal STEPPED instantly between the same extremes the flutter
+// uses (350 ms holds vs 150 ms), and in the field a VERIFIED save was read
+// as "the servos move rapidly" == the failure signal == "constants failed
+// to save". Segment durations are sized for a roughly constant, visibly
+// gliding sweep rate over each segment's travel.
+const uint32_t MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US = 1000000UL;
+const uint32_t MAG_CAL_SUCCESS_RAMP_MIN_TO_MAX_US = 1400000UL;
+const uint32_t MAG_CAL_SUCCESS_RAMP_MAX_TO_CENTER_US = 700000UL;
+const uint32_t MAG_CAL_SUCCESS_CENTER_HOLD_US = 350000UL;
+const uint32_t MAG_CAL_SUCCESS_SIGNAL_TOTAL_US =
+    MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US + MAG_CAL_SUCCESS_RAMP_MIN_TO_MAX_US +
+    MAG_CAL_SUCCESS_RAMP_MAX_TO_CENTER_US + MAG_CAL_SUCCESS_CENTER_HOLD_US;
 const uint32_t MAG_CAL_SIGNAL_WAG_STEP_US = 150000UL;    // failure: rapid flutter
+// The flutter length encodes the failure class so the operator can tell
+// "rotate again" from "persistence problem" without the USB serial log:
+// 4 wags = the run was rejected or aborted (coverage/samples/ground gates),
+// 8 wags = the fit was good but the flash save did not verify.
 const uint8_t MAG_CAL_SIGNAL_WAG_STEPS = 4;
+const uint8_t MAG_CAL_SIGNAL_WAG_STEPS_SAVE_FAILED = 8;
+const uint32_t MAG_CAL_SIGNAL_WAG_CENTER_HOLD_US = 350000UL;
 
 enum MagCalState : uint8_t {
   MAG_CAL_IDLE = 0,
@@ -932,6 +953,10 @@ MagCalState magCalState = MAG_CAL_IDLE;
 uint32_t magCalRequestStartUs = 0;   // 0 = request band not currently held
 uint32_t magCalSamplingStartUs = 0;
 uint32_t magCalSignalStartUs = 0;
+// Flutter length for the CURRENT failure signal (see the WAG_STEPS constants:
+// 4 = run rejected/aborted, 8 = flash save did not verify). Set on every
+// SIGNAL_FAILURE entry.
+uint8_t magCalFailureWagSteps = MAG_CAL_SIGNAL_WAG_STEPS;
 // Require CH7 to leave the request band between runs so holding it after a
 // finished calibration cannot immediately re-trigger a new one.
 bool magCalRearmed = true;
@@ -2247,6 +2272,24 @@ bool magCalChannelInRequestBand() {
   return value >= MAG_CAL_REQUEST_MIN && value <= MAG_CAL_REQUEST_MAX;
 }
 
+// Linear servo ramp for the success signal: fromUs at elapsed 0, toUs at
+// elapsed durationUs, clamped at toUs after. Millisecond resolution keeps the
+// int32 interpolation product far from overflow (|delta| <= 1000 us of travel
+// times <= a few thousand ms).
+uint16_t magCalRampUs(uint16_t fromUs, uint16_t toUs,
+                      uint32_t elapsedUs, uint32_t durationUs) {
+  if (elapsedUs >= durationUs) {
+    return toUs;
+  }
+  const int32_t deltaUs = (int32_t)toUs - (int32_t)fromUs;
+  const int32_t elapsedMs = (int32_t)(elapsedUs / 1000UL);
+  const int32_t durationMs = (int32_t)(durationUs / 1000UL);
+  if (durationMs <= 0) {
+    return toUs;
+  }
+  return (uint16_t)((int32_t)fromUs + (deltaUs * elapsedMs) / durationMs);
+}
+
 // Servo command for the calibration pose and the completion signals. Only
 // meaningful while magCalState != MAG_CAL_IDLE; the state machine below owns
 // the transitions, this just maps (state, elapsed) to a surface position.
@@ -2255,15 +2298,30 @@ uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
     case MAG_CAL_SAMPLING:
       return SERVO_CALIBRATION_ACTIVE_US;
     case MAG_CAL_SIGNAL_SUCCESS: {
-      const uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
-      if (elapsedUs < MAG_CAL_SIGNAL_SWEEP_STEP_US) return SERVO_MIN_US;
-      if (elapsedUs < 2UL * MAG_CAL_SIGNAL_SWEEP_STEP_US) return SERVO_MAX_US;
+      // One continuous slow glide starting from the sampling pose the
+      // surfaces are already holding (no jump anywhere in the signal):
+      // pose -> min -> max -> center.
+      uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
+      if (elapsedUs < MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US) {
+        return magCalRampUs(SERVO_CALIBRATION_ACTIVE_US, SERVO_MIN_US,
+                            elapsedUs, MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US);
+      }
+      elapsedUs -= MAG_CAL_SUCCESS_RAMP_POSE_TO_MIN_US;
+      if (elapsedUs < MAG_CAL_SUCCESS_RAMP_MIN_TO_MAX_US) {
+        return magCalRampUs(SERVO_MIN_US, SERVO_MAX_US,
+                            elapsedUs, MAG_CAL_SUCCESS_RAMP_MIN_TO_MAX_US);
+      }
+      elapsedUs -= MAG_CAL_SUCCESS_RAMP_MIN_TO_MAX_US;
+      if (elapsedUs < MAG_CAL_SUCCESS_RAMP_MAX_TO_CENTER_US) {
+        return magCalRampUs(SERVO_MAX_US, SERVO_CENTER_US,
+                            elapsedUs, MAG_CAL_SUCCESS_RAMP_MAX_TO_CENTER_US);
+      }
       return SERVO_CENTER_US;
     }
     case MAG_CAL_SIGNAL_FAILURE: {
       const uint32_t elapsedUs = (uint32_t)(nowUs - magCalSignalStartUs);
       const uint32_t step = elapsedUs / MAG_CAL_SIGNAL_WAG_STEP_US;
-      if (step >= MAG_CAL_SIGNAL_WAG_STEPS) return SERVO_CENTER_US;
+      if (step >= magCalFailureWagSteps) return SERVO_CENTER_US;
       return (step & 1UL) ? SERVO_MAX_US : SERVO_MIN_US;
     }
     default:
@@ -2332,6 +2390,7 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
           (uint32_t)(nowUs - magCalSamplingStartUs) > MAG_CAL_MAX_DURATION_US) {
         Serial.println("MAGCAL aborted (RC stale, airborne, non-Manual mode, or timeout); keeping previous calibration.");
         magCalSignalStartUs = nowUs;
+        magCalFailureWagSteps = MAG_CAL_SIGNAL_WAG_STEPS;
         magCalState = MAG_CAL_SIGNAL_FAILURE;
         return;
       }
@@ -2360,6 +2419,7 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
         // saving/applying and report the run as failed instead.
         Serial.println("MAGCAL failed: fit outside plausibility bounds (glitched magnetometer samples?); keeping previous calibration.");
         magCalSignalStartUs = nowUs;
+        magCalFailureWagSteps = MAG_CAL_SIGNAL_WAG_STEPS;
         magCalState = MAG_CAL_SIGNAL_FAILURE;
         return;
       }
@@ -2394,6 +2454,10 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
                              ? "MAGCAL failed: flash save did not verify; previous stored calibration intact. Rerun the calibration."
                              : "MAGCAL failed: flash save did not verify AND no stored calibration survives (next boot uses compiled-in constants). Rerun the calibration.");
           magCalSignalStartUs = micros();
+          // Long flutter: the fit itself was good -- the operator's rotation
+          // was fine and re-doing it alone won't help, the flash store is the
+          // problem.
+          magCalFailureWagSteps = MAG_CAL_SIGNAL_WAG_STEPS_SAVE_FAILED;
           magCalState = MAG_CAL_SIGNAL_FAILURE;
         }
       } else {
@@ -2401,14 +2465,15 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
                            ? "MAGCAL failed: not enough valid samples; keeping previous calibration."
                            : "MAGCAL failed: axis coverage too small (rotate through all orientations); keeping previous calibration.");
         magCalSignalStartUs = nowUs;
+        magCalFailureWagSteps = MAG_CAL_SIGNAL_WAG_STEPS;
         magCalState = MAG_CAL_SIGNAL_FAILURE;
       }
       break;
     }
     case MAG_CAL_SIGNAL_SUCCESS: {
-      // min, max, then a center hold, all one sweep step long.
+      // The three slow ramp segments, then a center hold.
       if ((uint32_t)(nowUs - magCalSignalStartUs) >=
-          3UL * MAG_CAL_SIGNAL_SWEEP_STEP_US) {
+          MAG_CAL_SUCCESS_SIGNAL_TOTAL_US) {
         magCalState = MAG_CAL_IDLE;
       }
       break;
@@ -2416,8 +2481,8 @@ void updateMagCalState(uint32_t nowUs, bool rcFresh) {
     case MAG_CAL_SIGNAL_FAILURE: {
       // The wag steps, then a center hold before releasing the surfaces.
       if ((uint32_t)(nowUs - magCalSignalStartUs) >=
-          (uint32_t)MAG_CAL_SIGNAL_WAG_STEPS * MAG_CAL_SIGNAL_WAG_STEP_US +
-              MAG_CAL_SIGNAL_SWEEP_STEP_US) {
+          (uint32_t)magCalFailureWagSteps * MAG_CAL_SIGNAL_WAG_STEP_US +
+              MAG_CAL_SIGNAL_WAG_CENTER_HOLD_US) {
         magCalState = MAG_CAL_IDLE;
       }
       break;

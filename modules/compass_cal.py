@@ -10,11 +10,18 @@ CH7/AUX3 carries three bands instead of two (see flight_controller/Main.ino,
 The FC only honors the request on the ground (not airborne-latched, Manual
 control mode, throttle stick at minimum) after the band is held for a full
 second, holds the control surfaces in a distinctive pose while the operator
-rotates the aircraft, and ends the run when the channel leaves the band: a
-valid fit is saved to the FC's flash and, once the record verifies, applied
-live and acknowledged with a slow full-travel sweep; an invalid fit or a
-save that fails to verify keeps the previous calibration and is signalled
-with a rapid surface flutter.
+rotates the aircraft, and ends the run when the channel leaves the band.
+Right after the band is left the FC stalls for roughly 1-2 s while the
+flash sector is erased (the surfaces freeze at the pose), then answers with
+exactly one of two signals:
+
+* SUCCESS -- one continuous SLOW glide of the surfaces (pose -> min -> max
+  -> center, ~3.5 s, never jumping): the fit verified in flash and was
+  applied live, and it reloads on every boot.
+* FAILURE -- a rapid full-travel flutter; the previous calibration is kept.
+  A short flutter (4 wags) means the run was rejected or aborted (rotate
+  through more orientations and retry); a long flutter (8 wags) means the
+  fit was good but the flash save did not verify.
 
 Kept free of Qt imports so the channel semantics are unit-testable headless
 (the package initializer is deliberately empty for the same reason).

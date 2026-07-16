@@ -2336,9 +2336,11 @@ class MainWindow(QMainWindow):
             "calibration pose about a second after the request arrives; once "
             "they move, rotate the aircraft slowly through every orientation "
             "(nose up/down, each wing down, inverted, and full yaw sweeps), "
-            "then click Finish. Success = one slow full sweep of the "
-            "surfaces (calibration applied and saved to the FC's flash); "
-            "failure = a rapid flutter (previous calibration kept)."
+            "then click Finish. After Finish the surfaces freeze for a "
+            "second or two while the FC writes flash, then signal the "
+            "result: success = one continuous SLOW glide of the surfaces "
+            "(calibration applied and saved); failure = a rapid flutter "
+            "(previous calibration kept)."
         )
 
     def _finish_compass_cal(self, reason: str | None = None) -> None:
@@ -2360,11 +2362,16 @@ class MainWindow(QMainWindow):
             )
         else:
             self._set_compass_cal_status(
-                "Finishing calibration. Watch the control surfaces: one slow "
-                "full sweep means the new calibration is applied and saved to "
-                "the FC's flash; a rapid flutter means it was not applied "
-                "(bad fit or flash-save failure) and the previous calibration "
-                "is kept."
+                "Finishing calibration. The surfaces first FREEZE for a "
+                "second or two while the FC erases and writes flash -- that "
+                "pause is normal. Then watch them: one continuous SLOW glide "
+                "(pose to min to max to center, about 3.5 s) means the new "
+                "calibration is applied and saved to the FC's flash. A rapid "
+                "flutter means it was not applied and the previous "
+                "calibration is kept: a short flutter (4 wags) means the run "
+                "was rejected -- rotate through more orientations and retry; "
+                "a long flutter (8 wags) means the fit was good but the "
+                "flash save failed to verify."
             )
 
     def _update_compass_cal_button(self) -> None:
