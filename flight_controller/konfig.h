@@ -58,8 +58,8 @@
 
 
 /* High-rate gyro prediction for the attitude EKF.
- *   0 (default) = the proven single-rate predict+correct cycle at 125 Hz.
- *   1           = run the cheap gyro PREDICTION at EKF_PREDICT_PERIOD_US (lower
+ *   0           = the proven single-rate predict+correct cycle at 125 Hz.
+ *   1 (default) = run the cheap gyro PREDICTION at EKF_PREDICT_PERIOD_US (lower
  *                 output latency and a smaller integration step) while the
  *                 noisier accel/mag CORRECTION still runs at the original 125 Hz,
  *                 on the latest sample and through the identical gates.
@@ -74,11 +74,7 @@
  * stays identical to the proven filter.
  *
  * Default ON. Set to 0 for a one-line rollback to the proven single-rate filter;
- * that path is bit-for-bit identical to the previous behavior.
- *
- * Before flying, confirm CPU/I2C headroom at the prediction rate (~2x the IMU
- * reads/predicts), that the IWDG watchdog stays happy, and that attitude
- * tracks correctly (no lag, no periodic snap) while rotating. */
+ * that path is bit-for-bit identical to the previous behavior. */
 #ifndef FC_EKF_FAST_PREDICT
 #define FC_EKF_FAST_PREDICT 1
 #endif
