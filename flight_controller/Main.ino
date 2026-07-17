@@ -358,12 +358,48 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // legacy 3-axis mag direction gate.
 #define MAG_YAW_INNOVATION_GATE (0.6f)
 #define EKF_INNOVATION_GATE_WARMUP_UPDATES (250U)
+#if FC_EKF_DECOUPLE_MAG
+// Escape hatches for innovation-gate lockouts (decoupled builds only). An
+// innovation gate assumes the estimate is trustworthy and the measurement is
+// the outlier. Once the estimate's own error exceeds a gate, that assumption
+// inverts: every clean sample is rejected against the broken estimate, and in
+// this build nothing remains that can pull the locked-out DOF back -- the
+// accel gate locks out roll/pitch (gyro + learned-bias coast), the heading
+// gate locks out yaw. (The legacy 3-axis mag vector recovers both cases on
+// its own, which is why the legacy path needs no escape.)
+//
+// If otherwise-valid samples (accel passing the magnitude gate; a
+// non-degenerate, non-saturated field) keep being rejected by an innovation
+// gate for REJECT_STREAK consecutive corrections (2 s), the estimate -- not
+// the sensor -- is lost, and ONLY that row's gate is suspended for a
+// WINDOW_UPDATES re-acquire window. Per-row suspension matters: dropping the
+// shared warmup instead would also disarm the OTHER row's gate mid-maneuver,
+// and re-admitting the tilt-compensated heading while the tilt itself is
+// still corrupted feeds a garbage heading straight into yaw and the r-bias.
+// For the same reason the heading streak only advances while the accel row is
+// trusted this cycle (its active R within ACCEL_TRUST_RATIO of the base, i.e.
+// |a| near 1 g): yaw re-acquisition must wait until the tilt reference that
+// the heading depends on is itself healthy. See the flight divergence
+// scenario in tests/ekf_decouple_mag_test.cpp.
+#define EKF_GATE_REACQUIRE_REJECT_STREAK (250U)
+#define EKF_GATE_REACQUIRE_WINDOW_UPDATES (250U)
+#define EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO (100.0f)
+#endif
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
 const float NORM_EPSILON = 1e-6f;
 float_prec gEkfRuntimeDt = SS_DT;
 uint8_t ekfConsecutiveFailures = 0;
 uint16_t ekfInnovationGateWarmupUpdates = 0;
+#if FC_EKF_DECOUPLE_MAG
+// Lockout-escape state (see EKF_GATE_REACQUIRE_REJECT_STREAK): per-row
+// consecutive innovation-reject streaks and the re-acquire windows (updates
+// remaining with that row's innovation gate suspended) they trigger.
+uint16_t accelInnovationRejectStreak = 0;
+uint16_t magYawInnovationRejectStreak = 0;
+uint16_t accelReacquireWindowUpdates = 0;
+uint16_t magYawReacquireWindowUpdates = 0;
+#endif
 // micros() timestamp of the last successful EKF state update (a fast-mode
 // gyro prediction or a 125 Hz correction). Fly-by-wire only trusts the
 // attitude estimate while this is fresh: once IMU reads or EKF updates stop
@@ -4858,9 +4894,22 @@ void loop() {
                             ? fabsf(normG - GRAVITY_NOMINAL_MSS) / GRAVITY_NOMINAL_MSS
                             : (ACCEL_NORM_GATE_FRACTION + 1.0f);  // force hard reject
       bool accelRejected = normErrFrac > ACCEL_NORM_GATE_FRACTION;
+#if FC_EKF_DECOUPLE_MAG
+      const bool accelNormOk = !accelRejected;   // passed the magnitude gate
+#endif
       if (!accelRejected) {
         Y[0][0] /= normG; Y[1][0] /= normG; Y[2][0] /= normG;
-        if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES) {
+#if FC_EKF_DECOUPLE_MAG
+        // The gate is disarmed during boot warmup and during a lockout-escape
+        // re-acquire window (see EKF_GATE_REACQUIRE_REJECT_STREAK).
+        const bool accelInnovationGateArmed =
+            ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES &&
+            accelReacquireWindowUpdates == 0;
+#else
+        const bool accelInnovationGateArmed =
+            ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES;
+#endif
+        if (accelInnovationGateArmed) {
           accelRejected = vectorInnovationNorm(Y, predictedY, 0) > ACCEL_INNOVATION_GATE;
         }
       }
@@ -4884,6 +4933,27 @@ void loop() {
       }
 
 #if FC_EKF_DECOUPLE_MAG
+      // Accel innovation-gate lockout escape (see
+      // EKF_GATE_REACQUIRE_REJECT_STREAK). Only norm-valid samples rejected
+      // purely for DISAGREEING with the estimate advance the streak; a
+      // norm-gated sample (genuinely bad magnitude) holds it rather than
+      // resetting, so sporadic vibration spikes inside a lockout cannot
+      // indefinitely defer the re-acquisition.
+      if (accelReacquireWindowUpdates > 0) {
+        --accelReacquireWindowUpdates;
+      }
+      if (accelRejected && accelNormOk) {
+        ++accelInnovationRejectStreak;
+        if (accelInnovationRejectStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK) {
+          accelReacquireWindowUpdates = EKF_GATE_REACQUIRE_WINDOW_UPDATES;
+          accelInnovationRejectStreak = 0;
+        }
+      } else if (!accelRejected) {
+        accelInnovationRejectStreak = 0;
+      }
+#endif
+
+#if FC_EKF_DECOUPLE_MAG
       // Decoupled magnetometer: fuse ONLY a tilt-compensated heading so magnetic
       // error cannot reach roll/pitch. Rotate the calibrated field into the earth
       // frame with the predicted attitude, take its horizontal heading, and compare
@@ -4893,6 +4963,7 @@ void loop() {
       // is immune to the +-pi atan2 wrap.
       float normM = sqrtf(magCalX*magCalX + magCalY*magCalY + magCalZ*magCalZ);
       bool magRejected = (normM <= NORM_EPSILON) || magOverflow;
+      bool magYawInnovationRejected = false;
       if (!magRejected) {
         float pq0 = predictedX[0][0], pq1 = predictedX[1][0], pq2 = predictedX[2][0], pq3 = predictedX[3][0];
         // m_e = R_eb^T * m_b : only the earth-horizontal (X,Y) components are needed.
@@ -4908,16 +4979,67 @@ void loop() {
           float declRef    = atan2f(IMU_MAG_B0[1][0], IMU_MAG_B0[0][0]);
           float headingErr = wrapToPi(declRef - atan2f(meY, meX));
           if (ekfInnovationGateWarmupUpdates >= EKF_INNOVATION_GATE_WARMUP_UPDATES &&
+              magYawReacquireWindowUpdates == 0 &&
               fabsf(headingErr) > MAG_YAW_INNOVATION_GATE) {
             magRejected = true;
+            magYawInnovationRejected = true;
           } else {
             Y[3][0] = predictedY[3][0] + headingErr;
+            // The tilt-compensated heading is only as good as the tilt that
+            // compensated it: rotating the measured field through a roll/pitch
+            // error of delta yields a heading error of ~tan(inclination) x
+            // delta (~2.4x at this site's 67 deg inclination), CORRELATED with
+            // the state error -- not the white noise R assumes. Fusing it at
+            // the quiet-condition R_INIT_YAW while dynamics de-weight the
+            // accel (the ONLY roll/pitch reference in this build) closes an
+            // unstable loop: tilt error -> amplified heading innovation ->
+            // tight yaw/bias corrections bleeding back into roll/pitch through
+            // the P cross-covariances. Slave the heading trust to the accel
+            // trust ratio so the heading fades exactly when the tilt it
+            // depends on does. See konfig.h (FC_EKF_DECOUPLE_MAG) and the
+            // flight divergence test in tests/ekf_decouple_mag_test.cpp.
+            const float_prec accTrustRatio =
+                EKF_RACTIVE[0][0] / (float_prec)R_INIT_ACC;
+            float_prec rYawScaled = (float_prec)R_INIT_YAW * accTrustRatio;
+            if (rYawScaled > (float_prec)R_REJECTED) {
+              rYawScaled = (float_prec)R_REJECTED;
+            }
+            EKF_RACTIVE[3][3] = rYawScaled;
           }
         }
       }
       if (magRejected) {
         Y[3][0] = predictedY[3][0];           // zero innovation
         EKF_RACTIVE[3][3] = R_REJECTED;
+      }
+      // Heading innovation-gate lockout escape, the yaw counterpart of the
+      // accel one above (see EKF_GATE_REACQUIRE_REJECT_STREAK): a valid,
+      // non-degenerate field rejected for 2 s straight purely for DISAGREEING
+      // with the gyro-propagated yaw means the YAW estimate is lost (e.g.
+      // after coasting through a maneuver with the heading de-weighted) --
+      // without an escape it can never re-acquire, since only the heading
+      // observes yaw in this build. The streak advances only while the accel
+      // row is trusted this cycle: the re-admitted heading is only as good as
+      // the tilt it is compensated with, so yaw re-acquisition must wait for
+      // the maneuver to end (|a| back near 1 g) instead of fusing a
+      // tilt-corrupted heading mid-turn. Overflow/degenerate rejects and
+      // untrusted-accel cycles hold the streak.
+      if (magYawReacquireWindowUpdates > 0) {
+        --magYawReacquireWindowUpdates;
+      }
+      {
+        const bool accelTrustedForYaw =
+            EKF_RACTIVE[0][0] <= (float_prec)R_INIT_ACC *
+                                     (float_prec)EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO;
+        if (magYawInnovationRejected && accelTrustedForYaw) {
+          ++magYawInnovationRejectStreak;
+          if (magYawInnovationRejectStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK) {
+            magYawReacquireWindowUpdates = EKF_GATE_REACQUIRE_WINDOW_UPDATES;
+            magYawInnovationRejectStreak = 0;
+          }
+        } else if (!magRejected) {
+          magYawInnovationRejectStreak = 0;
+        }
       }
 #else
       // Normalize magnetometer vector, but reject invalid fields instead of faking a nominal field.
@@ -4960,6 +5082,12 @@ void loop() {
           EKF_IMU.vReset(quaternionData, EKF_PINIT, EKF_QINIT, EKF_RINIT);
           ekfConsecutiveFailures = 0;
           ekfInnovationGateWarmupUpdates = 0;
+#if FC_EKF_DECOUPLE_MAG
+          accelInnovationRejectStreak = 0;
+          magYawInnovationRejectStreak = 0;
+          accelReacquireWindowUpdates = 0;
+          magYawReacquireWindowUpdates = 0;
+#endif
           // Hard reset installs a known state as of now, so move the
           // gyro-integration origin to now; the next update integrates from this
           // fresh state rather than a stale pre-reset time.

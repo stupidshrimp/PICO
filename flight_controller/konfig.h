@@ -29,18 +29,50 @@
  *                 proof (yaw Jacobian vs finite difference, innovation sign,
  *                 and the decoupling property through the real EKF class).
  *
- * DISABLED pending flight debugging. The measurement model is numerically
- * correct and passes the host tests, but in flight the attitude estimate went
- * unstable ("haywire"): decoupling makes roll & pitch depend ENTIRELY on the
- * accel/gyro path while the mag provides only a weakly observable scalar yaw,
- * and R_INIT_YAW plus the heading gate (MAG_YAW_INNOVATION_GATE) were never
- * flight-tuned -- unlike the legacy 3-axis path, which was. Reproducing the
- * divergence needs flight logs, not code inspection, so the default reverts to
- * the proven fusion.
+ * DISABLED after the first flight attempt went unstable ("haywire").
+ * ROOT-CAUSED since, by replaying the full correction pipeline (R ramp, both
+ * innovation gates, warmup, sub-stepped predicts, single precision) against a
+ * simulated takeoff + coordinated-turn flight with realistic sensor noise --
+ * see the flight divergence test in tests/ekf_decouple_mag_test.cpp. The
+ * measurement model itself is correct; two compounding integration defects
+ * caused the instability, and both are now fixed in the decoupled path:
  *
- * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Do not re-enable
- * for flight until the instability is root-caused from logs and R_INIT_YAW /
- * MAG_YAW_INNOVATION_GATE are tuned on the airframe. */
+ *   1. The tilt-compensated heading was over-trusted during dynamics. Its
+ *      error is ~tan(inclination) (~2.4x at this site's 67 deg) times the
+ *      roll/pitch error, and is CORRELATED with the state error rather than
+ *      the white noise R assumes. Fusing it at the quiet-air R_INIT_YAW while
+ *      sustained acceleration (takeoff roll, banked turn) corrupted the accel
+ *      -- the ONLY roll/pitch reference in this build -- closed an unstable
+ *      feedback loop: tilt error -> amplified heading innovation -> tight
+ *      yaw/gyro-bias corrections bleeding back into roll/pitch through the P
+ *      cross-covariances. FIX: the heading measurement noise is slaved to the
+ *      accel trust ratio, so the heading fades exactly when the tilt it was
+ *      compensated with becomes untrustworthy (Main.ino, decoupled block).
+ *   2. The innovation gates had no escape from self-lockout. Once the
+ *      estimate's own error exceeded a gate, every clean sample was rejected
+ *      against the broken estimate forever: the accel gate (~38 deg) locks
+ *      out roll/pitch (a permanent gyro coast on corrupted bias states pinned
+ *      at the clamp), and the heading gate (~34 deg) locks out yaw after
+ *      coasting through a maneuver. The legacy path self-recovers from both
+ *      via the 3-axis mag, which is why it never needed an escape. FIX: a
+ *      sustained streak of otherwise-valid but innovation-rejected samples
+ *      suspends THAT row's gate for a short re-acquire window
+ *      (EKF_GATE_REACQUIRE_REJECT_STREAK); the heading's streak additionally
+ *      requires the accel row to be trusted, so yaw re-acquisition waits for
+ *      the tilt reference it depends on to be healthy again rather than
+ *      fusing a tilt-corrupted heading mid-maneuver.
+ *
+ * In that simulation the unfixed decoupled build diverges to ~180 deg on
+ * every run and never recovers; the fixed build stays bounded through the
+ * maneuvers and re-converges to a few degrees in straight flight, and with
+ * FC_ACCEL_CENTRIPETAL_COMPENSATION additionally enabled it outperforms the
+ * legacy fusion through turns.
+ *
+ * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Before
+ * re-enabling for flight: bench/flight-validate the fixed path, consider
+ * enabling FC_ACCEL_CENTRIPETAL_COMPENSATION once pitot/GPS/baro are trusted
+ * (it restores the accel reference in exactly the turns that stress this
+ * build), and expect to tune R_INIT_YAW / MAG_YAW_INNOVATION_GATE. */
 #ifndef FC_EKF_DECOUPLE_MAG
 #define FC_EKF_DECOUPLE_MAG 0
 #endif

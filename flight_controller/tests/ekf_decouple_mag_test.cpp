@@ -506,6 +506,228 @@ static void test_decoupling_ekf() {
     }
 }
 
+/* ===================== Maiden-flight divergence & fix regression =====================
+ *
+ * Replays the flight profile that made the decoupled build go "haywire" on its
+ * first flight, through the REAL EKF class and a replica of Main.ino's 125 Hz
+ * correction block (accel norm gate + smooth R ramp + innovation gates +
+ * warmup + rejection fallbacks): runway idle, takeoff roll under sustained
+ * forward acceleration, climb-out, then a 35-deg-bank coordinated turn, with
+ * realistic deterministic sensor noise, gyro bias, and a small hard-iron
+ * calibration residual.
+ *
+ * Root cause this test pins down (see konfig.h, FC_EKF_DECOUPLE_MAG):
+ *   1. The tilt-compensated heading error is ~tan(inclination) x the
+ *      roll/pitch error and correlated with the state; fusing it at the
+ *      quiet-air R_INIT_YAW while dynamics corrupt the accel (the only
+ *      roll/pitch reference in this build) is an unstable feedback loop.
+ *      FIX: slave the heading noise to the accel trust ratio.
+ *   2. The innovation gates (accel AND heading) have no escape from
+ *      self-lockout: once the estimate's own error exceeds a gate, every
+ *      clean sample is rejected against the broken estimate forever.
+ *      FIX: a 2 s streak of otherwise-valid-but-innovation-rejected samples
+ *      suspends THAT row's gate for a 2 s re-acquire window; the heading
+ *      streak additionally requires the accel row to be trusted (near 1 g)
+ *      so yaw re-acquisition waits until the tilt it depends on is healthy
+ *      (EKF_GATE_REACQUIRE_REJECT_STREAK).
+ *
+ * The replica MUST mirror Main.ino's correction assembly; update both together. */
+
+/* Deterministic ~N(0,1) (Irwin-Hall) on top of the file's LCG. */
+static double nrand() {
+    double s = 0;
+    for (int i = 0; i < 12; i++) s += frand(0, 1);
+    return s - 6.0;
+}
+
+/* Firmware state normalization including the gyro-bias clamp (Main_bNormalizeState). */
+static bool cbNormClamp(Matrix& X) {
+    if (!cbNorm(X)) return false;
+    for (int i = 4; i < 7; i++) {
+        if (X[i][0] >  0.1) X[i][0] =  0.1;
+        else if (X[i][0] < -0.1) X[i][0] = -0.1;
+    }
+    return true;
+}
+
+static double att_err_deg(const double qt[4], const Matrix& Xe) {
+    double qe[4] = { Xe[0][0], Xe[1][0], Xe[2][0], Xe[3][0] };
+    double qtc[4] = { qt[0], -qt[1], -qt[2], -qt[3] };
+    double dq[4]; qmul(qtc, qe, dq); qnorm(dq);
+    double w = fabs(dq[0]); if (w > 1.0) w = 1.0;
+    return 2.0 * acos(w) * 180.0 / M_PI;
+}
+
+struct MaidenResult { double maxErr; double finalErr; int accRej; int magRej; int reacquires; };
+
+static MaidenResult run_maiden_flight(bool withFixes) {
+    /* firmware constants (Main.ino) */
+    const double R_ACC = 0.0025, R_YAW = 0.0025, R_REJ = 1.0e3;
+    const double NORM_GATE_FRAC = 0.35, ACC_INNOV_GATE = 0.65, YAW_INNOV_GATE = 0.6;
+    const unsigned WARMUP = 250, REACQ_STREAK = 250;
+    const double G = 9.80665;
+
+    g_seed = 20260717u;   /* identical sensor stream for both runs */
+
+    Matrix Xi(SS_X_LEN,1); Xi.vSetToZero(); Xi[0][0] = 1.0;
+    Matrix P(SS_X_LEN,SS_X_LEN); P.vSetToZero();
+    for (int i=0;i<4;i++) P[i][i] = 10.0;
+    for (int i=4;i<7;i++) P[i][i] = 0.02;
+    Matrix Q(SS_X_LEN,SS_X_LEN); Q.vSetToZero();
+    for (int i=0;i<4;i++) Q[i][i] = 1e-6;
+    for (int i=4;i<7;i++) Q[i][i] = 1e-8;
+    Matrix R(SS_Z_LEN,SS_Z_LEN); R.vSetToZero();
+    EKF filter(Xi, P, Q, R, cbXdyn, cbY, cbFdyn, cbH, cbNormClamp);
+
+    double qt[4] = {1,0,0,0};
+    const double biasTrue[3] = { 0.010, -0.008, 0.012 };   /* rad/s residual gyro bias */
+    const double magResid[3] = { 1.5, -2.0, 1.0 };         /* uT hard-iron cal residual */
+    const double B_uT = 48.0;
+    const double B0e[3] = { B0[0]*B_uT, B0[1]*B_uT, B0[2]*B_uT };
+
+    unsigned warmupCount = 0;
+    unsigned accStreak = 0, accWindow = 0, magStreak = 0, magWindow = 0;
+    MaidenResult res = {0, 0, 0, 0, 0};
+    double finalSum = 0; int finalN = 0;
+    const double Tend = 58.0;
+    Matrix Y(SS_Z_LEN,1), U(SS_U_LEN,1);
+
+    for (double t = 0; t < Tend; t += DT_DYN) {
+        /* ---- flight script ---- */
+        double w[3] = {0,0,0}, V = 0, Vdot = 0, throttle = 0.1;
+        const double bank = 35.0*M_PI/180.0;
+        if (t < 4) { /* runway idle: warmup arms on a still airframe */ }
+        else if (t < 11) { V = 2.5*(t-4);        Vdot = 2.5; throttle = 1.0; }  /* takeoff roll */
+        else if (t < 13) { V = 17.5+1.2*(t-11);  Vdot = 1.2; throttle = 1.0;
+                           w[1] = (12.0*M_PI/180.0)/2.0; }                      /* rotate */
+        else if (t < 20) { V = 19.9+0.5*(t-13);  Vdot = 0.5; throttle = 0.9; }  /* climb-out */
+        else if (t < 22) { V = 23.4; throttle = 0.6;
+                           w[1] = -(12.0*M_PI/180.0)/2.0; }                     /* level off */
+        else if (t < 26) { V = 23.4; throttle = 0.6; }                          /* cruise */
+        else if (t < 28) { V = 20.0; throttle = 0.65; w[0] = bank/2.0; }        /* roll in */
+        else if (t < 40) { V = 20.0; throttle = 0.65;                           /* coordinated turn */
+                           double Om = G*tan(bank)/V;
+                           w[1] = Om*sin(bank); w[2] = Om*cos(bank); }
+        else if (t < 42) { V = 20.0; throttle = 0.65; w[0] = -bank/2.0; }       /* roll out */
+        else             { V = 22.0; throttle = 0.6; }                          /* straight recovery */
+
+        /* ---- truth propagation ---- */
+        for (int s = 0; s < 10; s++) {
+            const double p = w[0], q = w[1], r = w[2];
+            const double h = DT_DYN/10*0.5;
+            double q0=qt[0], q1=qt[1], q2=qt[2], q3=qt[3];
+            qt[0] = q0 + h*(-p*q1 - q*q2 - r*q3);
+            qt[1] = q1 + h*( p*q0 + r*q2 - q*q3);
+            qt[2] = q2 + h*( q*q0 - r*q1 + p*q3);
+            qt[3] = q3 + h*( r*q0 + q*q1 - p*q2);
+            qnorm(qt);
+        }
+
+        /* ---- sensors: specific force (gravity + kinematic), field, gyro ---- */
+        const double gE[3] = {0, 0, -G};
+        double fb[3]; Reb_times(qt, gE, fb);
+        fb[0] += Vdot; fb[1] += w[2]*V; fb[2] += -w[1]*V;
+        double mb[3]; Reb_times(qt, B0e, mb);
+        const double vibe = 0.25 + 0.9*throttle;   /* m/s^2 rms, throttle-correlated */
+        double acc[3], mg[3];
+        for (int i = 0; i < 3; i++) {
+            acc[i]   = fb[i] + vibe*nrand();
+            mg[i]    = mb[i] + magResid[i] + 0.6*nrand();
+            U[i][0]  = w[i] + biasTrue[i] + 0.015*nrand();
+        }
+
+        /* ---- replica of Main.ino's 125 Hz correction assembly ---- */
+        Matrix Xpred(SS_X_LEN,1);
+        cbXdyn(Xpred, filter.GetX(), U);
+        double Xp[7]; for (int i=0;i<7;i++) Xp[i] = Xpred[i][0];
+        double yhat[SS_Z_LEN]; h_decoupled(Xp, yhat);
+
+        const double an = sqrt(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
+        const double normErrFrac = (an > 1e-6) ? fabs(an - G)/G : (NORM_GATE_FRAC + 1.0);
+        bool accelRejected = normErrFrac > NORM_GATE_FRAC;
+        const bool accelNormOk = !accelRejected;
+        double rAcc;
+        if (!accelRejected) {
+            Y[0][0]=acc[0]/an; Y[1][0]=acc[1]/an; Y[2][0]=acc[2]/an;
+            if (warmupCount >= WARMUP && accWindow == 0) {
+                const double dx=Y[0][0]-yhat[0], dy=Y[1][0]-yhat[1], dz=Y[2][0]-yhat[2];
+                accelRejected = sqrt(dx*dx + dy*dy + dz*dz) > ACC_INNOV_GATE;
+            }
+        }
+        if (accelRejected) {
+            Y[0][0]=yhat[0]; Y[1][0]=yhat[1]; Y[2][0]=yhat[2];
+            rAcc = R_REJ; ++res.accRej;
+        } else {
+            rAcc = R_ACC * pow(R_REJ/R_ACC, normErrFrac/NORM_GATE_FRAC);
+        }
+        if (withFixes) {  /* FIX 2: accel gate lockout escape (per-row window) */
+            if (accWindow > 0) --accWindow;
+            if (accelRejected && accelNormOk) {
+                if (++accStreak >= REACQ_STREAK) {
+                    accWindow = REACQ_STREAK; accStreak = 0; ++res.reacquires;
+                }
+            } else if (!accelRejected) {
+                accStreak = 0;
+            }
+        }
+
+        double rYaw = R_YAW;
+        const double dpsi = mag_yaw_innovation(Xp, mg);
+        bool magRejected = (warmupCount >= WARMUP && magWindow == 0 &&
+                            fabs(dpsi) > YAW_INNOV_GATE);
+        if (magRejected) {
+            Y[3][0] = yhat[3]; rYaw = R_REJ; ++res.magRej;
+        } else {
+            Y[3][0] = yhat[3] + dpsi;
+            if (withFixes) {  /* FIX 1: heading trust slaved to accel trust */
+                rYaw = R_YAW * (rAcc / R_ACC);
+                if (rYaw > R_REJ) rYaw = R_REJ;
+            }
+        }
+        if (withFixes) {  /* FIX 2, heading gate: yaw lockout escape, gated on
+                             a trusted accel so it opens only after maneuvers */
+            if (magWindow > 0) --magWindow;
+            const bool accelTrusted = rAcc <= R_ACC * 100.0;
+            if (magRejected && accelTrusted) {
+                if (++magStreak >= REACQ_STREAK) {
+                    magWindow = REACQ_STREAK; magStreak = 0; ++res.reacquires;
+                }
+            } else if (!magRejected) {
+                magStreak = 0;
+            }
+        }
+
+        R.vSetToZero();
+        R[0][0]=R[1][1]=R[2][2]=rAcc; R[3][3]=rYaw;
+        filter.vSetMeasurementNoise(R);
+        if (!filter.bUpdate(Y, U)) {
+            g_fail++;
+            std::printf("  FAIL bUpdate returned false at t=%.2f\n", t);
+            return res;
+        }
+        if (warmupCount < WARMUP) ++warmupCount;
+
+        const double e = att_err_deg(qt, filter.GetX());
+        if (e > res.maxErr) res.maxErr = e;
+        if (t > Tend - 3.0) { finalSum += e; ++finalN; }
+    }
+    res.finalErr = finalN ? finalSum/finalN : 0.0;
+    return res;
+}
+
+static void test_flight_divergence_and_fix() {
+    std::printf("[test_flight_divergence_and_fix] maiden-flight replay: unfixed diverges, fixed recovers\n");
+    MaidenResult unfixed = run_maiden_flight(false);
+    MaidenResult patched = run_maiden_flight(true);
+    std::printf("  info unfixed: maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d\n",
+                unfixed.maxErr, unfixed.finalErr, unfixed.accRej, unfixed.magRej);
+    std::printf("  info fixed:   maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d reacq=%d\n",
+                patched.maxErr, patched.finalErr, patched.accRej, patched.magRej, patched.reacquires);
+    check(unfixed.maxErr > 90.0,  "unfixed build diverges on the maiden profile", unfixed.maxErr, 90.0, 0.0);
+    check(patched.maxErr < 80.0,  "fixed: error bounded through maneuvers", patched.maxErr, 0.0, 80.0);
+    check(patched.finalErr < 12.0, "fixed: re-converges in straight flight", patched.finalErr, 0.0, 12.0);
+}
+
 int main() {
     std::printf("B0 = [% .5f % .5f % .5f], |B0|=%.6f  decl=%.4f incl=%.4f\n\n",
                 B0[0],B0[1],B0[2], sqrt(B0[0]*B0[0]+B0[1]*B0[1]+B0[2]*B0[2]),
@@ -514,6 +736,7 @@ int main() {
     test_innovation_sign();
     test_decoupling_ekf();
     test_dynamic_frame_decoupled();
+    test_flight_divergence_and_fix();
     std::printf("\n%s (%d failure%s)\n", g_fail? "TESTS FAILED":"ALL TESTS PASSED",
                 g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
