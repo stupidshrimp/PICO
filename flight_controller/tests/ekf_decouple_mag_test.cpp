@@ -528,8 +528,11 @@ static void test_decoupling_ekf() {
  *      FIX: a 2 s streak of otherwise-valid-but-innovation-rejected samples
  *      suspends THAT row's gate for a 2 s re-acquire window; the heading
  *      streak additionally requires the accel row to be trusted (near 1 g)
- *      so yaw re-acquisition waits until the tilt it depends on is healthy
- *      (EKF_GATE_REACQUIRE_REJECT_STREAK).
+ *      so yaw re-acquisition waits until the tilt it depends on is healthy,
+ *      plus COAST EVIDENCE -- a sustained accel-untrusted stretch (a real
+ *      maneuver) since the heading was last fused near base trust -- so a
+ *      sustained compass fault in steady flight stays gated instead of
+ *      being adopted (EKF_GATE_REACQUIRE_REJECT_STREAK).
  *
  * The replica MUST mirror Main.ino's correction assembly; update both together. */
 
@@ -560,11 +563,15 @@ static double att_err_deg(const double qt[4], const Matrix& Xe) {
 
 struct MaidenResult { double maxErr; double finalErr; int accRej; int magRej; int reacquires; };
 
-static MaidenResult run_maiden_flight(bool withFixes) {
+/* steadyCompassFault: instead of the maneuvering maiden profile, fly straight
+ * and level and inject a persistent body-frame magnetic disturbance from
+ * t = 10 s (~47 deg of apparent heading shift, well past the yaw gate) -- the
+ * sustained-compass-fault case the yaw-gate escape must NOT re-admit. */
+static MaidenResult run_maiden_flight(bool withFixes, bool steadyCompassFault) {
     /* firmware constants (Main.ino) */
     const double R_ACC = 0.0025, R_YAW = 0.0025, R_REJ = 1.0e3;
     const double NORM_GATE_FRAC = 0.35, ACC_INNOV_GATE = 0.65, YAW_INNOV_GATE = 0.6;
-    const unsigned WARMUP = 250, REACQ_STREAK = 250;
+    const unsigned WARMUP = 250, REACQ_STREAK = 250, COAST_EVIDENCE = 250;
     const double G = 9.80665;
 
     g_seed = 20260717u;   /* identical sensor stream for both runs */
@@ -587,16 +594,20 @@ static MaidenResult run_maiden_flight(bool withFixes) {
 
     unsigned warmupCount = 0;
     unsigned accStreak = 0, accWindow = 0, magStreak = 0, magWindow = 0;
+    unsigned coastEvidence = 0;
     MaidenResult res = {0, 0, 0, 0, 0};
     double finalSum = 0; int finalN = 0;
-    const double Tend = 58.0;
+    const double Tend = steadyCompassFault ? 45.0 : 58.0;
     Matrix Y(SS_Z_LEN,1), U(SS_U_LEN,1);
 
     for (double t = 0; t < Tend; t += DT_DYN) {
         /* ---- flight script ---- */
         double w[3] = {0,0,0}, V = 0, Vdot = 0, throttle = 0.1;
         const double bank = 35.0*M_PI/180.0;
-        if (t < 4) { /* runway idle: warmup arms on a still airframe */ }
+        if (steadyCompassFault) {
+            if (t >= 4) { V = 22.0; throttle = 0.6; }   /* straight & level throughout */
+        }
+        else if (t < 4) { /* runway idle: warmup arms on a still airframe */ }
         else if (t < 11) { V = 2.5*(t-4);        Vdot = 2.5; throttle = 1.0; }  /* takeoff roll */
         else if (t < 13) { V = 17.5+1.2*(t-11);  Vdot = 1.2; throttle = 1.0;
                            w[1] = (12.0*M_PI/180.0)/2.0; }                      /* rotate */
@@ -634,6 +645,9 @@ static MaidenResult run_maiden_flight(bool withFixes) {
             acc[i]   = fb[i] + vibe*nrand();
             mg[i]    = mb[i] + magResid[i] + 0.6*nrand();
             U[i][0]  = w[i] + biasTrue[i] + 0.015*nrand();
+        }
+        if (steadyCompassFault && t >= 10.0) {
+            mg[1] += 20.0;   /* ~47 deg apparent heading shift vs the ~18.7 uT horizontal field */
         }
 
         /* ---- replica of Main.ino's 125 Hz correction assembly ---- */
@@ -684,12 +698,23 @@ static MaidenResult run_maiden_flight(bool withFixes) {
                 if (rYaw > R_REJ) rYaw = R_REJ;
             }
         }
-        if (withFixes) {  /* FIX 2, heading gate: yaw lockout escape, gated on
-                             a trusted accel so it opens only after maneuvers */
+        /* Coast evidence: only a sustained accel-untrusted stretch (a real
+         * maneuver, during which the heading was slaved weak and yaw could
+         * genuinely coast away) may unlock the yaw-gate escape. It builds on
+         * accel-untrusted corrections, DRAINS on trusted ones (so steady-
+         * flight noise tails accumulate nothing and a persistent compass
+         * fault stays gated), and resets whenever the heading is fused near
+         * base trust (yaw healthy again). */
+        const bool accelTrusted = rAcc <= R_ACC * 100.0;
+        const bool magYawAided = !magRejected && rYaw <= R_YAW * 10.0;
+        if (magYawAided)            coastEvidence = 0;
+        else if (!accelTrusted)     { if (coastEvidence < 2500u) ++coastEvidence; }
+        else if (coastEvidence > 0) --coastEvidence;
+        if (withFixes) {  /* FIX 2, heading gate: yaw lockout escape */
             if (magWindow > 0) --magWindow;
-            const bool accelTrusted = rAcc <= R_ACC * 100.0;
             if (magRejected && accelTrusted) {
-                if (++magStreak >= REACQ_STREAK) {
+                if (magStreak < 60000u) ++magStreak;
+                if (magStreak >= REACQ_STREAK && coastEvidence >= COAST_EVIDENCE) {
                     magWindow = REACQ_STREAK; magStreak = 0; ++res.reacquires;
                 }
             } else if (!magRejected) {
@@ -717,8 +742,8 @@ static MaidenResult run_maiden_flight(bool withFixes) {
 
 static void test_flight_divergence_and_fix() {
     std::printf("[test_flight_divergence_and_fix] maiden-flight replay: unfixed diverges, fixed recovers\n");
-    MaidenResult unfixed = run_maiden_flight(false);
-    MaidenResult patched = run_maiden_flight(true);
+    MaidenResult unfixed = run_maiden_flight(false, false);
+    MaidenResult patched = run_maiden_flight(true, false);
     std::printf("  info unfixed: maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d\n",
                 unfixed.maxErr, unfixed.finalErr, unfixed.accRej, unfixed.magRej);
     std::printf("  info fixed:   maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d reacq=%d\n",
@@ -726,6 +751,20 @@ static void test_flight_divergence_and_fix() {
     check(unfixed.maxErr > 90.0,  "unfixed build diverges on the maiden profile", unfixed.maxErr, 90.0, 0.0);
     check(patched.maxErr < 80.0,  "fixed: error bounded through maneuvers", patched.maxErr, 0.0, 80.0);
     check(patched.finalErr < 12.0, "fixed: re-converges in straight flight", patched.finalErr, 0.0, 12.0);
+    check(patched.reacquires >= 1, "fixed: yaw re-acquires after the coast", (double)patched.reacquires, 1.0, 0.0);
+}
+
+/* The yaw-gate escape must not re-admit a sustained compass fault: in steady
+ * flight the heading was fully aided until the fault, so there is no coast
+ * evidence, the gate must stay closed, and yaw must hold on the gyro. */
+static void test_steady_compass_fault_stays_gated() {
+    std::printf("[test_steady_compass_fault_stays_gated] persistent disturbance in level flight\n");
+    MaidenResult r = run_maiden_flight(true, true);
+    std::printf("  info fault run: maxErr=%.1f deg  finalErr=%.1f deg  magRej=%d reacq=%d\n",
+                r.maxErr, r.finalErr, r.magRej, r.reacquires);
+    check(r.reacquires == 0, "no re-acquire window opens on a compass fault", (double)r.reacquires, 0.0, 0.0);
+    check(r.magRej > 3000,   "fault stays rejected by the yaw gate", (double)r.magRej, 4000.0, 0.0);
+    check(r.maxErr < 15.0,   "attitude holds on gyro through the fault", r.maxErr, 0.0, 15.0);
 }
 
 int main() {
@@ -737,6 +776,7 @@ int main() {
     test_decoupling_ekf();
     test_dynamic_frame_decoupled();
     test_flight_divergence_and_fix();
+    test_steady_compass_fault_stays_gated();
     std::printf("\n%s (%d failure%s)\n", g_fail? "TESTS FAILED":"ALL TESTS PASSED",
                 g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;

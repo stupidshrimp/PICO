@@ -379,11 +379,29 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // For the same reason the heading streak only advances while the accel row is
 // trusted this cycle (its active R within ACCEL_TRUST_RATIO of the base, i.e.
 // |a| near 1 g): yaw re-acquisition must wait until the tilt reference that
-// the heading depends on is itself healthy. See the flight divergence
-// scenario in tests/ekf_decouple_mag_test.cpp.
+// the heading depends on is itself healthy.
+//
+// The heading escape additionally demands COAST EVIDENCE before opening: a
+// heading-reject streak alone cannot distinguish "yaw coasted away during a
+// maneuver" (re-acquire!) from "a sustained compass fault in steady flight"
+// (motor-current iron, nearby ferrous material, a bad calibration --
+// keep gating!). The discriminator is what preceded the rejects: a real coast
+// requires a sustained accel-untrusted stretch (the maneuver that forced the
+// heading to be slaved weak), while a steady-flight fault appears while the
+// heading was fused at full trust. The evidence counter builds on
+// accel-untrusted corrections, drains on trusted ones (so steady-flight noise
+// tails accumulate nothing), and resets whenever the heading is fused near
+// base trust (within YAW_AIDED_TRUST_RATIO -- yaw demonstrably healthy). The
+// escape opens only with >= COAST_EVIDENCE_UPDATES accumulated; a sustained
+// compass fault therefore stays rejected indefinitely and yaw rides the gyro,
+// which is the safe failure mode. See the flight divergence and steady-fault
+// scenarios in tests/ekf_decouple_mag_test.cpp.
 #define EKF_GATE_REACQUIRE_REJECT_STREAK (250U)
 #define EKF_GATE_REACQUIRE_WINDOW_UPDATES (250U)
 #define EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO (100.0f)
+#define EKF_YAW_AIDED_TRUST_RATIO (10.0f)
+#define EKF_YAW_COAST_EVIDENCE_UPDATES (250U)
+#define EKF_YAW_COAST_EVIDENCE_CAP (2500U)
 #endif
 #define EKF_MAX_CONSECUTIVE_FAILURES (25)
 // Threshold to protect against division by zero when normalizing sensor vectors
@@ -399,6 +417,9 @@ uint16_t accelInnovationRejectStreak = 0;
 uint16_t magYawInnovationRejectStreak = 0;
 uint16_t accelReacquireWindowUpdates = 0;
 uint16_t magYawReacquireWindowUpdates = 0;
+// Coast-evidence integrator for the heading escape (see
+// EKF_YAW_COAST_EVIDENCE_UPDATES).
+uint16_t magYawCoastEvidence = 0;
 #endif
 // micros() timestamp of the last successful EKF state update (a fast-mode
 // gyro prediction or a 125 Hz correction). Fly-by-wire only trusts the
@@ -5031,9 +5052,30 @@ void loop() {
         const bool accelTrustedForYaw =
             EKF_RACTIVE[0][0] <= (float_prec)R_INIT_ACC *
                                      (float_prec)EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO;
+        // Coast evidence (see EKF_YAW_COAST_EVIDENCE_UPDATES): builds during a
+        // sustained accel-untrusted stretch (a real maneuver, when yaw can
+        // genuinely coast), drains on trusted corrections so steady-flight
+        // noise tails accumulate nothing, and resets whenever the heading is
+        // fused near base trust (yaw demonstrably healthy).
+        const bool magYawAided =
+            !magRejected &&
+            EKF_RACTIVE[3][3] <= (float_prec)R_INIT_YAW *
+                                     (float_prec)EKF_YAW_AIDED_TRUST_RATIO;
+        if (magYawAided) {
+          magYawCoastEvidence = 0;
+        } else if (!accelTrustedForYaw) {
+          if (magYawCoastEvidence < EKF_YAW_COAST_EVIDENCE_CAP) {
+            ++magYawCoastEvidence;
+          }
+        } else if (magYawCoastEvidence > 0) {
+          --magYawCoastEvidence;
+        }
         if (magYawInnovationRejected && accelTrustedForYaw) {
-          ++magYawInnovationRejectStreak;
-          if (magYawInnovationRejectStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK) {
+          if (magYawInnovationRejectStreak < EKF_GATE_REACQUIRE_REJECT_STREAK) {
+            ++magYawInnovationRejectStreak;
+          }
+          if (magYawInnovationRejectStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK &&
+              magYawCoastEvidence >= EKF_YAW_COAST_EVIDENCE_UPDATES) {
             magYawReacquireWindowUpdates = EKF_GATE_REACQUIRE_WINDOW_UPDATES;
             magYawInnovationRejectStreak = 0;
           }
@@ -5087,6 +5129,7 @@ void loop() {
           magYawInnovationRejectStreak = 0;
           accelReacquireWindowUpdates = 0;
           magYawReacquireWindowUpdates = 0;
+          magYawCoastEvidence = 0;
 #endif
           // Hard reset installs a known state as of now, so move the
           // gyro-integration origin to now; the next update integrates from this

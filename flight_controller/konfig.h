@@ -60,7 +60,11 @@
  *      (EKF_GATE_REACQUIRE_REJECT_STREAK); the heading's streak additionally
  *      requires the accel row to be trusted, so yaw re-acquisition waits for
  *      the tilt reference it depends on to be healthy again rather than
- *      fusing a tilt-corrupted heading mid-maneuver.
+ *      fusing a tilt-corrupted heading mid-maneuver, plus COAST EVIDENCE (a
+ *      sustained accel-untrusted stretch since the heading last fused near
+ *      base trust) so a persistent compass fault in steady flight -- which
+ *      produces the same reject streak without any coast -- stays gated
+ *      indefinitely and yaw rides the gyro instead of adopting the fault.
  *
  * In that simulation the unfixed decoupled build diverges to ~180 deg on
  * every run and never recovers; the fixed build stays bounded through the
