@@ -57,14 +57,17 @@
  *      via the 3-axis mag, which is why it never needed an escape. FIX: a
  *      sustained streak of otherwise-valid but innovation-rejected samples
  *      suspends THAT row's gate for a short re-acquire window
- *      (EKF_GATE_REACQUIRE_REJECT_STREAK); the heading's streak additionally
- *      requires the accel row to be trusted, so yaw re-acquisition waits for
- *      the tilt reference it depends on to be healthy again rather than
- *      fusing a tilt-corrupted heading mid-maneuver, plus COAST EVIDENCE (a
- *      sustained accel-untrusted stretch since the heading last fused near
- *      base trust) so a persistent compass fault in steady flight -- which
- *      produces the same reject streak without any coast -- stays gated
- *      indefinitely and yaw rides the gyro instead of adopting the fault.
+ *      (EKF_GATE_REACQUIRE_REJECT_STREAK). The heading escape further has to
+ *      distinguish a genuine coast from a LYING compass (motor-current iron,
+ *      nearby ferrous material, bad calibration), which produces the same
+ *      reject streak: it therefore also demands coast evidence (a sustained
+ *      accel-untrusted stretch, accumulated only while the lockout is not
+ *      yet saturated so a pre-existing fault stays ineligible through later
+ *      maneuvers), a sustained accel-trusted run at opening, and a
+ *      sustained-health-based streak stand-down. With a faulted compass the
+ *      safe mode is: yaw unaided (possibly wrong, never adopted as truth)
+ *      while roll/pitch stay protected and recover; see the fault-injection
+ *      scenarios in tests/ekf_decouple_mag_test.cpp.
  *
  * In that simulation the unfixed decoupled build diverges to ~180 deg on
  * every run and never recovers; the fixed build stays bounded through the

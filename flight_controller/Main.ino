@@ -381,24 +381,39 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // |a| near 1 g): yaw re-acquisition must wait until the tilt reference that
 // the heading depends on is itself healthy.
 //
-// The heading escape additionally demands COAST EVIDENCE before opening: a
-// heading-reject streak alone cannot distinguish "yaw coasted away during a
-// maneuver" (re-acquire!) from "a sustained compass fault in steady flight"
-// (motor-current iron, nearby ferrous material, a bad calibration --
-// keep gating!). The discriminator is what preceded the rejects: a real coast
-// requires a sustained accel-untrusted stretch (the maneuver that forced the
-// heading to be slaved weak), while a steady-flight fault appears while the
-// heading was fused at full trust. The evidence counter builds on
-// accel-untrusted corrections, drains on trusted ones (so steady-flight noise
-// tails accumulate nothing), and resets whenever the heading is fused near
-// base trust (within YAW_AIDED_TRUST_RATIO -- yaw demonstrably healthy). The
-// escape opens only with >= COAST_EVIDENCE_UPDATES accumulated; a sustained
-// compass fault therefore stays rejected indefinitely and yaw rides the gyro,
-// which is the safe failure mode. See the flight divergence and steady-fault
-// scenarios in tests/ekf_decouple_mag_test.cpp.
+// The heading escape must additionally distinguish "yaw coasted away during
+// a maneuver" (re-acquire!) from "the compass is lying" (motor-current iron,
+// nearby ferrous material, a bad calibration -- keep gating!). A reject
+// streak alone cannot: a sustained fault produces the same streak. Three
+// conditions close the gap (all proven against fault-injection scenarios in
+// tests/ekf_decouple_mag_test.cpp):
+//
+//   - COAST EVIDENCE: a real coast requires the sustained accel-untrusted
+//     stretch (the maneuver) that forced the heading to be slaved weak. The
+//     evidence counter builds on accel-untrusted corrections -- but only
+//     while the reject streak is NOT yet saturated, so a pre-existing
+//     fault's lockout (streak already full before the maneuver) stays
+//     ineligible through later turns -- drains on trusted corrections
+//     (steady-flight noise tails accumulate nothing), and resets whenever
+//     the heading is fused near base trust (within YAW_AIDED_TRUST_RATIO).
+//   - SUSTAINED TRUST AT OPENING: the window opens only after
+//     ACCEL_TRUST_STREAK consecutive trusted corrections, never on an
+//     isolated near-1 g noise sample mid-maneuver.
+//   - HEALTHY STAND-DOWN: the reject streak stands down only after a
+//     sustained accepted-while-trusted stretch (a full REJECT_STREAK worth),
+//     because at turn entry a growing tilt error can swing a faulted
+//     heading's innovation through the gate for a couple of seconds and a
+//     naive acceptance-based reset would re-arm coast evidence for the
+//     fault.
+//
+// With a genuinely faulted compass the resulting safe mode is: yaw unaided
+// (possibly wrong, but never adopted as truth) while roll/pitch -- the
+// flight-critical DOFs and the subject of the original divergence -- stay
+// protected and recover.
 #define EKF_GATE_REACQUIRE_REJECT_STREAK (250U)
 #define EKF_GATE_REACQUIRE_WINDOW_UPDATES (250U)
 #define EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO (100.0f)
+#define EKF_YAW_REACQUIRE_ACCEL_TRUST_STREAK (25U)
 #define EKF_YAW_AIDED_TRUST_RATIO (10.0f)
 #define EKF_YAW_COAST_EVIDENCE_UPDATES (250U)
 #define EKF_YAW_COAST_EVIDENCE_CAP (2500U)
@@ -417,9 +432,12 @@ uint16_t accelInnovationRejectStreak = 0;
 uint16_t magYawInnovationRejectStreak = 0;
 uint16_t accelReacquireWindowUpdates = 0;
 uint16_t magYawReacquireWindowUpdates = 0;
-// Coast-evidence integrator for the heading escape (see
-// EKF_YAW_COAST_EVIDENCE_UPDATES).
+// Coast-evidence integrator, consecutive accel-trusted corrections, and the
+// accepted-while-trusted health streak for the heading escape (see
+// EKF_YAW_COAST_EVIDENCE_UPDATES and the escape-hatch comment above).
 uint16_t magYawCoastEvidence = 0;
+uint16_t magYawAccelTrustStreak = 0;
+uint16_t magYawHealthyStreak = 0;
 #endif
 // micros() timestamp of the last successful EKF state update (a fast-mode
 // gyro prediction or a 125 Hz correction). Fly-by-wire only trusts the
@@ -5039,12 +5057,10 @@ void loop() {
       // with the gyro-propagated yaw means the YAW estimate is lost (e.g.
       // after coasting through a maneuver with the heading de-weighted) --
       // without an escape it can never re-acquire, since only the heading
-      // observes yaw in this build. The streak advances only while the accel
-      // row is trusted this cycle: the re-admitted heading is only as good as
-      // the tilt it is compensated with, so yaw re-acquisition must wait for
-      // the maneuver to end (|a| back near 1 g) instead of fusing a
-      // tilt-corrupted heading mid-turn. Overflow/degenerate rejects and
-      // untrusted-accel cycles hold the streak.
+      // observes yaw in this build. The extra conditions (coast evidence with
+      // saturation eligibility, sustained trust at opening, healthy
+      // stand-down) keep a genuinely faulted compass from ever being adopted;
+      // see the escape-hatch constants' comment for the full rationale.
       if (magYawReacquireWindowUpdates > 0) {
         --magYawReacquireWindowUpdates;
       }
@@ -5052,34 +5068,56 @@ void loop() {
         const bool accelTrustedForYaw =
             EKF_RACTIVE[0][0] <= (float_prec)R_INIT_ACC *
                                      (float_prec)EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO;
-        // Coast evidence (see EKF_YAW_COAST_EVIDENCE_UPDATES): builds during a
-        // sustained accel-untrusted stretch (a real maneuver, when yaw can
-        // genuinely coast), drains on trusted corrections so steady-flight
-        // noise tails accumulate nothing, and resets whenever the heading is
-        // fused near base trust (yaw demonstrably healthy).
         const bool magYawAided =
             !magRejected &&
             EKF_RACTIVE[3][3] <= (float_prec)R_INIT_YAW *
                                      (float_prec)EKF_YAW_AIDED_TRUST_RATIO;
+        // Coast evidence: builds during a sustained accel-untrusted stretch
+        // (a real maneuver, when yaw can genuinely coast) while the reject
+        // streak is not yet saturated, drains on trusted corrections, resets
+        // when the heading fuses near base trust.
         if (magYawAided) {
           magYawCoastEvidence = 0;
         } else if (!accelTrustedForYaw) {
-          if (magYawCoastEvidence < EKF_YAW_COAST_EVIDENCE_CAP) {
+          if (magYawInnovationRejectStreak < EKF_GATE_REACQUIRE_REJECT_STREAK &&
+              magYawCoastEvidence < EKF_YAW_COAST_EVIDENCE_CAP) {
             ++magYawCoastEvidence;
           }
         } else if (magYawCoastEvidence > 0) {
           --magYawCoastEvidence;
+        }
+        // Consecutive trusted corrections (window may only open on a
+        // sustained run, never an isolated mid-maneuver noise sample).
+        if (accelTrustedForYaw) {
+          if (magYawAccelTrustStreak < 60000U) {
+            ++magYawAccelTrustStreak;
+          }
+        } else {
+          magYawAccelTrustStreak = 0;
+        }
+        // Heading health: accepted-while-trusted corrections accumulate,
+        // any innovation reject clears, everything else holds.
+        if (magYawInnovationRejected) {
+          magYawHealthyStreak = 0;
+        } else if (!magRejected && accelTrustedForYaw) {
+          if (magYawHealthyStreak < 60000U) {
+            ++magYawHealthyStreak;
+          }
         }
         if (magYawInnovationRejected && accelTrustedForYaw) {
           if (magYawInnovationRejectStreak < EKF_GATE_REACQUIRE_REJECT_STREAK) {
             ++magYawInnovationRejectStreak;
           }
           if (magYawInnovationRejectStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK &&
-              magYawCoastEvidence >= EKF_YAW_COAST_EVIDENCE_UPDATES) {
+              magYawCoastEvidence >= EKF_YAW_COAST_EVIDENCE_UPDATES &&
+              magYawAccelTrustStreak >= EKF_YAW_REACQUIRE_ACCEL_TRUST_STREAK) {
             magYawReacquireWindowUpdates = EKF_GATE_REACQUIRE_WINDOW_UPDATES;
             magYawInnovationRejectStreak = 0;
           }
-        } else if (!magRejected) {
+        } else if (magYawHealthyStreak >= EKF_GATE_REACQUIRE_REJECT_STREAK) {
+          // Stand the streak down only after a sustained healthy stretch: a
+          // brief tilt-swing acceptance run at turn entry must not re-arm
+          // coast-evidence eligibility for a pre-existing compass fault.
           magYawInnovationRejectStreak = 0;
         }
       }
@@ -5130,6 +5168,8 @@ void loop() {
           accelReacquireWindowUpdates = 0;
           magYawReacquireWindowUpdates = 0;
           magYawCoastEvidence = 0;
+          magYawAccelTrustStreak = 0;
+          magYawHealthyStreak = 0;
 #endif
           // Hard reset installs a known state as of now, so move the
           // gyro-integration origin to now; the next update integrates from this
