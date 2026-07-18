@@ -723,8 +723,10 @@ static MaidenResult run_maiden_flight(bool withFixes, int scenario) {
         } else {
             rAcc = R_ACC * pow(R_REJ/R_ACC, normErrFrac/NORM_GATE_FRAC);
         }
-        if (withFixes) {  /* FIX 2: accel gate lockout escape (per-row window) */
-            if (accWindow > 0) --accWindow;
+        if (withFixes) {  /* FIX 2: accel gate lockout escape (per-row window).
+             The window counts fusion opportunities: a norm-rejected sample
+             cannot be fused and must not burn it (mirrors Main.ino). */
+            if (accWindow > 0 && !accelRejected) --accWindow;
             if (accelRejected && accelNormOk) {
                 if (++accStreak >= REACQ_STREAK) {
                     accWindow = REACQ_STREAK; accStreak = 0; ++res.accReacq;
@@ -780,7 +782,7 @@ static MaidenResult run_maiden_flight(bool withFixes, int scenario) {
              window nor stand the streak down (a standing streak is what
              keeps a pre-existing fault's lockout ineligible for coast
              evidence through a later turn). */
-            if (magWindow > 0) --magWindow;
+            if (magWindow > 0 && !magRejected) --magWindow;
             if (magRejected && accelTrusted) {
                 if (magStreak < 60000u) ++magStreak;
                 if (magStreak >= REACQ_STREAK && coastEvidence >= COAST_EVIDENCE &&

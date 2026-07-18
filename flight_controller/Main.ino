@@ -4990,7 +4990,13 @@ void loop() {
       // norm-gated sample (genuinely bad magnitude) holds it rather than
       // resetting, so sporadic vibration spikes inside a lockout cannot
       // indefinitely defer the re-acquisition.
-      if (accelReacquireWindowUpdates > 0) {
+      //
+      // The window counts FUSION OPPORTUNITIES, not wall-clock corrections:
+      // with the innovation gate suspended, a sample is fused unless the
+      // norm gate rejected it, and a norm-rejected sample (vibration burst)
+      // must not burn the window -- the streaks that earned it cannot be
+      // rebuilt without another lockout.
+      if (accelReacquireWindowUpdates > 0 && !accelRejected) {
         --accelReacquireWindowUpdates;
       }
       if (accelRejected && accelNormOk) {
@@ -5073,7 +5079,13 @@ void loop() {
       // saturation eligibility, sustained trust at opening, healthy
       // stand-down) keep a genuinely faulted compass from ever being adopted;
       // see the escape-hatch constants' comment for the full rationale.
-      if (magYawReacquireWindowUpdates > 0) {
+      // The window counts FUSION OPPORTUNITIES, not wall-clock corrections:
+      // with the heading gate suspended, a sample is fused unless the field
+      // itself was unusable (saturated/degenerate/zero-norm), and such a
+      // sample -- e.g. a transient motor-current overflow right after
+      // rollout -- must not burn the window while the coast evidence that
+      // earned it drains away.
+      if (magYawReacquireWindowUpdates > 0 && !magRejected) {
         --magYawReacquireWindowUpdates;
       }
       {
