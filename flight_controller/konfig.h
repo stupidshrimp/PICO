@@ -67,7 +67,11 @@
  *      sustained-health-based streak stand-down. With a faulted compass the
  *      safe mode is: yaw unaided (possibly wrong, never adopted as truth)
  *      while roll/pitch stay protected and recover; see the fault-injection
- *      scenarios in tests/ekf_decouple_mag_test.cpp.
+ *      scenarios in tests/ekf_decouple_mag_test.cpp. One accepted residual:
+ *      a fault whose ONSET coincides with a maneuver is observationally
+ *      identical to a genuine coast and may be adopted at rollout -- a
+ *      yaw-only, self-healing exposure (see the KNOWN LIMIT note at the
+ *      escape constants in Main.ino).
  *
  * In that simulation the unfixed decoupled build diverges to ~180 deg on
  * every run and never recovers; the fixed build stays bounded through the

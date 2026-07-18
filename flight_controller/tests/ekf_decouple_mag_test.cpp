@@ -599,8 +599,19 @@ static double tilt_err_deg(const double qt[4], const Matrix& Xe) {
  *                          t = 23 s (in cruise, BEFORE the turn): the
  *                          saturated reject streak predates the maneuver, so
  *                          the turn's coast evidence must not retroactively
- *                          validate the faulted heading on rollout. */
-enum { SCEN_MAIDEN = 0, SCEN_FAULT_LEVEL = 1, SCEN_FAULT_THEN_TURN = 2 };
+ *                          validate the faulted heading on rollout.
+ *   SCEN_FAULT_IN_TURN   - the maiden profile with the disturbance starting
+ *                          MID-turn (t = 30 s). This is the documented,
+ *                          ACCEPTED boundary of the escape (see the KNOWN
+ *                          LIMIT note at the escape constants in Main.ino):
+ *                          a fault whose onset coincides with the maneuver
+ *                          is observationally identical to a genuine coast,
+ *                          so the faulted heading may be adopted at rollout.
+ *                          The guaranteed property -- asserted here -- is
+ *                          that the exposure is yaw-only: roll/pitch stay
+ *                          protected and recover. */
+enum { SCEN_MAIDEN = 0, SCEN_FAULT_LEVEL = 1, SCEN_FAULT_THEN_TURN = 2,
+       SCEN_FAULT_IN_TURN = 3 };
 
 static MaidenResult run_maiden_flight(bool withFixes, int scenario) {
     const bool steadyCompassFault = (scenario == SCEN_FAULT_LEVEL);
@@ -683,7 +694,8 @@ static MaidenResult run_maiden_flight(bool withFixes, int scenario) {
             U[i][0]  = w[i] + biasTrue[i] + 0.015*nrand();
         }
         if ((steadyCompassFault && t >= 10.0) ||
-            (scenario == SCEN_FAULT_THEN_TURN && t >= 23.0)) {
+            (scenario == SCEN_FAULT_THEN_TURN && t >= 23.0) ||
+            (scenario == SCEN_FAULT_IN_TURN && t >= 30.0)) {
             mg[1] += 20.0;   /* ~47 deg apparent heading shift vs the ~18.7 uT horizontal field */
         }
 
@@ -848,6 +860,23 @@ static void test_fault_then_turn_stays_gated() {
     check(r.finalTilt < 10.0, "roll/pitch recover after the turn", r.finalTilt, 0.0, 10.0);
 }
 
+/* Documented, ACCEPTED boundary (see SCEN_FAULT_IN_TURN above): a fault whose
+ * onset coincides with the maneuver is indistinguishable from a genuine
+ * coast, so the escape may adopt it at rollout. This test pins the property
+ * that still holds there: the exposure is yaw-only -- roll/pitch stay
+ * protected through the maneuver and recover after it. If a future change
+ * (e.g. a field-magnitude gate) starts rejecting this fault too, the
+ * adoption info printed here will show magReacq=0 and this test still
+ * passes. */
+static void test_fault_in_turn_documented_boundary() {
+    std::printf("[test_fault_in_turn_documented_boundary] mid-maneuver fault onset (accepted limit)\n");
+    MaidenResult r = run_maiden_flight(true, SCEN_FAULT_IN_TURN);
+    std::printf("  info fault-in-turn: maxErr=%.1f maxTilt=%.1f finalErr=%.1f finalTilt=%.1f deg  magRej=%d accReacq=%d magReacq=%d\n",
+                r.maxErr, r.maxTilt, r.finalErr, r.finalTilt, r.magRej, r.accReacq, r.magReacq);
+    check(r.finalTilt < 10.0, "roll/pitch protected despite mid-turn fault", r.finalTilt, 0.0, 10.0);
+    check(r.maxTilt < 60.0,   "tilt excursion bounded through the maneuver", r.maxTilt, 0.0, 60.0);
+}
+
 int main() {
     std::printf("B0 = [% .5f % .5f % .5f], |B0|=%.6f  decl=%.4f incl=%.4f\n\n",
                 B0[0],B0[1],B0[2], sqrt(B0[0]*B0[0]+B0[1]*B0[1]+B0[2]*B0[2]),
@@ -859,6 +888,7 @@ int main() {
     test_flight_divergence_and_fix();
     test_steady_compass_fault_stays_gated();
     test_fault_then_turn_stays_gated();
+    test_fault_in_turn_documented_boundary();
     std::printf("\n%s (%d failure%s)\n", g_fail? "TESTS FAILED":"ALL TESTS PASSED",
                 g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;

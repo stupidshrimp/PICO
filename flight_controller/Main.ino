@@ -410,6 +410,18 @@ Matrix SOFT_IRON_MATRIX(3, 3, SOFT_IRON_MATRIX_data);
 // (possibly wrong, but never adopted as truth) while roll/pitch -- the
 // flight-critical DOFs and the subject of the original divergence -- stay
 // protected and recover.
+//
+// KNOWN LIMIT (accepted): a fault whose ONSET coincides with a maneuver is
+// observationally identical to a genuine coast -- the heading was
+// healthy-aided before the maneuver, unaided during it, and in sustained
+// disagreement after it in both cases -- so it can be adopted at rollout
+// (see the SCEN_FAULT_IN_TURN scenario in tests/ekf_decouple_mag_test.cpp).
+// Any bookkeeping that blocked it would equally block the legitimate coast
+// recovery; separating the two requires information from OUTSIDE the heading
+// innovation, e.g. a field-magnitude gate against a learned healthy |B|.
+// The exposure is yaw-only and self-healing: roll/pitch stay protected
+// regardless, and once the fault clears, the next maneuver's coast evidence
+// lets the healthy heading re-acquire.
 #define EKF_GATE_REACQUIRE_REJECT_STREAK (250U)
 #define EKF_GATE_REACQUIRE_WINDOW_UPDATES (250U)
 #define EKF_YAW_REACQUIRE_ACCEL_TRUST_RATIO (100.0f)
