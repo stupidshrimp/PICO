@@ -5119,11 +5119,19 @@ void loop() {
         } else {
           magYawAccelTrustStreak = 0;
         }
-        // Heading health: accepted-while-trusted corrections accumulate,
-        // any innovation reject clears, everything else holds.
-        if (magYawInnovationRejected) {
+        // Heading health: accepted-while-trusted corrections accumulate; ANY
+        // reject -- innovation-gated or an unusable (saturated/degenerate)
+        // field -- clears; only accepted-but-untrusted cycles hold. Holding
+        // across invalid-field cycles too would let short acceptance bursts
+        // accumulate across reject-free dropout gaps toward the stand-down
+        // threshold without ever proving a genuinely sustained healthy
+        // stretch. (A strictly consecutive accepted-while-trusted counter
+        // would be the opposite failure: accel-trust noise flickers in level
+        // flight would keep it from EVER reaching the threshold, making the
+        // stand-down unreachable and re-introducing permanent lockouts.)
+        if (magRejected) {
           magYawHealthyStreak = 0;
-        } else if (!magRejected && accelTrustedForYaw) {
+        } else if (accelTrustedForYaw) {
           if (magYawHealthyStreak < 60000U) {
             ++magYawHealthyStreak;
           }
