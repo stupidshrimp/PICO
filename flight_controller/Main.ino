@@ -32,6 +32,7 @@
 #include "matrix.h"
 #include "ekf.h"
 #include "attitude_init.h"
+#include "board_align.h"
 #include "simple_mpu9250.h"
 #include <Arduino.h>
 #include <Servo.h>
@@ -83,6 +84,30 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 // See the frame-mapping comment in the 125 Hz block for why the frame is
 // Z-down: the previous Z-up mapping was a left-handed (det -1) reflection.
 #define IMU_ACC_Z0  (-1)
+
+// ----- Board-alignment (level) trim -----
+// Per-airframe correction for a fixed roll/pitch offset caused by the IMU/board
+// not sitting perfectly parallel to the airframe reference plane. Set each to
+// the roll/pitch the firmware REPORTS when the aircraft is actually level (the
+// observed static offset), in degrees and in the quaternionToEulerDeg
+// convention; board_align.h then rotates every sensor vector by the inverse so
+// the reported roll/pitch read zero. See imuBodyAccel/Gyro/Mag and board_align.h.
+//
+// TUNING: place a level on the airframe datum (not the PCB), and adjust these
+// until the reported roll/pitch read ~0. Whatever remains after zeroing against
+// a verified-level reference is the true mount offset; any part that came from a
+// tilted surface drops out. Both 0.0f reproduces the untrimmed behaviour exactly.
+//
+// NOTE: this rotates the magnetometer too (required so the tilt-compensated
+// heading stays in the same frame as roll/pitch). Re-run MAGCAL after changing
+// these so the hard/soft-iron fit matches the trimmed frame.
+#ifndef FC_BOARD_ALIGN_ROLL_DEG
+#define FC_BOARD_ALIGN_ROLL_DEG   (-6.9f)
+#endif
+#ifndef FC_BOARD_ALIGN_PITCH_DEG
+#define FC_BOARD_ALIGN_PITCH_DEG  (-4.3f)
+#endif
+
 // Default magnetic reference for central Illinois (~40.0 N, 89.0 W),
 // evaluated for 2026-06-11. Override these at build time for a specific
 // flying site; declination is positive east and inclination is positive down.
@@ -746,20 +771,30 @@ SimpleMPU9250 IMU(I2C_Alternate, 0x68);
 //
 // Every consumer of IMU axes MUST read through these helpers so a future
 // mounting change is one edit, not one per call site.
+// Board-alignment (level) trim, built once in setup() from FC_BOARD_ALIGN_*_DEG
+// (see board_align.h). Applied to every sensor vector below so the whole
+// pipeline -- TRIAD init, accel correction, tilt-compensated heading, control,
+// telemetry -- reads relative to the airframe rather than the mounted IMU frame.
+// Identity until initialized, so a helper called before setup() is a no-op.
+BoardAlign gBoardAlign = { { {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} } };
+
 static inline void imuBodyAccel(float& ax, float& ay, float& az) {
-  ax = IMU.getAccelY_mss();
-  ay = IMU.getAccelX_mss();
-  az = -IMU.getAccelZ_mss();
+  const float x = IMU.getAccelY_mss();
+  const float y = IMU.getAccelX_mss();
+  const float z = -IMU.getAccelZ_mss();
+  boardAlignApply(&gBoardAlign, x, y, z, &ax, &ay, &az);
 }
 static inline void imuBodyGyro(float& p, float& q, float& r) {
-  p = IMU.getGyroY_rads();
-  q = IMU.getGyroX_rads();
-  r = -IMU.getGyroZ_rads();
+  const float x = IMU.getGyroY_rads();
+  const float y = IMU.getGyroX_rads();
+  const float z = -IMU.getGyroZ_rads();
+  boardAlignApply(&gBoardAlign, x, y, z, &p, &q, &r);
 }
 static inline void imuBodyMag(float& mx, float& my, float& mz) {
-  mx = IMU.getMagY_uT();
-  my = IMU.getMagX_uT();
-  mz = -IMU.getMagZ_uT();
+  const float x = IMU.getMagY_uT();
+  const float y = IMU.getMagX_uT();
+  const float z = -IMU.getMagZ_uT();
+  boardAlignApply(&gBoardAlign, x, y, z, &mx, &my, &mz);
 }
 
 // Hard-iron/soft-iron calibration for a body-frame magnetometer sample.
@@ -4291,6 +4326,11 @@ static bool bootGpsConfirmsStationary() {
 
 
 void setup() {
+  // Build the board-alignment (level) trim before any sensor is read, so the
+  // boot-time TRIAD attitude init and every later imuBody* call correct the
+  // fixed mount offset (see FC_BOARD_ALIGN_*_DEG and board_align.h).
+  boardAlignInit(&gBoardAlign, FC_BOARD_ALIGN_ROLL_DEG, FC_BOARD_ALIGN_PITCH_DEG);
+
   // Classify this boot before anything else. IWatchdog.isReset(true) reads the
   // RCC "reset caused by IWDG" flag and clears the (sticky) reset flags so a
   // later normal reboot cannot be misclassified from a stale flag. This only
