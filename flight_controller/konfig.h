@@ -29,18 +29,61 @@
  *                 proof (yaw Jacobian vs finite difference, innovation sign,
  *                 and the decoupling property through the real EKF class).
  *
- * DISABLED pending flight debugging. The measurement model is numerically
- * correct and passes the host tests, but in flight the attitude estimate went
- * unstable ("haywire"): decoupling makes roll & pitch depend ENTIRELY on the
- * accel/gyro path while the mag provides only a weakly observable scalar yaw,
- * and R_INIT_YAW plus the heading gate (MAG_YAW_INNOVATION_GATE) were never
- * flight-tuned -- unlike the legacy 3-axis path, which was. Reproducing the
- * divergence needs flight logs, not code inspection, so the default reverts to
- * the proven fusion.
+ * DISABLED after the first flight attempt went unstable ("haywire").
+ * ROOT-CAUSED since, by replaying the full correction pipeline (R ramp, both
+ * innovation gates, warmup, sub-stepped predicts, single precision) against a
+ * simulated takeoff + coordinated-turn flight with realistic sensor noise --
+ * see the flight divergence test in tests/ekf_decouple_mag_test.cpp. The
+ * measurement model itself is correct; two compounding integration defects
+ * caused the instability, and both are now fixed in the decoupled path:
  *
- * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Do not re-enable
- * for flight until the instability is root-caused from logs and R_INIT_YAW /
- * MAG_YAW_INNOVATION_GATE are tuned on the airframe. */
+ *   1. The tilt-compensated heading was over-trusted during dynamics. Its
+ *      error is ~tan(inclination) (~2.4x at this site's 67 deg) times the
+ *      roll/pitch error, and is CORRELATED with the state error rather than
+ *      the white noise R assumes. Fusing it at the quiet-air R_INIT_YAW while
+ *      sustained acceleration (takeoff roll, banked turn) corrupted the accel
+ *      -- the ONLY roll/pitch reference in this build -- closed an unstable
+ *      feedback loop: tilt error -> amplified heading innovation -> tight
+ *      yaw/gyro-bias corrections bleeding back into roll/pitch through the P
+ *      cross-covariances. FIX: the heading measurement noise is slaved to the
+ *      accel trust ratio, so the heading fades exactly when the tilt it was
+ *      compensated with becomes untrustworthy (Main.ino, decoupled block).
+ *   2. The innovation gates had no escape from self-lockout. Once the
+ *      estimate's own error exceeded a gate, every clean sample was rejected
+ *      against the broken estimate forever: the accel gate (~38 deg) locks
+ *      out roll/pitch (a permanent gyro coast on corrupted bias states pinned
+ *      at the clamp), and the heading gate (~34 deg) locks out yaw after
+ *      coasting through a maneuver. The legacy path self-recovers from both
+ *      via the 3-axis mag, which is why it never needed an escape. FIX: a
+ *      sustained streak of otherwise-valid but innovation-rejected samples
+ *      suspends THAT row's gate for a short re-acquire window
+ *      (EKF_GATE_REACQUIRE_REJECT_STREAK). The heading escape further has to
+ *      distinguish a genuine coast from a LYING compass (motor-current iron,
+ *      nearby ferrous material, bad calibration), which produces the same
+ *      reject streak: it therefore also demands coast evidence (a sustained
+ *      accel-untrusted stretch, accumulated only while the lockout is not
+ *      yet saturated so a pre-existing fault stays ineligible through later
+ *      maneuvers), a sustained accel-trusted run at opening, and a
+ *      sustained-health-based streak stand-down. With a faulted compass the
+ *      safe mode is: yaw unaided (possibly wrong, never adopted as truth)
+ *      while roll/pitch stay protected and recover; see the fault-injection
+ *      scenarios in tests/ekf_decouple_mag_test.cpp. One accepted residual:
+ *      a fault whose ONSET coincides with a maneuver is observationally
+ *      identical to a genuine coast and may be adopted at rollout -- a
+ *      yaw-only, self-healing exposure (see the KNOWN LIMIT note at the
+ *      escape constants in Main.ino).
+ *
+ * In that simulation the unfixed decoupled build diverges to ~180 deg on
+ * every run and never recovers; the fixed build stays bounded through the
+ * maneuvers and re-converges to a few degrees in straight flight, and with
+ * FC_ACCEL_CENTRIPETAL_COMPENSATION additionally enabled it outperforms the
+ * legacy fusion through turns.
+ *
+ * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Before
+ * re-enabling for flight: bench/flight-validate the fixed path, consider
+ * enabling FC_ACCEL_CENTRIPETAL_COMPENSATION once pitot/GPS/baro are trusted
+ * (it restores the accel reference in exactly the turns that stress this
+ * build), and expect to tune R_INIT_YAW / MAG_YAW_INNOVATION_GATE. */
 #ifndef FC_EKF_DECOUPLE_MAG
 #define FC_EKF_DECOUPLE_MAG 0
 #endif

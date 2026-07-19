@@ -506,6 +506,379 @@ static void test_decoupling_ekf() {
     }
 }
 
+/* ===================== Maiden-flight divergence & fix regression =====================
+ *
+ * Replays the flight profile that made the decoupled build go "haywire" on its
+ * first flight, through the REAL EKF class and a replica of Main.ino's 125 Hz
+ * correction block (accel norm gate + smooth R ramp + innovation gates +
+ * warmup + rejection fallbacks): runway idle, takeoff roll under sustained
+ * forward acceleration, climb-out, then a 35-deg-bank coordinated turn, with
+ * realistic deterministic sensor noise, gyro bias, and a small hard-iron
+ * calibration residual.
+ *
+ * Root cause this test pins down (see konfig.h, FC_EKF_DECOUPLE_MAG):
+ *   1. The tilt-compensated heading error is ~tan(inclination) x the
+ *      roll/pitch error and correlated with the state; fusing it at the
+ *      quiet-air R_INIT_YAW while dynamics corrupt the accel (the only
+ *      roll/pitch reference in this build) is an unstable feedback loop.
+ *      FIX: slave the heading noise to the accel trust ratio.
+ *   2. The innovation gates (accel AND heading) have no escape from
+ *      self-lockout: once the estimate's own error exceeds a gate, every
+ *      clean sample is rejected against the broken estimate forever.
+ *      FIX: a 2 s streak of otherwise-valid-but-innovation-rejected samples
+ *      suspends THAT row's gate for a 2 s re-acquire window. The heading
+ *      escape must additionally distinguish "yaw coasted away during a
+ *      maneuver" (re-acquire) from "the compass is lying" (stay gated), so
+ *      it also requires: a sustained accel-trusted stretch at opening (never
+ *      mid-maneuver); COAST EVIDENCE, which accumulates only on
+ *      accel-untrusted corrections while the reject streak is NOT yet
+ *      saturated (so a pre-existing fault's lockout stays ineligible through
+ *      later maneuvers) and drains on trusted ones; and the streak stands
+ *      down only after a sustained healthy (accepted-while-trusted) stretch,
+ *      so tilt-swing acceptance flickers at turn entry cannot re-arm it
+ *      (EKF_GATE_REACQUIRE_REJECT_STREAK). With a genuinely faulted compass
+ *      the safe mode is: yaw unaided (possibly wrong, never adopted as
+ *      truth) while roll/pitch stay protected and recover.
+ *
+ * The replica MUST mirror Main.ino's correction assembly; update both together. */
+
+/* Deterministic ~N(0,1) (Irwin-Hall) on top of the file's LCG. */
+static double nrand() {
+    double s = 0;
+    for (int i = 0; i < 12; i++) s += frand(0, 1);
+    return s - 6.0;
+}
+
+/* Firmware state normalization including the gyro-bias clamp (Main_bNormalizeState). */
+static bool cbNormClamp(Matrix& X) {
+    if (!cbNorm(X)) return false;
+    for (int i = 4; i < 7; i++) {
+        if (X[i][0] >  0.1) X[i][0] =  0.1;
+        else if (X[i][0] < -0.1) X[i][0] = -0.1;
+    }
+    return true;
+}
+
+static double att_err_deg(const double qt[4], const Matrix& Xe) {
+    double qe[4] = { Xe[0][0], Xe[1][0], Xe[2][0], Xe[3][0] };
+    double qtc[4] = { qt[0], -qt[1], -qt[2], -qt[3] };
+    double dq[4]; qmul(qtc, qe, dq); qnorm(dq);
+    double w = fabs(dq[0]); if (w > 1.0) w = 1.0;
+    return 2.0 * acos(w) * 180.0 / M_PI;
+}
+
+struct MaidenResult {
+    double maxErr; double finalErr;     /* total attitude error (deg) */
+    double maxTilt; double finalTilt;   /* roll/pitch-only (gravity-direction) error (deg) */
+    int accRej; int magRej; int accReacq; int magReacq;
+};
+
+/* Tilt (roll/pitch-only) error: angle between the body-frame gravity
+ * directions implied by the two attitudes; invariant to yaw error. */
+static double tilt_err_deg(const double qt[4], const Matrix& Xe) {
+    const double down[3] = {0, 0, -1};
+    double qe[4] = { Xe[0][0], Xe[1][0], Xe[2][0], Xe[3][0] };
+    double gT[3], gE[3];
+    Reb_times(qt, down, gT);
+    Reb_times(qe, down, gE);
+    double c = gT[0]*gE[0] + gT[1]*gE[1] + gT[2]*gE[2];
+    if (c > 1.0) c = 1.0;
+    if (c < -1.0) c = -1.0;
+    return acos(c) * 180.0 / M_PI;
+}
+
+/* Scenarios:
+ *   SCEN_MAIDEN          - the maneuvering maiden profile (takeoff, climb,
+ *                          35-deg coordinated turn); healthy compass.
+ *   SCEN_FAULT_LEVEL     - straight and level throughout, with a persistent
+ *                          body-frame magnetic disturbance from t = 10 s
+ *                          (~47 deg apparent heading shift, past the yaw
+ *                          gate) -- the sustained-fault case the yaw-gate
+ *                          escape must NOT re-admit.
+ *   SCEN_FAULT_THEN_TURN - the maiden profile with the same disturbance from
+ *                          t = 23 s (in cruise, BEFORE the turn): the
+ *                          saturated reject streak predates the maneuver, so
+ *                          the turn's coast evidence must not retroactively
+ *                          validate the faulted heading on rollout.
+ *   SCEN_FAULT_IN_TURN   - the maiden profile with the disturbance starting
+ *                          MID-turn (t = 30 s). This is the documented,
+ *                          ACCEPTED boundary of the escape (see the KNOWN
+ *                          LIMIT note at the escape constants in Main.ino):
+ *                          a fault whose onset coincides with the maneuver
+ *                          is observationally identical to a genuine coast,
+ *                          so the faulted heading may be adopted at rollout.
+ *                          The guaranteed property -- asserted here -- is
+ *                          that the exposure is yaw-only: roll/pitch stay
+ *                          protected and recover. */
+enum { SCEN_MAIDEN = 0, SCEN_FAULT_LEVEL = 1, SCEN_FAULT_THEN_TURN = 2,
+       SCEN_FAULT_IN_TURN = 3 };
+
+static MaidenResult run_maiden_flight(bool withFixes, int scenario) {
+    const bool steadyCompassFault = (scenario == SCEN_FAULT_LEVEL);
+    /* firmware constants (Main.ino) */
+    const double R_ACC = 0.0025, R_YAW = 0.0025, R_REJ = 1.0e3;
+    const double NORM_GATE_FRAC = 0.35, ACC_INNOV_GATE = 0.65, YAW_INNOV_GATE = 0.6;
+    const unsigned WARMUP = 250, REACQ_STREAK = 250, COAST_EVIDENCE = 250, ACC_TRUST_STREAK = 25;
+    const double G = 9.80665;
+
+    g_seed = 20260717u;   /* identical sensor stream for both runs */
+
+    Matrix Xi(SS_X_LEN,1); Xi.vSetToZero(); Xi[0][0] = 1.0;
+    Matrix P(SS_X_LEN,SS_X_LEN); P.vSetToZero();
+    for (int i=0;i<4;i++) P[i][i] = 10.0;
+    for (int i=4;i<7;i++) P[i][i] = 0.02;
+    Matrix Q(SS_X_LEN,SS_X_LEN); Q.vSetToZero();
+    for (int i=0;i<4;i++) Q[i][i] = 1e-6;
+    for (int i=4;i<7;i++) Q[i][i] = 1e-8;
+    Matrix R(SS_Z_LEN,SS_Z_LEN); R.vSetToZero();
+    EKF filter(Xi, P, Q, R, cbXdyn, cbY, cbFdyn, cbH, cbNormClamp);
+
+    double qt[4] = {1,0,0,0};
+    const double biasTrue[3] = { 0.010, -0.008, 0.012 };   /* rad/s residual gyro bias */
+    const double magResid[3] = { 1.5, -2.0, 1.0 };         /* uT hard-iron cal residual */
+    const double B_uT = 48.0;
+    const double B0e[3] = { B0[0]*B_uT, B0[1]*B_uT, B0[2]*B_uT };
+
+    unsigned warmupCount = 0;
+    unsigned accStreak = 0, accWindow = 0, magStreak = 0, magWindow = 0;
+    unsigned coastEvidence = 0, accTrustStreak = 0, magHealthy = 0;
+    MaidenResult res = {0, 0, 0, 0, 0, 0, 0, 0};
+    double finalSum = 0, finalTiltSum = 0; int finalN = 0;
+    const double Tend = steadyCompassFault ? 45.0 : 58.0;
+    Matrix Y(SS_Z_LEN,1), U(SS_U_LEN,1);
+
+    for (double t = 0; t < Tend; t += DT_DYN) {
+        /* ---- flight script ---- */
+        double w[3] = {0,0,0}, V = 0, Vdot = 0, throttle = 0.1;
+        const double bank = 35.0*M_PI/180.0;
+        if (steadyCompassFault) {
+            if (t >= 4) { V = 22.0; throttle = 0.6; }   /* straight & level throughout */
+        }
+        else if (t < 4) { /* runway idle: warmup arms on a still airframe */ }
+        else if (t < 11) { V = 2.5*(t-4);        Vdot = 2.5; throttle = 1.0; }  /* takeoff roll */
+        else if (t < 13) { V = 17.5+1.2*(t-11);  Vdot = 1.2; throttle = 1.0;
+                           w[1] = (12.0*M_PI/180.0)/2.0; }                      /* rotate */
+        else if (t < 20) { V = 19.9+0.5*(t-13);  Vdot = 0.5; throttle = 0.9; }  /* climb-out */
+        else if (t < 22) { V = 23.4; throttle = 0.6;
+                           w[1] = -(12.0*M_PI/180.0)/2.0; }                     /* level off */
+        else if (t < 26) { V = 23.4; throttle = 0.6; }                          /* cruise */
+        else if (t < 28) { V = 20.0; throttle = 0.65; w[0] = bank/2.0; }        /* roll in */
+        else if (t < 40) { V = 20.0; throttle = 0.65;                           /* coordinated turn */
+                           double Om = G*tan(bank)/V;
+                           w[1] = Om*sin(bank); w[2] = Om*cos(bank); }
+        else if (t < 42) { V = 20.0; throttle = 0.65; w[0] = -bank/2.0; }       /* roll out */
+        else             { V = 22.0; throttle = 0.6; }                          /* straight recovery */
+
+        /* ---- truth propagation ---- */
+        for (int s = 0; s < 10; s++) {
+            const double p = w[0], q = w[1], r = w[2];
+            const double h = DT_DYN/10*0.5;
+            double q0=qt[0], q1=qt[1], q2=qt[2], q3=qt[3];
+            qt[0] = q0 + h*(-p*q1 - q*q2 - r*q3);
+            qt[1] = q1 + h*( p*q0 + r*q2 - q*q3);
+            qt[2] = q2 + h*( q*q0 - r*q1 + p*q3);
+            qt[3] = q3 + h*( r*q0 + q*q1 - p*q2);
+            qnorm(qt);
+        }
+
+        /* ---- sensors: specific force (gravity + kinematic), field, gyro ---- */
+        const double gE[3] = {0, 0, -G};
+        double fb[3]; Reb_times(qt, gE, fb);
+        fb[0] += Vdot; fb[1] += w[2]*V; fb[2] += -w[1]*V;
+        double mb[3]; Reb_times(qt, B0e, mb);
+        const double vibe = 0.25 + 0.9*throttle;   /* m/s^2 rms, throttle-correlated */
+        double acc[3], mg[3];
+        for (int i = 0; i < 3; i++) {
+            acc[i]   = fb[i] + vibe*nrand();
+            mg[i]    = mb[i] + magResid[i] + 0.6*nrand();
+            U[i][0]  = w[i] + biasTrue[i] + 0.015*nrand();
+        }
+        if ((steadyCompassFault && t >= 10.0) ||
+            (scenario == SCEN_FAULT_THEN_TURN && t >= 23.0) ||
+            (scenario == SCEN_FAULT_IN_TURN && t >= 30.0)) {
+            mg[1] += 20.0;   /* ~47 deg apparent heading shift vs the ~18.7 uT horizontal field */
+        }
+
+        /* ---- replica of Main.ino's 125 Hz correction assembly ---- */
+        Matrix Xpred(SS_X_LEN,1);
+        cbXdyn(Xpred, filter.GetX(), U);
+        double Xp[7]; for (int i=0;i<7;i++) Xp[i] = Xpred[i][0];
+        double yhat[SS_Z_LEN]; h_decoupled(Xp, yhat);
+
+        const double an = sqrt(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
+        const double normErrFrac = (an > 1e-6) ? fabs(an - G)/G : (NORM_GATE_FRAC + 1.0);
+        bool accelRejected = normErrFrac > NORM_GATE_FRAC;
+        const bool accelNormOk = !accelRejected;
+        double rAcc;
+        if (!accelRejected) {
+            Y[0][0]=acc[0]/an; Y[1][0]=acc[1]/an; Y[2][0]=acc[2]/an;
+            if (warmupCount >= WARMUP && accWindow == 0) {
+                const double dx=Y[0][0]-yhat[0], dy=Y[1][0]-yhat[1], dz=Y[2][0]-yhat[2];
+                accelRejected = sqrt(dx*dx + dy*dy + dz*dz) > ACC_INNOV_GATE;
+            }
+        }
+        if (accelRejected) {
+            Y[0][0]=yhat[0]; Y[1][0]=yhat[1]; Y[2][0]=yhat[2];
+            rAcc = R_REJ; ++res.accRej;
+        } else {
+            rAcc = R_ACC * pow(R_REJ/R_ACC, normErrFrac/NORM_GATE_FRAC);
+        }
+        if (withFixes) {  /* FIX 2: accel gate lockout escape (per-row window).
+             The window counts fusion opportunities: a norm-rejected sample
+             cannot be fused and must not burn it (mirrors Main.ino). */
+            if (accWindow > 0 && !accelRejected) --accWindow;
+            if (accelRejected && accelNormOk) {
+                if (++accStreak >= REACQ_STREAK) {
+                    accWindow = REACQ_STREAK; accStreak = 0; ++res.accReacq;
+                }
+            } else if (!accelRejected) {
+                accStreak = 0;
+            }
+        }
+
+        double rYaw = R_YAW;
+        const double dpsi = mag_yaw_innovation(Xp, mg);
+        bool magRejected = (warmupCount >= WARMUP && magWindow == 0 &&
+                            fabs(dpsi) > YAW_INNOV_GATE);
+        if (magRejected) {
+            Y[3][0] = yhat[3]; rYaw = R_REJ; ++res.magRej;
+        } else {
+            Y[3][0] = yhat[3] + dpsi;
+            if (withFixes) {  /* FIX 1: heading trust slaved to accel trust */
+                rYaw = R_YAW * (rAcc / R_ACC);
+                if (rYaw > R_REJ) rYaw = R_REJ;
+            }
+        }
+        /* Coast evidence: only a sustained accel-untrusted stretch (a real
+         * maneuver, during which the heading was slaved weak and yaw could
+         * genuinely coast away) may unlock the yaw-gate escape. It builds on
+         * accel-untrusted corrections, DRAINS on trusted ones (so steady-
+         * flight noise tails accumulate nothing and a persistent compass
+         * fault stays gated), and resets whenever the heading is fused near
+         * base trust (yaw healthy again). Accumulation additionally requires
+         * the reject streak to not already be saturated: once the heading has
+         * been fully locked out for the streak duration, the lockout predates
+         * any later maneuver, so that maneuver cannot retroactively validate
+         * the faulted heading (fault-then-turn case). */
+        const bool accelTrusted = rAcc <= R_ACC * 100.0;
+        const bool magYawAided = !magRejected && rYaw <= R_YAW * 10.0;
+        if (magYawAided)            coastEvidence = 0;
+        else if (!accelTrusted)     { if (magStreak < REACQ_STREAK && coastEvidence < 2500u) ++coastEvidence; }
+        else if (coastEvidence > 0) --coastEvidence;
+        if (accelTrusted) { if (accTrustStreak < 60000u) ++accTrustStreak; }
+        else accTrustStreak = 0;
+        /* Heading health: accumulates on accepted-while-accel-trusted cycles,
+         * resets on any innovation reject, holds otherwise. Only a sustained
+         * healthy stretch may stand the reject streak down -- a brief
+         * acceptance run at turn entry (tilt swing cancelling a fault while
+         * the accel is still momentarily trusted) cannot. */
+        if (magRejected) magHealthy = 0;
+        else if (accelTrusted) { if (magHealthy < 60000u) ++magHealthy; }
+        if (withFixes) {  /* FIX 2, heading gate: yaw lockout escape. Both the
+             window OPENING and the reject-streak STAND-DOWN require a
+             sustained accel-trusted stretch: mid-maneuver, tilt corruption
+             can swing the apparent heading through the gate on isolated
+             near-1 g noise samples, and such flickers must neither open the
+             window nor stand the streak down (a standing streak is what
+             keeps a pre-existing fault's lockout ineligible for coast
+             evidence through a later turn). */
+            if (magWindow > 0 && !magRejected) --magWindow;
+            if (magRejected && accelTrusted) {
+                if (magStreak < 60000u) ++magStreak;
+                if (magStreak >= REACQ_STREAK && coastEvidence >= COAST_EVIDENCE &&
+                    accTrustStreak >= ACC_TRUST_STREAK) {
+                    magWindow = REACQ_STREAK; magStreak = 0; ++res.magReacq;
+                }
+            } else if (magHealthy >= REACQ_STREAK) {
+                magStreak = 0;
+            }
+        }
+
+        R.vSetToZero();
+        R[0][0]=R[1][1]=R[2][2]=rAcc; R[3][3]=rYaw;
+        filter.vSetMeasurementNoise(R);
+        if (!filter.bUpdate(Y, U)) {
+            g_fail++;
+            std::printf("  FAIL bUpdate returned false at t=%.2f\n", t);
+            return res;
+        }
+        if (warmupCount < WARMUP) ++warmupCount;
+
+        const double e = att_err_deg(qt, filter.GetX());
+        const double eTilt = tilt_err_deg(qt, filter.GetX());
+        if (e > res.maxErr) res.maxErr = e;
+        if (eTilt > res.maxTilt) res.maxTilt = eTilt;
+        if (t > Tend - 3.0) { finalSum += e; finalTiltSum += eTilt; ++finalN; }
+    }
+    res.finalErr = finalN ? finalSum/finalN : 0.0;
+    res.finalTilt = finalN ? finalTiltSum/finalN : 0.0;
+    return res;
+}
+
+static void test_flight_divergence_and_fix() {
+    std::printf("[test_flight_divergence_and_fix] maiden-flight replay: unfixed diverges, fixed recovers\n");
+    MaidenResult unfixed = run_maiden_flight(false, SCEN_MAIDEN);
+    MaidenResult patched = run_maiden_flight(true, SCEN_MAIDEN);
+    std::printf("  info unfixed: maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d\n",
+                unfixed.maxErr, unfixed.finalErr, unfixed.accRej, unfixed.magRej);
+    std::printf("  info fixed:   maxErr=%.1f deg  finalErr=%.1f deg  accRej=%d magRej=%d accReacq=%d magReacq=%d\n",
+                patched.maxErr, patched.finalErr, patched.accRej, patched.magRej,
+                patched.accReacq, patched.magReacq);
+    check(unfixed.maxErr > 90.0,  "unfixed build diverges on the maiden profile", unfixed.maxErr, 90.0, 0.0);
+    check(patched.maxErr < 80.0,  "fixed: error bounded through maneuvers", patched.maxErr, 0.0, 80.0);
+    check(patched.finalErr < 12.0, "fixed: re-converges in straight flight", patched.finalErr, 0.0, 12.0);
+    check(patched.magReacq >= 1, "fixed: yaw re-acquires after the coast", (double)patched.magReacq, 1.0, 0.0);
+}
+
+/* The yaw-gate escape must not re-admit a sustained compass fault: in steady
+ * flight the heading was fully aided until the fault, so there is no coast
+ * evidence, the gate must stay closed, and yaw must hold on the gyro. */
+static void test_steady_compass_fault_stays_gated() {
+    std::printf("[test_steady_compass_fault_stays_gated] persistent disturbance in level flight\n");
+    MaidenResult r = run_maiden_flight(true, SCEN_FAULT_LEVEL);
+    std::printf("  info fault run: maxErr=%.1f deg  finalErr=%.1f deg  magRej=%d accReacq=%d magReacq=%d\n",
+                r.maxErr, r.finalErr, r.magRej, r.accReacq, r.magReacq);
+    check(r.magReacq == 0 && r.accReacq == 0,
+          "no re-acquire window opens on a compass fault", (double)(r.magReacq + r.accReacq), 0.0, 0.0);
+    check(r.magRej > 3000,   "fault stays rejected by the yaw gate", (double)r.magRej, 4000.0, 0.0);
+    check(r.maxErr < 15.0,   "attitude holds on gyro through the fault", r.maxErr, 0.0, 15.0);
+}
+
+/* A fault that appears in steady flight and persists through a LATER turn:
+ * the saturated reject streak predates the maneuver, so the turn's coast
+ * evidence must not open the window and adopt the faulted heading on
+ * rollout (the streak-saturation eligibility rule in the evidence update). */
+static void test_fault_then_turn_stays_gated() {
+    std::printf("[test_fault_then_turn_stays_gated] pre-existing fault must not be validated by a turn\n");
+    MaidenResult r = run_maiden_flight(true, SCEN_FAULT_THEN_TURN);
+    std::printf("  info fault+turn: maxErr=%.1f maxTilt=%.1f finalErr=%.1f finalTilt=%.1f deg  magRej=%d accReacq=%d magReacq=%d\n",
+                r.maxErr, r.maxTilt, r.finalErr, r.finalTilt, r.magRej, r.accReacq, r.magReacq);
+    /* With the sole yaw sensor lying, yaw cannot be right in this regime --
+     * the deliverable is that the fault is never ADOPTED as truth and that
+     * roll/pitch (the flight-critical DOFs, and the subject of the original
+     * divergence) stay protected and recover. Yaw ends wrong and unaided;
+     * that is the documented safe mode for a faulted compass. */
+    check(r.magReacq == 0,  "turn does not re-admit the faulted heading", (double)r.magReacq, 0.0, 0.0);
+    check(r.finalTilt < 10.0, "roll/pitch recover after the turn", r.finalTilt, 0.0, 10.0);
+}
+
+/* Documented, ACCEPTED boundary (see SCEN_FAULT_IN_TURN above): a fault whose
+ * onset coincides with the maneuver is indistinguishable from a genuine
+ * coast, so the escape may adopt it at rollout. This test pins the property
+ * that still holds there: the exposure is yaw-only -- roll/pitch stay
+ * protected through the maneuver and recover after it. If a future change
+ * (e.g. a field-magnitude gate) starts rejecting this fault too, the
+ * adoption info printed here will show magReacq=0 and this test still
+ * passes. */
+static void test_fault_in_turn_documented_boundary() {
+    std::printf("[test_fault_in_turn_documented_boundary] mid-maneuver fault onset (accepted limit)\n");
+    MaidenResult r = run_maiden_flight(true, SCEN_FAULT_IN_TURN);
+    std::printf("  info fault-in-turn: maxErr=%.1f maxTilt=%.1f finalErr=%.1f finalTilt=%.1f deg  magRej=%d accReacq=%d magReacq=%d\n",
+                r.maxErr, r.maxTilt, r.finalErr, r.finalTilt, r.magRej, r.accReacq, r.magReacq);
+    check(r.finalTilt < 10.0, "roll/pitch protected despite mid-turn fault", r.finalTilt, 0.0, 10.0);
+    check(r.maxTilt < 60.0,   "tilt excursion bounded through the maneuver", r.maxTilt, 0.0, 60.0);
+}
+
 int main() {
     std::printf("B0 = [% .5f % .5f % .5f], |B0|=%.6f  decl=%.4f incl=%.4f\n\n",
                 B0[0],B0[1],B0[2], sqrt(B0[0]*B0[0]+B0[1]*B0[1]+B0[2]*B0[2]),
@@ -514,6 +887,10 @@ int main() {
     test_innovation_sign();
     test_decoupling_ekf();
     test_dynamic_frame_decoupled();
+    test_flight_divergence_and_fix();
+    test_steady_compass_fault_stays_gated();
+    test_fault_then_turn_stays_gated();
+    test_fault_in_turn_documented_boundary();
     std::printf("\n%s (%d failure%s)\n", g_fail? "TESTS FAILED":"ALL TESTS PASSED",
                 g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
