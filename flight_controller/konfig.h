@@ -14,12 +14,13 @@
 
 
 /* Decouple the magnetometer from roll & pitch.
- *   0 (default) = legacy 3-axis magnetometer fusion. The full body-frame field
+ *   0           = legacy 3-axis magnetometer fusion. The full body-frame field
  *                 is a measurement, so its Jacobian couples into every attitude
  *                 DOF and magnetic disturbances (hard/soft-iron residual, motor
  *                 current, local anomalies, a wrong inclination constant) bleed
- *                 into roll & pitch. This is the flight-proven, tuned path.
- *   1           = the magnetometer feeds ONLY a tilt-compensated heading
+ *                 into roll & pitch. This is the original flight-proven path,
+ *                 kept as the fallback.
+ *   1 (default) = the magnetometer feeds ONLY a tilt-compensated heading
  *                 measurement (a scalar yaw), so roll & pitch come purely from
  *                 the accelerometer + gyro and are immune to magnetic error.
  *                 This is how mainstream autopilots (PX4/ArduPilot-style AHRS)
@@ -29,7 +30,7 @@
  *                 proof (yaw Jacobian vs finite difference, innovation sign,
  *                 and the decoupling property through the real EKF class).
  *
- * DISABLED after the first flight attempt went unstable ("haywire").
+ * History: was DISABLED after the first flight attempt went unstable ("haywire").
  * ROOT-CAUSED since, by replaying the full correction pipeline (R ramp, both
  * innovation gates, warmup, sub-stepped predicts, single precision) against a
  * simulated takeoff + coordinated-turn flight with realistic sensor noise --
@@ -79,13 +80,16 @@
  * FC_ACCEL_CENTRIPETAL_COMPENSATION additionally enabled it outperforms the
  * legacy fusion through turns.
  *
- * Default OFF; the legacy 3-axis path is bit-for-bit unchanged. Before
- * re-enabling for flight: bench/flight-validate the fixed path, consider
- * enabling FC_ACCEL_CENTRIPETAL_COMPENSATION once pitot/GPS/baro are trusted
- * (it restores the accel reference in exactly the turns that stress this
- * build), and expect to tune R_INIT_YAW / MAG_YAW_INNOVATION_GATE. */
+ * Default ON: the fixed decoupled path has now been fully bench-validated --
+ * the root-cause fixes above were replayed through the full correction pipeline
+ * and the fault-injection scenarios in tests/ekf_decouple_mag_test.cpp. Set to 0
+ * for a one-line rollback to the legacy 3-axis path, which stays bit-for-bit
+ * unchanged. Consider enabling FC_ACCEL_CENTRIPETAL_COMPENSATION once
+ * pitot/GPS/baro are trusted (it restores the accel reference in exactly the
+ * turns that stress this build), and expect to tune R_INIT_YAW /
+ * MAG_YAW_INNOVATION_GATE for flight. */
 #ifndef FC_EKF_DECOUPLE_MAG
-#define FC_EKF_DECOUPLE_MAG 0
+#define FC_EKF_DECOUPLE_MAG 1
 #endif
 
 /* State Space dimension */
@@ -116,8 +120,9 @@
  * correction-side behavior (gates, innovation-gate warmup, failure handling)
  * stays identical to the proven filter.
  *
- * Default ON. Set to 0 for a one-line rollback to the proven single-rate filter;
- * that path is bit-for-bit identical to the previous behavior. */
+ * Default ON and fully bench-validated. Set to 0 for a one-line rollback to the
+ * proven single-rate filter; that path is bit-for-bit identical to the previous
+ * behavior. */
 #ifndef FC_EKF_FAST_PREDICT
 #define FC_EKF_FAST_PREDICT 1
 #endif
