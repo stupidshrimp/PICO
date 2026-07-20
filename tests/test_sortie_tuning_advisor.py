@@ -236,6 +236,26 @@ def test_placeholder_gps_course_uses_derived_track(tmp_path):
     assert not any("declination" in d for d in finding.details)
 
 
+def test_placeholder_course_rejected_even_when_mostly_northbound(tmp_path):
+    # A constant-0 placeholder course *agrees on average* with the true track
+    # when the flight is mostly northbound, so the median-disagreement guard
+    # alone would trust it. The variation guard must still reject it: a real
+    # turn excursion means the track varies while the logged course stays flat.
+    path = tmp_path / "north_placeholder.csv"
+    _write_flight(
+        path,
+        course_value=0.0,
+        initial_hdg=0.0,
+        phases=[(0.0, 12.0, 0.0), (12.0, 16.0, 20.0),
+                (16.0, 20.0, -20.0), (20.0, 32.0, 0.0)],
+    )
+    finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
+    assert finding.status == "pass", finding.details
+    # Turns must be seen via the derived track — impossible if the flat course
+    # had been trusted (its turn rate would be ~0 everywhere).
+    assert any("coordinated-turn bank" in d for d in finding.details)
+
+
 def test_no_gps_is_no_data(tmp_path):
     path = tmp_path / "no_gps.csv"
     _write_flight(path, with_gps=False)

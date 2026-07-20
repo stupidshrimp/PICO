@@ -1027,6 +1027,11 @@ _TURN_RATE_MIN_DPS = 6.0  # |track rate| above this reads as a real turn
 # position-derived track by more than this, treat it as a placeholder (e.g. a
 # GGA-only receiver logging a constant 0°) and use the derived track instead.
 _COURSE_DISAGREE_DEG = 20.0
+# ...and reject a logged course that barely varies (std below the first value)
+# while the derived track really does (std above the second): a constant course
+# through actual turns is a placeholder even if it agrees on average.
+_COURSE_PLACEHOLDER_STD_DEG = 2.0
+_COURSE_MOTION_STD_DEG = 8.0
 # Advisory thresholds (degrees unless noted).
 _ROLL_BIAS_WARN_DEG = 3.0
 _PITCH_LEVEL_WARN_DEG = 8.0
@@ -1248,14 +1253,27 @@ def _flight_frame(streams: dict[str, _Stream]) -> Optional[dict[str, list[float]
         ]
     )
     logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid)
-    disagreements = [
-        abs(_wrap180(logged[i] - track[i]))
+    both = [
+        i
         for i in range(count)
         if math.isfinite(logged[i]) and math.isfinite(track[i])
     ]
+    disagreements = [abs(_wrap180(logged[i] - track[i])) for i in both]
+    logged_moving = [logged[i] for i in both]
+    track_moving = [track[i] for i in both]
+    # A near-constant logged course while the derived track actually varies is
+    # a placeholder (e.g. a GGA-only receiver logging ground_course=0 through
+    # turns) — reject it even when the median disagreement is small because the
+    # flight happened to run mostly in the placeholder's direction, otherwise
+    # its turns would be misclassified as straight.
+    is_placeholder = (
+        _std(logged_moving) < _COURSE_PLACEHOLDER_STD_DEG
+        and _std(track_moving) > _COURSE_MOTION_STD_DEG
+    )
     trust_logged = (
-        len(disagreements) >= 5
+        len(both) >= 5
         and _median(disagreements) <= _COURSE_DISAGREE_DEG
+        and not is_placeholder
     )
     if trust_logged:
         course = [
