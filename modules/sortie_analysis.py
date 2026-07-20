@@ -1023,6 +1023,10 @@ _SEG_SETTLE_S = 0.5  # discard each segment's entry transient
 _STRAIGHT_TURN_RATE_DPS = 3.0  # |track rate| below this reads as "straight"
 _LEVEL_CLIMB_MS = 1.5  # |climb rate| below this reads as "level"
 _TURN_RATE_MIN_DPS = 6.0  # |track rate| above this reads as a real turn
+# If the receiver's logged ground course typically disagrees with the
+# position-derived track by more than this, treat it as a placeholder (e.g. a
+# GGA-only receiver logging a constant 0°) and use the derived track instead.
+_COURSE_DISAGREE_DEG = 20.0
 # Advisory thresholds (degrees unless noted).
 _ROLL_BIAS_WARN_DEG = 3.0
 _PITCH_LEVEL_WARN_DEG = 8.0
@@ -1223,23 +1227,43 @@ def _flight_frame(streams: dict[str, _Stream]) -> Optional[dict[str, list[float]
         11,  # ~1 s: tame GPS position-differencing noise
     )
 
-    # Prefer the receiver's own Doppler course (low noise); fall back to the
-    # position-derived track only where the receiver did not report one.
-    logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid)
-    course: list[float] = []
-    for i in range(count):
-        c = logged[i]
-        if not math.isfinite(c):
+    # Ground course two ways: the receiver's own report (low noise, but only
+    # valid when the receiver streams RMC/VTG — a GGA-only config logs a
+    # constant 0° placeholder while still moving) and the position-derived
+    # track (independent, noisier). Both are the same physical quantity
+    # (course over ground), so trust the logged course only where it actually
+    # agrees with the motion; otherwise fall back to the track. This keeps a
+    # placeholder course from making every leg read as 0°.
+    track = _unwrap_deg(
+        [
+            math.degrees(math.atan2(v_east[i], v_north[i]))
             if (
                 math.isfinite(v_east[i])
                 and math.isfinite(v_north[i])
                 and math.isfinite(speed[i])
                 and speed[i] > _FLYING_GROUNDSPEED_MS
-            ):
-                c = math.degrees(math.atan2(v_east[i], v_north[i]))
-            else:
-                c = math.nan
-        course.append(c)
+            )
+            else math.nan
+            for i in range(count)
+        ]
+    )
+    logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid)
+    disagreements = [
+        abs(_wrap180(logged[i] - track[i]))
+        for i in range(count)
+        if math.isfinite(logged[i]) and math.isfinite(track[i])
+    ]
+    trust_logged = (
+        len(disagreements) >= 5
+        and _median(disagreements) <= _COURSE_DISAGREE_DEG
+    )
+    if trust_logged:
+        course = [
+            logged[i] if math.isfinite(logged[i]) else track[i]
+            for i in range(count)
+        ]
+    else:
+        course = list(track)
     course = _unwrap_deg(course)
 
     return {
@@ -1440,9 +1464,13 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
     )
     if abs(roll_bias) > _ROLL_BIAS_WARN_DEG:
         status = "warn"
+        # FC_BOARD_ALIGN_ROLL_DEG is defined as the roll the firmware reports
+        # when the airframe is actually level (boardAlignInit stores its
+        # inverse), so a residual level-flight roll is *added* to that constant
+        # to null it — increasing it, not subtracting.
         details.append(
-            f"→ Steady roll bias: trim the board-alignment roll by about "
-            f"{-roll_bias:+.1f}° (FC_BOARD_ALIGN_ROLL_DEG), or suspect "
+            f"→ Steady roll bias: increase the board-alignment roll constant "
+            f"FC_BOARD_ALIGN_ROLL_DEG by about {roll_bias:+.1f}°, or suspect "
             "R_INIT_ACC over-trusting the accelerometer."
         )
 

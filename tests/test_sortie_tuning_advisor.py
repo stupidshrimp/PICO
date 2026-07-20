@@ -61,7 +61,7 @@ def _omega_dps(t: float, phases) -> float:
 
 def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                   with_gps=True, yaw_snaps=0, initial_hdg=90.0, att_dt=0.02,
-                  phases=None):
+                  phases=None, course_value=None):
     """Integrate the flight and write it as a sortie CSV.
 
     roll/pitch/yaw are the *estimator's* values, so the injected bias/drift is
@@ -121,7 +121,10 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                 "longitude": f"{lon:.7f}",
                 "altitude_ft": "300.0",
                 "airspeed_mph": f"{_SPEED_MS * _MS_TO_MPH:.2f}",
-                "ground_course": f"{hdg % 360.0:.2f}",
+                "ground_course": (
+                    f"{course_value:.2f}" if course_value is not None
+                    else f"{hdg % 360.0:.2f}"
+                ),
                 "satellites": "10",
             }))
 
@@ -159,7 +162,11 @@ def test_roll_bias_points_at_board_align(tmp_path):
     finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
     assert finding.status == "warn"
     assert any("Turn-compensated level roll averages +5" in d for d in finding.details)
-    assert any("board-alignment roll" in d for d in finding.details)
+    # A +5° residual must recommend *increasing* FC_BOARD_ALIGN_ROLL_DEG by
+    # +5° (it is the reported-at-level offset, boardAlignInit stores its
+    # inverse) — decreasing it would double the mount bias.
+    guidance = next(d for d in finding.details if "FC_BOARD_ALIGN_ROLL_DEG" in d)
+    assert "increase" in guidance and "+5.0°" in guidance
     # The coordinated-turn regression should still see the right sign/scale.
     slope_line = next(d for d in finding.details if "coordinated-turn bank" in d)
     assert "slope 1." in slope_line
@@ -213,6 +220,20 @@ def test_snap_detection_adapts_to_slow_cadence(tmp_path):
     finding = _test_estimator_continuity(load_sortie_streams(str(snappy)))
     assert finding.status == "warn", finding.details
     assert any("non-physical" in d for d in finding.details)
+
+
+def test_placeholder_gps_course_uses_derived_track(tmp_path):
+    # A GGA-only receiver logs a constant 0° ground course while lat/lon are
+    # valid and the aircraft is turning. Trusting it would make every leg read
+    # as course 0° (false heading offsets, no turns detected). The advisor must
+    # fall back to the position-derived track and stay clean on a clean flight.
+    path = tmp_path / "ggaonly.csv"
+    _write_flight(path, course_value=0.0)
+    finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
+    assert finding.status == "pass", finding.details
+    # It should still have found real turns via the derived track.
+    assert any("coordinated-turn bank" in d for d in finding.details)
+    assert not any("declination" in d for d in finding.details)
 
 
 def test_no_gps_is_no_data(tmp_path):
