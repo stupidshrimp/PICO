@@ -21,7 +21,7 @@
  *                 into roll & pitch. This is the primary source of the
  *                 heading-dependent roll/pitch offset and the slow attitude
  *                 drift observed near magnetic disturbances.
- *   1 (default) = the magnetometer feeds ONLY a tilt-compensated heading
+ *   1           = the magnetometer feeds ONLY a tilt-compensated heading
  *                 measurement (a scalar yaw), so roll & pitch come purely from
  *                 the accelerometer + gyro and are immune to magnetic error.
  *                 This is how mainstream autopilots (PX4/ArduPilot-style AHRS)
@@ -31,11 +31,11 @@
  *                 proof (yaw Jacobian vs finite difference, innovation sign,
  *                 and the decoupling property through the real EKF class).
  *
- * Default ON. Set to 0 for a one-line rollback to the legacy 3-axis fusion;
- * that path is bit-for-bit unchanged. R_INIT_YAW and the heading gate
+ * Default OFF. Set to 1 to enable tilt-compensated heading fusion;
+ * the default path remains the legacy 3-axis fusion. R_INIT_YAW and the heading gate
  * (MAG_YAW_INNOVATION_GATE) may still benefit from flight tuning. */
 #ifndef FC_EKF_DECOUPLE_MAG
-#define FC_EKF_DECOUPLE_MAG 1
+#define FC_EKF_DECOUPLE_MAG 0
 #endif
 
 /* State Space dimension */
