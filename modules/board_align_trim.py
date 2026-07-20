@@ -48,6 +48,23 @@ BOARD_ALIGN_TRIM_RANGE_DEG = 10.0
 # Degrees adjusted per arrow-key press.
 BOARD_ALIGN_TRIM_STEP_DEG = 0.1
 
+# Compiled firmware baseline (FC_BOARD_ALIGN_*_DEG in flight_controller/Main.ino).
+# The keyboard trim is a DELTA the FC ADDS to this baseline, so the effective
+# offset -- the value to bake back into the firmware once the aircraft reads
+# level -- is baseline + delta, not the delta alone. Keep these in lockstep with
+# the firmware defaults (same "keep in lockstep with Main.ino" pattern as the
+# FBW / auto-throttle limits mirrored in main.py).
+FC_BOARD_ALIGN_BASELINE_ROLL_DEG = -6.9
+FC_BOARD_ALIGN_BASELINE_PITCH_DEG = -4.3
+
+
+def effective_board_align_offset(baseline_deg: float, delta_deg: float) -> float:
+    """Return the effective offset to bake into the firmware: baseline + delta."""
+    try:
+        return float(baseline_deg) + float(delta_deg)
+    except (TypeError, ValueError):
+        return 0.0
+
 
 def clamp_board_align_offset(offset_deg: float) -> float:
     """Clamp a roll/pitch trim delta to the transmissible +-range."""

@@ -4,6 +4,10 @@ These verify the pure channel semantics (modules/board_align_trim.py) headlessly
 -- no PySide6 needed -- and that the encode/decode round trip agrees with the
 formula the FC uses in flight_controller/Main.ino.
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
@@ -13,9 +17,12 @@ from modules.board_align_trim import (
     CRSF_CHANNEL_CENTER,
     CRSF_CHANNEL_MAX,
     CRSF_CHANNEL_MIN,
+    FC_BOARD_ALIGN_BASELINE_PITCH_DEG,
+    FC_BOARD_ALIGN_BASELINE_ROLL_DEG,
     board_align_channel_to_offset,
     board_align_offset_to_channel,
     clamp_board_align_offset,
+    effective_board_align_offset,
     step_board_align_offset,
 )
 
@@ -58,6 +65,18 @@ def test_step_accumulates_and_clamps():
     many = int(round(BOARD_ALIGN_TRIM_RANGE_DEG / BOARD_ALIGN_TRIM_STEP_DEG)) + 50
     assert step_board_align_offset(0.0, many) == BOARD_ALIGN_TRIM_RANGE_DEG
     assert step_board_align_offset(0.0, -many) == -BOARD_ALIGN_TRIM_RANGE_DEG
+
+
+def test_effective_offset_is_baseline_plus_delta():
+    # The FC adds the keyboard delta to its compiled baseline, so the value to
+    # bake back into FC_BOARD_ALIGN_*_DEG is baseline + delta, not the delta.
+    assert effective_board_align_offset(-6.9, 0.0) == -6.9
+    assert abs(effective_board_align_offset(-6.9, 2.3) - (-4.6)) < 1e-9
+    assert effective_board_align_offset(FC_BOARD_ALIGN_BASELINE_PITCH_DEG, 0.0) == (
+        FC_BOARD_ALIGN_BASELINE_PITCH_DEG
+    )
+    # A zero baseline makes the effective offset equal to the delta.
+    assert effective_board_align_offset(0.0, 1.5) == 1.5
 
 
 def test_channels_are_the_free_auxes():

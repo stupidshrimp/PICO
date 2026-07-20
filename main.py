@@ -137,7 +137,10 @@ from modules.compass_cal import (
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
     BOARD_ALIGN_ROLL_CHANNEL_INDEX,
+    FC_BOARD_ALIGN_BASELINE_PITCH_DEG,
+    FC_BOARD_ALIGN_BASELINE_ROLL_DEG,
     board_align_offset_to_channel,
+    effective_board_align_offset,
     step_board_align_offset,
 )
 
@@ -2599,14 +2602,24 @@ class MainWindow(QMainWindow):
                 else "color: rgb(255, 165, 0);"
             )
         if hasattr(self, "boardAlignTrimLabel"):
-            roll = self.board_align_roll_trim_deg
-            pitch = self.board_align_pitch_trim_deg
+            d_roll = self.board_align_roll_trim_deg
+            d_pitch = self.board_align_pitch_trim_deg
+            # Show the EFFECTIVE offset (baseline + delta) -- the value to bake
+            # into FC_BOARD_ALIGN_*_DEG -- with the live keyboard delta in
+            # parentheses so the number is never mistaken for the raw delta.
+            eff_roll = effective_board_align_offset(
+                FC_BOARD_ALIGN_BASELINE_ROLL_DEG, d_roll
+            )
+            eff_pitch = effective_board_align_offset(
+                FC_BOARD_ALIGN_BASELINE_PITCH_DEG, d_pitch
+            )
             self.boardAlignTrimLabel.setText(
-                f"Lvl: R{roll:+.1f} P{pitch:+.1f} deg"
+                f"Lvl→FC: R{eff_roll:+.1f} P{eff_pitch:+.1f} deg "
+                f"(Δ R{d_roll:+.1f} P{d_pitch:+.1f})"
             )
             self.boardAlignTrimLabel.setStyleSheet(
                 "color: rgb(0, 255, 0);"
-                if (roll == 0.0 and pitch == 0.0)
+                if (d_roll == 0.0 and d_pitch == 0.0)
                 else "color: rgb(255, 165, 0);"
             )
 
