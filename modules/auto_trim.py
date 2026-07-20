@@ -58,6 +58,11 @@ AUTO_TRIM_STICK_CENTER_TOLERANCE = 0.06
 # pauses rather than trimming on a frozen number.
 AUTO_TRIM_ATTITUDE_STALE_S = 0.5
 
+# A joystick sample older than this (seconds) is treated as stale. The stick
+# cache in main.py holds its last good value when a read fails, so the hands-off
+# check must confirm the reading is live rather than a frozen centred sample.
+AUTO_TRIM_STICK_STALE_S = 0.5
+
 # --- Averaging window -------------------------------------------------------
 # Length of the rolling window (seconds) and the minimum sample count within it
 # before an average is trusted. At ~125 Hz attitude the count is easily met; the

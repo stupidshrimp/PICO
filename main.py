@@ -146,6 +146,7 @@ from modules.board_align_trim import (
 from modules.auto_trim import (
     AUTO_TRIM_ATTITUDE_STALE_S,
     AUTO_TRIM_MIN_AIRSPEED_MPH,
+    AUTO_TRIM_STICK_STALE_S,
     AttitudeAverager,
     apply_trim_step,
     is_trimmed,
@@ -765,6 +766,10 @@ class MainWindow(QMainWindow):
         self._last_stick_pitch_norm: Optional[float] = None
         self._last_stick_roll_norm: Optional[float] = None
         self._stick_last_update = 0.0
+        # Timestamp of the last SUCCESSFUL joystick read. _stick_last_update
+        # advances even when a read fails (the cache holds its last value), so
+        # auto-trim's hands-off gate uses this to confirm live stick data.
+        self._last_stick_sample_time = 0.0
 
         # Timer used to ramp the throttle toward its target value
         self.throttle_ramp_timer = QTimer(self)
@@ -1894,6 +1899,7 @@ class MainWindow(QMainWindow):
             norm_roll = max(-1.0, min(1.0, norm_roll))
             self._last_stick_pitch_norm = norm_pitch
             self._last_stick_roll_norm = norm_roll
+            self._last_stick_sample_time = time.monotonic()
         else:
             norm_pitch = self._last_stick_pitch_norm
             norm_roll = self._last_stick_roll_norm
@@ -2809,18 +2815,32 @@ class MainWindow(QMainWindow):
         precondition maps to a short operator-facing reason.
         """
 
+        now = time.monotonic()
         if self.control_mode != "Manual":
             return "switch to Manual"
         if not self._is_airborne():
             return "not airborne"
+        # Airspeed must be both current and fresh. _update_airborne_state()
+        # returns early on stale airspeed without clearing airborne_state or
+        # current_airspeed, so _is_airborne() and the cached speed can both
+        # linger after a pitot/GPS dropout -- confirm the packet is fresh before
+        # trusting the value for control authority.
+        gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        if not self._airspeed_value_fresh(now, gps_timeout):
+            return "airspeed stale"
         airspeed = self._safe_float(self.current_airspeed)
         if airspeed is None or airspeed < AUTO_TRIM_MIN_AIRSPEED_MPH:
             return f"airspeed < {AUTO_TRIM_MIN_AIRSPEED_MPH:.0f} mph"
         if self.telemetry_roll is None or self.telemetry_pitch is None:
             return "no attitude"
         last = self.last_attitude_packet_time
-        if last is None or (time.monotonic() - last) > AUTO_TRIM_ATTITUDE_STALE_S:
+        if last is None or (now - last) > AUTO_TRIM_ATTITUDE_STALE_S:
             return "attitude stale"
+        # Confirm the sticks are centred AND the reading is live -- the cache
+        # holds its last good value when a read fails or the worker is closed,
+        # so a frozen centred sample must not keep the hands-off gate open.
+        if (now - self._last_stick_sample_time) > AUTO_TRIM_STICK_STALE_S:
+            return "no stick data"
         if not sticks_centered(
             self._last_stick_roll_norm, self._last_stick_pitch_norm
         ):
