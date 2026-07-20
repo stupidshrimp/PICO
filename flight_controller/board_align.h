@@ -5,10 +5,12 @@
  * chip/board that sits a few degrees off the airframe's reference plane shows a
  * fixed roll/pitch offset even when the aircraft is perfectly level. This header
  * removes that offset by rotating every body-frame sensor vector out of the
- * IMU's mounted frame and into the airframe reference frame, at the single
- * imuBody{Accel,Gyro,Mag} choke point in Main.ino.
+ * IMU's mounted frame and into the airframe reference frame: the accel and gyro
+ * in the imuBodyAccel/Gyro helpers, and the magnetometer inside
+ * applyMagCalibration -- AFTER its hard/soft-iron removal, so a stored MAGCAL
+ * fit (which is done in the raw sensor frame) stays valid when the trim changes.
  *
- * Doing it there (rather than subtracting a constant from the output Euler
+ * Doing it pre-fusion (rather than subtracting a constant from the output Euler
  * angles) fixes the reference for EVERYTHING downstream at once and identically:
  * the TRIAD boot alignment, the accelerometer correction and its norm/innovation
  * gates, the tilt-compensated heading, the control loop's notion of "level", and

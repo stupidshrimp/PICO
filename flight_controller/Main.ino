@@ -98,9 +98,11 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 // a verified-level reference is the true mount offset; any part that came from a
 // tilted surface drops out. Both 0.0f reproduces the untrimmed behaviour exactly.
 //
-// NOTE: this rotates the magnetometer too (required so the tilt-compensated
-// heading stays in the same frame as roll/pitch). Re-run MAGCAL after changing
-// these so the hard/soft-iron fit matches the trimmed frame.
+// NOTE: this rotates the magnetometer too (so the tilt-compensated heading
+// stays in the same frame as roll/pitch), but the rotation is applied to the
+// CALIBRATED field, after the hard/soft-iron removal MAGCAL fits in the raw
+// sensor frame (see applyMagCalibration) -- so a stored MAGCAL record stays
+// valid and you do NOT need to re-run MAGCAL when this trim changes.
 #ifndef FC_BOARD_ALIGN_ROLL_DEG
 #define FC_BOARD_ALIGN_ROLL_DEG   (-6.9f)
 #endif
@@ -798,10 +800,12 @@ SimpleMPU9250 IMU(I2C_Alternate, 0x68);
 // Every consumer of IMU axes MUST read through these helpers so a future
 // mounting change is one edit, not one per call site.
 // Board-alignment (level) trim, built once in setup() from FC_BOARD_ALIGN_*_DEG
-// (see board_align.h). Applied to every sensor vector below so the whole
-// pipeline -- TRIAD init, accel correction, tilt-compensated heading, control,
-// telemetry -- reads relative to the airframe rather than the mounted IMU frame.
-// Identity until initialized, so a helper called before setup() is a no-op.
+// (see board_align.h). Applied to the accel and gyro here, and to the
+// magnetometer inside applyMagCalibration() (see there for why the mag is
+// special), so the whole pipeline -- TRIAD init, accel correction, tilt-
+// compensated heading, control, telemetry -- reads relative to the airframe
+// rather than the mounted IMU frame. Identity until initialized, so a helper
+// called before setup() is a no-op.
 BoardAlign gBoardAlign = { { {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} } };
 
 static inline void imuBodyAccel(float& ax, float& ay, float& az) {
@@ -816,14 +820,30 @@ static inline void imuBodyGyro(float& p, float& q, float& r) {
   const float z = -IMU.getGyroZ_rads();
   boardAlignApply(&gBoardAlign, x, y, z, &p, &q, &r);
 }
+// Raw body-frame magnetometer, axis-mapped only. The board-alignment trim is
+// deliberately NOT applied here: MAGCAL fits the hard/soft-iron correction in
+// this raw sensor frame, and applyMagCalibration() rotates the field into the
+// airframe AFTER removing that iron (see there). Keeping this un-rotated means
+// MAGCAL samples are collected in the same frame the fit is stored in,
+// regardless of the trim.
 static inline void imuBodyMag(float& mx, float& my, float& mz) {
-  const float x = IMU.getMagY_uT();
-  const float y = IMU.getMagX_uT();
-  const float z = -IMU.getMagZ_uT();
-  boardAlignApply(&gBoardAlign, x, y, z, &mx, &my, &mz);
+  mx = IMU.getMagY_uT();
+  my = IMU.getMagX_uT();
+  mz = -IMU.getMagZ_uT();
 }
 
-// Hard-iron/soft-iron calibration for a body-frame magnetometer sample.
+// Hard-iron/soft-iron calibration for a body-frame magnetometer sample, then the
+// board-alignment (level) trim.
+//
+// Order matters: hard/soft-iron distortion is fixed in the SENSOR frame (it
+// comes from magnetic material on the board, which turns with the sensor), so it
+// must be removed in the raw axis-mapped frame MAGCAL fits it in -- BEFORE any
+// board-alignment rotation. Rotating the already-calibrated field into the
+// airframe last means a MAGCAL record stays valid when FC_BOARD_ALIGN_* changes
+// (the iron correction is never applied in a rotated frame), so no re-cal is
+// needed on a board-alignment change, and only the final field direction is
+// rotated -- matching imuBodyAccel/Gyro so accel, gyro, and mag share one frame.
+//
 // Single definition so the boot-time TRIAD alignment observes the field in the
 // exact same calibrated frame the 125 Hz EKF correction predicts against.
 static inline void applyMagCalibration(float rawX, float rawY, float rawZ,
@@ -831,9 +851,10 @@ static inline void applyMagCalibration(float rawX, float rawY, float rawZ,
   const float bx = rawX - (float)HARD_IRON_BIAS[0][0];
   const float by = rawY - (float)HARD_IRON_BIAS[1][0];
   const float bz = rawZ - (float)HARD_IRON_BIAS[2][0];
-  calX = (float)SOFT_IRON_MATRIX[0][0]*bx + (float)SOFT_IRON_MATRIX[0][1]*by + (float)SOFT_IRON_MATRIX[0][2]*bz;
-  calY = (float)SOFT_IRON_MATRIX[1][0]*bx + (float)SOFT_IRON_MATRIX[1][1]*by + (float)SOFT_IRON_MATRIX[1][2]*bz;
-  calZ = (float)SOFT_IRON_MATRIX[2][0]*bx + (float)SOFT_IRON_MATRIX[2][1]*by + (float)SOFT_IRON_MATRIX[2][2]*bz;
+  const float cx = (float)SOFT_IRON_MATRIX[0][0]*bx + (float)SOFT_IRON_MATRIX[0][1]*by + (float)SOFT_IRON_MATRIX[0][2]*bz;
+  const float cy = (float)SOFT_IRON_MATRIX[1][0]*bx + (float)SOFT_IRON_MATRIX[1][1]*by + (float)SOFT_IRON_MATRIX[1][2]*bz;
+  const float cz = (float)SOFT_IRON_MATRIX[2][0]*bx + (float)SOFT_IRON_MATRIX[2][1]*by + (float)SOFT_IRON_MATRIX[2][2]*bz;
+  boardAlignApply(&gBoardAlign, cx, cy, cz, &calX, &calY, &calZ);
 }
 
 // ----- Servo Outputs -----
