@@ -134,6 +134,15 @@ from modules.compass_cal import (
     compass_cal_start_blockers,
     throttle_mode_channel_value,
 )
+from modules.board_align_trim import (
+    BOARD_ALIGN_PITCH_CHANNEL_INDEX,
+    BOARD_ALIGN_ROLL_CHANNEL_INDEX,
+    FC_BOARD_ALIGN_BASELINE_PITCH_DEG,
+    FC_BOARD_ALIGN_BASELINE_ROLL_DEG,
+    board_align_offset_to_channel,
+    effective_board_align_offset,
+    step_board_align_offset,
+)
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -240,6 +249,12 @@ class MainWindow(QMainWindow):
         # aileron trim commands left-bank trim, matching the FC roll convention.
         self.elevator_trim_level = 0
         self.aileron_trim_level = 0
+        # Interim keyboard board-alignment (attitude level) trim: a roll/pitch
+        # offset DELTA (degrees) carried to the FC on CH8/CH9. Distinct from the
+        # surface trim above -- this nudges where the FC thinks "level" is. See
+        # modules/board_align_trim.py and the FC_BOARD_ALIGN_TRIM_* block.
+        self.board_align_roll_trim_deg = 0.0
+        self.board_align_pitch_trim_deg = 0.0
         self._setup_trim_indicator()
         self.update_trim_labels()
 
@@ -2008,6 +2023,12 @@ class MainWindow(QMainWindow):
             Qt.Key_D: 75,
             Qt.Key_F: 100,
         }
+        board_align_mapping = {
+            Qt.Key_Left: ("roll", -1),
+            Qt.Key_Right: ("roll", 1),
+            Qt.Key_Up: ("pitch", 1),
+            Qt.Key_Down: ("pitch", -1),
+        }
         if event.key() in manual_mapping:
             if self.throttle_mode == "Manual":
                 self.target_throttle_percent = manual_mapping[event.key()]
@@ -2017,6 +2038,10 @@ class MainWindow(QMainWindow):
             event.accept()
         elif event.key() in (Qt.Key_Q, Qt.Key_E):
             self._handle_yaw_key(event.key(), True)
+            event.accept()
+        elif event.key() in board_align_mapping:
+            axis, direction = board_align_mapping[event.key()]
+            self._step_board_align_trim(axis, direction)
             event.accept()
         else:
             super().keyPressEvent(event)
@@ -2517,9 +2542,19 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         )
 
+        # Interim keyboard board-alignment (level) trim readout. Shows the
+        # roll/pitch offset delta sent to the FC so the operator can bake the
+        # final value into FC_BOARD_ALIGN_*_DEG once the attitude reads level.
+        self.boardAlignTrimLabel = QLabel(parent)
+        self.boardAlignTrimLabel.setObjectName("boardAlignTrimLabel")
+        self.boardAlignTrimLabel.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+
         self.trimModeLayout.addWidget(self.trimModeTitle)
         self.trimModeLayout.addWidget(self.aileronTrimLabel)
         self.trimModeLayout.addWidget(self.elevatorTrimLabel)
+        self.trimModeLayout.addWidget(self.boardAlignTrimLabel)
 
         spacer_index = None
         for index in range(layout.count()):
@@ -2566,6 +2601,64 @@ class MainWindow(QMainWindow):
                 if self.elevator_trim_level == 0
                 else "color: rgb(255, 165, 0);"
             )
+        if hasattr(self, "boardAlignTrimLabel"):
+            d_roll = self.board_align_roll_trim_deg
+            d_pitch = self.board_align_pitch_trim_deg
+            # Show the EFFECTIVE offset (baseline + delta) -- the value to bake
+            # into FC_BOARD_ALIGN_*_DEG -- with the live keyboard delta in
+            # parentheses so the number is never mistaken for the raw delta.
+            eff_roll = effective_board_align_offset(
+                FC_BOARD_ALIGN_BASELINE_ROLL_DEG, d_roll
+            )
+            eff_pitch = effective_board_align_offset(
+                FC_BOARD_ALIGN_BASELINE_PITCH_DEG, d_pitch
+            )
+            self.boardAlignTrimLabel.setText(
+                f"Lvl→FC: R{eff_roll:+.1f} P{eff_pitch:+.1f} deg "
+                f"(Δ R{d_roll:+.1f} P{d_pitch:+.1f})"
+            )
+            self.boardAlignTrimLabel.setStyleSheet(
+                "color: rgb(0, 255, 0);"
+                if (d_roll == 0.0 and d_pitch == 0.0)
+                else "color: rgb(255, 165, 0);"
+            )
+
+    def _step_board_align_trim(self, axis: str, direction: int) -> None:
+        """Nudge the board-alignment (level) trim delta by one keyboard step.
+
+        Left/Right adjust roll, Up/Down adjust pitch. The value is a delta added
+        to the FC's compiled FC_BOARD_ALIGN_*_DEG baseline and is carried on
+        CH8/CH9; the FC applies it live on the ground so the attitude telemetry
+        moves as you trim. If a key moves the wrong way, press the opposite one.
+        """
+
+        if axis == "roll":
+            self.board_align_roll_trim_deg = step_board_align_offset(
+                self.board_align_roll_trim_deg, direction
+            )
+        elif axis == "pitch":
+            self.board_align_pitch_trim_deg = step_board_align_offset(
+                self.board_align_pitch_trim_deg, direction
+            )
+        else:
+            return
+
+        self.update_trim_labels()
+
+    def _apply_board_align_trim_to_channels(self, channels: list[int]) -> list[int]:
+        """Write the board-alignment trim delta onto its two spare aux channels."""
+
+        needed = max(BOARD_ALIGN_ROLL_CHANNEL_INDEX, BOARD_ALIGN_PITCH_CHANNEL_INDEX) + 1
+        if len(channels) < needed:
+            channels.extend([CRSF_CHANNEL_CENTER] * (needed - len(channels)))
+
+        channels[BOARD_ALIGN_ROLL_CHANNEL_INDEX] = board_align_offset_to_channel(
+            self.board_align_roll_trim_deg
+        )
+        channels[BOARD_ALIGN_PITCH_CHANNEL_INDEX] = board_align_offset_to_channel(
+            self.board_align_pitch_trim_deg
+        )
+        return channels
 
     def _set_trim_level(self, axis: str, delta: int, sound_name: str) -> None:
         """Apply one joystick trim step, refresh the UI, and play its cue."""
@@ -3707,6 +3800,11 @@ class MainWindow(QMainWindow):
         channels[self.throttle_mode_channel] = throttle_mode_channel_value(
             self.throttle_mode, self.compass_cal_active
         )
+
+        # CH8/AUX4 + CH9/AUX5 carry the interim keyboard board-alignment (level)
+        # trim delta. Center = no delta, so this is inert until the operator
+        # presses the arrow keys.
+        self._apply_board_align_trim_to_channels(channels)
 
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)

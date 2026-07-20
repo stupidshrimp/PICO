@@ -32,6 +32,7 @@
 #include "matrix.h"
 #include "ekf.h"
 #include "attitude_init.h"
+#include "board_align.h"
 #include "simple_mpu9250.h"
 #include <Arduino.h>
 #include <Servo.h>
@@ -83,6 +84,58 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 // See the frame-mapping comment in the 125 Hz block for why the frame is
 // Z-down: the previous Z-up mapping was a left-handed (det -1) reflection.
 #define IMU_ACC_Z0  (-1)
+
+// ----- Board-alignment (level) trim -----
+// Per-airframe correction for a fixed roll/pitch offset caused by the IMU/board
+// not sitting perfectly parallel to the airframe reference plane. Set each to
+// the roll/pitch the firmware REPORTS when the aircraft is actually level (the
+// observed static offset), in degrees and in the quaternionToEulerDeg
+// convention; board_align.h then rotates every sensor vector by the inverse so
+// the reported roll/pitch read zero. See imuBodyAccel/Gyro/Mag and board_align.h.
+//
+// TUNING: place a level on the airframe datum (not the PCB), and adjust these
+// until the reported roll/pitch read ~0. Whatever remains after zeroing against
+// a verified-level reference is the true mount offset; any part that came from a
+// tilted surface drops out. Both 0.0f reproduces the untrimmed behaviour exactly.
+//
+// NOTE: this rotates the magnetometer too (so the tilt-compensated heading
+// stays in the same frame as roll/pitch), but the rotation is applied to the
+// CALIBRATED field, after the hard/soft-iron removal MAGCAL fits in the raw
+// sensor frame (see applyMagCalibration) -- so a stored MAGCAL record stays
+// valid and you do NOT need to re-run MAGCAL when this trim changes.
+#ifndef FC_BOARD_ALIGN_ROLL_DEG
+#define FC_BOARD_ALIGN_ROLL_DEG   (-6.9f)
+#endif
+#ifndef FC_BOARD_ALIGN_PITCH_DEG
+#define FC_BOARD_ALIGN_PITCH_DEG  (-4.3f)
+#endif
+
+// Live board-alignment trim over RC (interim ground-station tuning aid).
+// CH8/AUX4 and CH9/AUX5 carry a small roll/pitch offset DELTA (degrees) added
+// to the FC_BOARD_ALIGN_*_DEG baseline above, so the ground station can nudge
+// the level trim by hand -- currently the keyboard arrow keys -- while watching
+// the attitude telemetry read toward level. Channel center = 0 delta, so the
+// baseline is untouched until the operator trims. See modules/board_align_trim.py
+// for the matching ground-station mapping.
+//
+// Applied ONLY on the ground with fresh RC, so the level reference can never
+// shift in flight or on a stale link, and NOT persisted: this is a tool to FIND
+// the offset. Once the attitude reads level, bake the value the GS shows into
+// FC_BOARD_ALIGN_*_DEG and reflash. Set FC_BOARD_ALIGN_TRIM_RC to 0 to compile
+// the live trim out entirely.
+#ifndef FC_BOARD_ALIGN_TRIM_RC
+#define FC_BOARD_ALIGN_TRIM_RC 1
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_CH_ROLL
+#define FC_BOARD_ALIGN_TRIM_CH_ROLL  (7)   // CH8/AUX4 (zero-based)
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_CH_PITCH
+#define FC_BOARD_ALIGN_TRIM_CH_PITCH (8)   // CH9/AUX5 (zero-based)
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_RANGE_DEG
+#define FC_BOARD_ALIGN_TRIM_RANGE_DEG (10.0f)  // full deflection = +-this many deg
+#endif
+
 // Default magnetic reference for central Illinois (~40.0 N, 89.0 W),
 // evaluated for 2026-06-11. Override these at build time for a specific
 // flying site; declination is positive east and inclination is positive down.
@@ -746,23 +799,51 @@ SimpleMPU9250 IMU(I2C_Alternate, 0x68);
 //
 // Every consumer of IMU axes MUST read through these helpers so a future
 // mounting change is one edit, not one per call site.
+// Board-alignment (level) trim, built once in setup() from FC_BOARD_ALIGN_*_DEG
+// (see board_align.h). Applied to the accel and gyro here, and to the
+// magnetometer inside applyMagCalibration() (see there for why the mag is
+// special), so the whole pipeline -- TRIAD init, accel correction, tilt-
+// compensated heading, control, telemetry -- reads relative to the airframe
+// rather than the mounted IMU frame. Identity until initialized, so a helper
+// called before setup() is a no-op.
+BoardAlign gBoardAlign = { { {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} } };
+
 static inline void imuBodyAccel(float& ax, float& ay, float& az) {
-  ax = IMU.getAccelY_mss();
-  ay = IMU.getAccelX_mss();
-  az = -IMU.getAccelZ_mss();
+  const float x = IMU.getAccelY_mss();
+  const float y = IMU.getAccelX_mss();
+  const float z = -IMU.getAccelZ_mss();
+  boardAlignApply(&gBoardAlign, x, y, z, &ax, &ay, &az);
 }
 static inline void imuBodyGyro(float& p, float& q, float& r) {
-  p = IMU.getGyroY_rads();
-  q = IMU.getGyroX_rads();
-  r = -IMU.getGyroZ_rads();
+  const float x = IMU.getGyroY_rads();
+  const float y = IMU.getGyroX_rads();
+  const float z = -IMU.getGyroZ_rads();
+  boardAlignApply(&gBoardAlign, x, y, z, &p, &q, &r);
 }
+// Raw body-frame magnetometer, axis-mapped only. The board-alignment trim is
+// deliberately NOT applied here: MAGCAL fits the hard/soft-iron correction in
+// this raw sensor frame, and applyMagCalibration() rotates the field into the
+// airframe AFTER removing that iron (see there). Keeping this un-rotated means
+// MAGCAL samples are collected in the same frame the fit is stored in,
+// regardless of the trim.
 static inline void imuBodyMag(float& mx, float& my, float& mz) {
   mx = IMU.getMagY_uT();
   my = IMU.getMagX_uT();
   mz = -IMU.getMagZ_uT();
 }
 
-// Hard-iron/soft-iron calibration for a body-frame magnetometer sample.
+// Hard-iron/soft-iron calibration for a body-frame magnetometer sample, then the
+// board-alignment (level) trim.
+//
+// Order matters: hard/soft-iron distortion is fixed in the SENSOR frame (it
+// comes from magnetic material on the board, which turns with the sensor), so it
+// must be removed in the raw axis-mapped frame MAGCAL fits it in -- BEFORE any
+// board-alignment rotation. Rotating the already-calibrated field into the
+// airframe last means a MAGCAL record stays valid when FC_BOARD_ALIGN_* changes
+// (the iron correction is never applied in a rotated frame), so no re-cal is
+// needed on a board-alignment change, and only the final field direction is
+// rotated -- matching imuBodyAccel/Gyro so accel, gyro, and mag share one frame.
+//
 // Single definition so the boot-time TRIAD alignment observes the field in the
 // exact same calibrated frame the 125 Hz EKF correction predicts against.
 static inline void applyMagCalibration(float rawX, float rawY, float rawZ,
@@ -770,9 +851,10 @@ static inline void applyMagCalibration(float rawX, float rawY, float rawZ,
   const float bx = rawX - (float)HARD_IRON_BIAS[0][0];
   const float by = rawY - (float)HARD_IRON_BIAS[1][0];
   const float bz = rawZ - (float)HARD_IRON_BIAS[2][0];
-  calX = (float)SOFT_IRON_MATRIX[0][0]*bx + (float)SOFT_IRON_MATRIX[0][1]*by + (float)SOFT_IRON_MATRIX[0][2]*bz;
-  calY = (float)SOFT_IRON_MATRIX[1][0]*bx + (float)SOFT_IRON_MATRIX[1][1]*by + (float)SOFT_IRON_MATRIX[1][2]*bz;
-  calZ = (float)SOFT_IRON_MATRIX[2][0]*bx + (float)SOFT_IRON_MATRIX[2][1]*by + (float)SOFT_IRON_MATRIX[2][2]*bz;
+  const float cx = (float)SOFT_IRON_MATRIX[0][0]*bx + (float)SOFT_IRON_MATRIX[0][1]*by + (float)SOFT_IRON_MATRIX[0][2]*bz;
+  const float cy = (float)SOFT_IRON_MATRIX[1][0]*bx + (float)SOFT_IRON_MATRIX[1][1]*by + (float)SOFT_IRON_MATRIX[1][2]*bz;
+  const float cz = (float)SOFT_IRON_MATRIX[2][0]*bx + (float)SOFT_IRON_MATRIX[2][1]*by + (float)SOFT_IRON_MATRIX[2][2]*bz;
+  boardAlignApply(&gBoardAlign, cx, cy, cz, &calX, &calY, &calZ);
 }
 
 // ----- Servo Outputs -----
@@ -2430,6 +2512,50 @@ uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
       return SERVO_CENTER_US;
   }
 }
+
+#if FC_BOARD_ALIGN_TRIM_RC
+// Decode one board-alignment trim channel (CRSF ticks) to an offset delta in
+// degrees. Center (992) = 0; +-full deflection = +-FC_BOARD_ALIGN_TRIM_RANGE_DEG.
+// The center/half-span mirror modules/board_align_trim.py so the ground-station
+// encode and this decode agree.
+float boardAlignTrimChannelToDeg(uint16_t value) {
+  const float center = 992.0f;
+  const float halfSpan = 819.0f;  // min(center-172, 1811-center), CRSF ticks
+  float d = ((float)value - center) / halfSpan * FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  if (d < -FC_BOARD_ALIGN_TRIM_RANGE_DEG) d = -FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  if (d >  FC_BOARD_ALIGN_TRIM_RANGE_DEG) d =  FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  return d;
+}
+
+// Apply the live board-alignment trim from CH8/CH9 (see FC_BOARD_ALIGN_TRIM_*).
+// Called once per 125 Hz control cycle. Ground + fresh-RC only, so the level
+// reference can never move in flight or on a stale link; rebuilds gBoardAlign
+// only when the mapped offset actually changes (boardAlignInit runs trig).
+void updateBoardAlignTrim(bool rcFresh) {
+  if (!rcFresh || aircraftAirborne) {
+    return;
+  }
+  const size_t channelCount =
+      sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if ((size_t)FC_BOARD_ALIGN_TRIM_CH_ROLL >= channelCount ||
+      (size_t)FC_BOARD_ALIGN_TRIM_CH_PITCH >= channelCount) {
+    return;
+  }
+  const float rollDeg = FC_BOARD_ALIGN_ROLL_DEG +
+      boardAlignTrimChannelToDeg(latestRcChannels.value[FC_BOARD_ALIGN_TRIM_CH_ROLL]);
+  const float pitchDeg = FC_BOARD_ALIGN_PITCH_DEG +
+      boardAlignTrimChannelToDeg(latestRcChannels.value[FC_BOARD_ALIGN_TRIM_CH_PITCH]);
+
+  static float lastRollDeg = FC_BOARD_ALIGN_ROLL_DEG;
+  static float lastPitchDeg = FC_BOARD_ALIGN_PITCH_DEG;
+  if (fabsf(rollDeg - lastRollDeg) < 0.02f && fabsf(pitchDeg - lastPitchDeg) < 0.02f) {
+    return;
+  }
+  lastRollDeg = rollDeg;
+  lastPitchDeg = pitchDeg;
+  boardAlignInit(&gBoardAlign, rollDeg, pitchDeg);
+}
+#endif  // FC_BOARD_ALIGN_TRIM_RC
 
 // Advance the in-field calibration. Called once per 125 Hz control cycle,
 // before the servo logic, with that cycle's RC-freshness verdict.
@@ -4291,6 +4417,11 @@ static bool bootGpsConfirmsStationary() {
 
 
 void setup() {
+  // Build the board-alignment (level) trim before any sensor is read, so the
+  // boot-time TRIAD attitude init and every later imuBody* call correct the
+  // fixed mount offset (see FC_BOARD_ALIGN_*_DEG and board_align.h).
+  boardAlignInit(&gBoardAlign, FC_BOARD_ALIGN_ROLL_DEG, FC_BOARD_ALIGN_PITCH_DEG);
+
   // Classify this boot before anything else. IWatchdog.isReset(true) reads the
   // RCC "reset caused by IWDG" flag and clears the (sticky) reset flags so a
   // later normal reboot cannot be misclassified from a stale flag. This only
@@ -5302,6 +5433,13 @@ void loop() {
     // its entry/abort decisions and the surface override below act on this
     // same cycle's RC snapshot.
     updateMagCalState(servoUpdateUs, rcFresh);
+
+#if FC_BOARD_ALIGN_TRIM_RC
+    // Fold in the live keyboard board-alignment trim (CH8/CH9) on this same RC
+    // snapshot, on the ground only. Ordered after the mag-cal update so both act
+    // on one consistent set of channels this cycle.
+    updateBoardAlignTrim(rcFresh);
+#endif
 
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
