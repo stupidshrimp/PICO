@@ -108,6 +108,32 @@ HardwareSerial gpsSerial(PC7, PC6);  // RX = PC7, TX = PC6 (USART6)
 #define FC_BOARD_ALIGN_PITCH_DEG  (-4.3f)
 #endif
 
+// Live board-alignment trim over RC (interim ground-station tuning aid).
+// CH8/AUX4 and CH9/AUX5 carry a small roll/pitch offset DELTA (degrees) added
+// to the FC_BOARD_ALIGN_*_DEG baseline above, so the ground station can nudge
+// the level trim by hand -- currently the keyboard arrow keys -- while watching
+// the attitude telemetry read toward level. Channel center = 0 delta, so the
+// baseline is untouched until the operator trims. See modules/board_align_trim.py
+// for the matching ground-station mapping.
+//
+// Applied ONLY on the ground with fresh RC, so the level reference can never
+// shift in flight or on a stale link, and NOT persisted: this is a tool to FIND
+// the offset. Once the attitude reads level, bake the value the GS shows into
+// FC_BOARD_ALIGN_*_DEG and reflash. Set FC_BOARD_ALIGN_TRIM_RC to 0 to compile
+// the live trim out entirely.
+#ifndef FC_BOARD_ALIGN_TRIM_RC
+#define FC_BOARD_ALIGN_TRIM_RC 1
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_CH_ROLL
+#define FC_BOARD_ALIGN_TRIM_CH_ROLL  (7)   // CH8/AUX4 (zero-based)
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_CH_PITCH
+#define FC_BOARD_ALIGN_TRIM_CH_PITCH (8)   // CH9/AUX5 (zero-based)
+#endif
+#ifndef FC_BOARD_ALIGN_TRIM_RANGE_DEG
+#define FC_BOARD_ALIGN_TRIM_RANGE_DEG (10.0f)  // full deflection = +-this many deg
+#endif
+
 // Default magnetic reference for central Illinois (~40.0 N, 89.0 W),
 // evaluated for 2026-06-11. Override these at build time for a specific
 // flying site; declination is positive east and inclination is positive down.
@@ -2465,6 +2491,50 @@ uint16_t magCalIndicatorCommandUs(uint32_t nowUs) {
       return SERVO_CENTER_US;
   }
 }
+
+#if FC_BOARD_ALIGN_TRIM_RC
+// Decode one board-alignment trim channel (CRSF ticks) to an offset delta in
+// degrees. Center (992) = 0; +-full deflection = +-FC_BOARD_ALIGN_TRIM_RANGE_DEG.
+// The center/half-span mirror modules/board_align_trim.py so the ground-station
+// encode and this decode agree.
+float boardAlignTrimChannelToDeg(uint16_t value) {
+  const float center = 992.0f;
+  const float halfSpan = 819.0f;  // min(center-172, 1811-center), CRSF ticks
+  float d = ((float)value - center) / halfSpan * FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  if (d < -FC_BOARD_ALIGN_TRIM_RANGE_DEG) d = -FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  if (d >  FC_BOARD_ALIGN_TRIM_RANGE_DEG) d =  FC_BOARD_ALIGN_TRIM_RANGE_DEG;
+  return d;
+}
+
+// Apply the live board-alignment trim from CH8/CH9 (see FC_BOARD_ALIGN_TRIM_*).
+// Called once per 125 Hz control cycle. Ground + fresh-RC only, so the level
+// reference can never move in flight or on a stale link; rebuilds gBoardAlign
+// only when the mapped offset actually changes (boardAlignInit runs trig).
+void updateBoardAlignTrim(bool rcFresh) {
+  if (!rcFresh || aircraftAirborne) {
+    return;
+  }
+  const size_t channelCount =
+      sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if ((size_t)FC_BOARD_ALIGN_TRIM_CH_ROLL >= channelCount ||
+      (size_t)FC_BOARD_ALIGN_TRIM_CH_PITCH >= channelCount) {
+    return;
+  }
+  const float rollDeg = FC_BOARD_ALIGN_ROLL_DEG +
+      boardAlignTrimChannelToDeg(latestRcChannels.value[FC_BOARD_ALIGN_TRIM_CH_ROLL]);
+  const float pitchDeg = FC_BOARD_ALIGN_PITCH_DEG +
+      boardAlignTrimChannelToDeg(latestRcChannels.value[FC_BOARD_ALIGN_TRIM_CH_PITCH]);
+
+  static float lastRollDeg = FC_BOARD_ALIGN_ROLL_DEG;
+  static float lastPitchDeg = FC_BOARD_ALIGN_PITCH_DEG;
+  if (fabsf(rollDeg - lastRollDeg) < 0.02f && fabsf(pitchDeg - lastPitchDeg) < 0.02f) {
+    return;
+  }
+  lastRollDeg = rollDeg;
+  lastPitchDeg = pitchDeg;
+  boardAlignInit(&gBoardAlign, rollDeg, pitchDeg);
+}
+#endif  // FC_BOARD_ALIGN_TRIM_RC
 
 // Advance the in-field calibration. Called once per 125 Hz control cycle,
 // before the servo logic, with that cycle's RC-freshness verdict.
@@ -5342,6 +5412,13 @@ void loop() {
     // its entry/abort decisions and the surface override below act on this
     // same cycle's RC snapshot.
     updateMagCalState(servoUpdateUs, rcFresh);
+
+#if FC_BOARD_ALIGN_TRIM_RC
+    // Fold in the live keyboard board-alignment trim (CH8/CH9) on this same RC
+    // snapshot, on the ground only. Ordered after the mag-cal update so both act
+    // on one consistent set of channels this cycle.
+    updateBoardAlignTrim(rcFresh);
+#endif
 
     uint16_t rcRollRaw = (channelCount > 0) ? latestRcChannels.value[0] : RC_INPUT_CENTER;
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
