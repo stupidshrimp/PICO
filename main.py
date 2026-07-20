@@ -143,6 +143,15 @@ from modules.board_align_trim import (
     effective_board_align_offset,
     step_board_align_offset,
 )
+from modules.auto_trim import (
+    AUTO_TRIM_ATTITUDE_STALE_S,
+    AUTO_TRIM_MIN_AIRSPEED_MPH,
+    AttitudeAverager,
+    apply_trim_step,
+    is_trimmed,
+    recommended_trim_levels,
+    sticks_centered,
+)
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -255,6 +264,13 @@ class MainWindow(QMainWindow):
         # modules/board_align_trim.py and the FC_BOARD_ALIGN_TRIM_* block.
         self.board_align_roll_trim_deg = 0.0
         self.board_align_pitch_trim_deg = 0.0
+        # Auto-trim: derives the surface trim above from the attitude telemetry
+        # while flying hands-off. self.auto_trim_active toggles the session;
+        # self.auto_trim_apply picks "apply" (closed loop) over "suggest" (report
+        # only). See modules/auto_trim.py and _auto_trim_tick.
+        self.auto_trim_active = False
+        self.auto_trim_apply = False
+        self._auto_trim_averager = AttitudeAverager()
         self._setup_trim_indicator()
         self.update_trim_labels()
 
@@ -2551,10 +2567,53 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         )
 
+        # Auto-trim controls: a button that toggles the session and a checkbox
+        # that switches between "suggest" (report only) and "apply" (closed
+        # loop). The status line below reports the measured bias / recommendation
+        # / progress. See _auto_trim_tick and modules/auto_trim.py.
+        self.autoTrimButton = QPushButton(parent)
+        self.autoTrimButton.setObjectName("autoTrimButton")
+        self.autoTrimButton.setText("Auto-Trim: Off")
+        self.autoTrimButton.setCheckable(True)
+        self.autoTrimButton.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.autoTrimButton.setToolTip(
+            "Fly straight-and-level, hands off, then start Auto-Trim to derive "
+            "the elevator/aileron trim from the attitude telemetry."
+        )
+        self.autoTrimButton.toggled.connect(self.on_auto_trim_toggled)
+
+        self.autoTrimApplyCheck = QCheckBox(parent)
+        self.autoTrimApplyCheck.setObjectName("autoTrimApplyCheck")
+        self.autoTrimApplyCheck.setText("Apply automatically")
+        self.autoTrimApplyCheck.setToolTip(
+            "Off: suggest the trim only. On: gently drive the trim to level and "
+            "latch when settled."
+        )
+        self.autoTrimApplyCheck.toggled.connect(self.on_auto_trim_apply_toggled)
+
+        self.autoTrimStatusLabel = QLabel(parent)
+        self.autoTrimStatusLabel.setObjectName("autoTrimStatusLabel")
+        self.autoTrimStatusLabel.setWordWrap(True)
+        self.autoTrimStatusLabel.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+
         self.trimModeLayout.addWidget(self.trimModeTitle)
         self.trimModeLayout.addWidget(self.aileronTrimLabel)
         self.trimModeLayout.addWidget(self.elevatorTrimLabel)
         self.trimModeLayout.addWidget(self.boardAlignTrimLabel)
+        self.trimModeLayout.addWidget(self.autoTrimButton)
+        self.trimModeLayout.addWidget(self.autoTrimApplyCheck)
+        self.trimModeLayout.addWidget(self.autoTrimStatusLabel)
+        self._update_auto_trim_status("Idle")
+
+        # Poll gating + attitude on a slow, dedicated timer so the closed loop
+        # eases toward level over a few seconds rather than snapping at the
+        # ~70 Hz control rate.
+        self.auto_trim_timer = QTimer(self)
+        self.auto_trim_timer.setObjectName("autoTrimTimer")
+        self.auto_trim_timer.timeout.connect(self._auto_trim_tick)
+        self.auto_trim_timer.start(200)
 
         spacer_index = None
         for index in range(layout.count()):
@@ -2708,6 +2767,163 @@ class MainWindow(QMainWindow):
             ),
         )
         return channels
+
+    # ------------------------------------------------------------------
+    # Auto-trim (command page)
+    # ------------------------------------------------------------------
+    def on_auto_trim_toggled(self, checked: bool) -> None:
+        """Start or stop an auto-trim session from the on-screen button."""
+
+        self.auto_trim_active = bool(checked)
+        self.autoTrimButton.setText("Auto-Trim: On" if checked else "Auto-Trim: Off")
+        self._auto_trim_averager.clear()
+        if checked:
+            mode = "apply" if self.auto_trim_apply else "suggest"
+            self._update_auto_trim_status(f"Started ({mode}) — sampling…")
+        else:
+            self._update_auto_trim_status("Idle")
+
+    def on_auto_trim_apply_toggled(self, checked: bool) -> None:
+        """Switch between suggest (report only) and apply (closed loop)."""
+
+        self.auto_trim_apply = bool(checked)
+        # Re-measure cleanly under the new behaviour.
+        self._auto_trim_averager.clear()
+
+    def _update_auto_trim_status(self, text: str, ok: bool = False) -> None:
+        """Refresh the auto-trim status readout below the button."""
+
+        if not hasattr(self, "autoTrimStatusLabel"):
+            return
+        self.autoTrimStatusLabel.setText(text)
+        self.autoTrimStatusLabel.setStyleSheet(
+            "color: rgb(0, 255, 0);" if ok else "color: rgb(200, 200, 200);"
+        )
+
+    def _auto_trim_gate_reason(self) -> Optional[str]:
+        """Return why auto-trim cannot run right now, or ``None`` if clear.
+
+        Surface trim only matters when the pilot is flying the aircraft
+        manually, hands-off, and fast enough for the surfaces to bite; in
+        Fly-By-Wire the FC holds attitude so trim is moot. Each failing
+        precondition maps to a short operator-facing reason.
+        """
+
+        if self.control_mode != "Manual":
+            return "switch to Manual"
+        if not self._is_airborne():
+            return "not airborne"
+        airspeed = self._safe_float(self.current_airspeed)
+        if airspeed is None or airspeed < AUTO_TRIM_MIN_AIRSPEED_MPH:
+            return f"airspeed < {AUTO_TRIM_MIN_AIRSPEED_MPH:.0f} mph"
+        if self.telemetry_roll is None or self.telemetry_pitch is None:
+            return "no attitude"
+        last = self.last_attitude_packet_time
+        if last is None or (time.monotonic() - last) > AUTO_TRIM_ATTITUDE_STALE_S:
+            return "attitude stale"
+        if not sticks_centered(
+            self._last_stick_roll_norm, self._last_stick_pitch_norm
+        ):
+            return "centre the sticks"
+        return None
+
+    def _auto_trim_tick(self) -> None:
+        """Periodic auto-trim step: gate, sample, then suggest or apply."""
+
+        if not self.auto_trim_active:
+            return
+
+        reason = self._auto_trim_gate_reason()
+        if reason is not None:
+            self._auto_trim_averager.clear()
+            self._update_auto_trim_status(f"Paused: {reason}")
+            return
+
+        self._auto_trim_averager.add(
+            time.monotonic(), self.telemetry_roll, self.telemetry_pitch
+        )
+        averages = self._auto_trim_averager.averages()
+        if averages is None:
+            self._update_auto_trim_status("Sampling…")
+            return
+
+        avg_roll, avg_pitch = averages
+        if self.auto_trim_apply:
+            self._auto_trim_apply_cycle(avg_roll, avg_pitch)
+        else:
+            self._auto_trim_suggest(avg_roll, avg_pitch)
+
+    def _auto_trim_suggest(self, avg_roll: float, avg_pitch: float) -> None:
+        """Report the measured bias and recommended trim without changing it."""
+
+        if is_trimmed(avg_roll, avg_pitch):
+            self._update_auto_trim_status(
+                f"Level (bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}°) — trim OK",
+                ok=True,
+            )
+            return
+        rec_ail, rec_elev = recommended_trim_levels(
+            avg_roll,
+            avg_pitch,
+            self.aileron_trim_level,
+            self.elevator_trim_level,
+            max_level=self.TRIM_MAX_LEVEL,
+        )
+        self._update_auto_trim_status(
+            f"Bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}° → "
+            f"suggest Ail {rec_ail:+d}, Elev {rec_elev:+d}"
+        )
+
+    def _auto_trim_apply_cycle(self, avg_roll: float, avg_pitch: float) -> None:
+        """Nudge the trim toward level; latch and stop once settled."""
+
+        if is_trimmed(avg_roll, avg_pitch):
+            self._finish_auto_trim(
+                f"Trimmed (bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}°)"
+            )
+            return
+
+        ail_step, elev_step = apply_trim_step(avg_roll, avg_pitch)
+        changed = self._nudge_trim_levels(ail_step, elev_step)
+        self._update_auto_trim_status(
+            f"Trimming… R{avg_roll:+.1f}° P{avg_pitch:+.1f}° "
+            f"(Ail {self.aileron_trim_level:+d}, Elev {self.elevator_trim_level:+d})"
+        )
+        if changed:
+            # Wait for the aircraft to respond before the next step so the loop
+            # eases toward level instead of over-stepping on stale attitude.
+            self._auto_trim_averager.clear()
+        else:
+            # Both axes are pinned at the trim limit yet still not level.
+            self._finish_auto_trim("At trim limit; level manually")
+
+    def _nudge_trim_levels(self, aileron_step: int, elevator_step: int) -> bool:
+        """Apply signed level steps to both axes; return whether anything moved."""
+
+        before = (self.aileron_trim_level, self.elevator_trim_level)
+        self.aileron_trim_level = max(
+            -self.TRIM_MAX_LEVEL,
+            min(self.TRIM_MAX_LEVEL, self.aileron_trim_level + int(aileron_step)),
+        )
+        self.elevator_trim_level = max(
+            -self.TRIM_MAX_LEVEL,
+            min(self.TRIM_MAX_LEVEL, self.elevator_trim_level + int(elevator_step)),
+        )
+        changed = (self.aileron_trim_level, self.elevator_trim_level) != before
+        if changed:
+            self.update_trim_labels()
+        return changed
+
+    def _finish_auto_trim(self, message: str) -> None:
+        """Stop the session and report the final state."""
+
+        self.autoTrimButton.blockSignals(True)
+        self.autoTrimButton.setChecked(False)
+        self.autoTrimButton.setText("Auto-Trim: Off")
+        self.autoTrimButton.blockSignals(False)
+        self.auto_trim_active = False
+        self._auto_trim_averager.clear()
+        self._update_auto_trim_status(message, ok=True)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:
