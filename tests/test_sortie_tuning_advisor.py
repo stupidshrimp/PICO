@@ -52,15 +52,16 @@ _FULL_FIELDS = [
 ]
 
 
-def _omega_dps(t: float) -> float:
-    for start, end, omega in _PHASES:
+def _omega_dps(t: float, phases) -> float:
+    for start, end, omega in phases:
         if start <= t < end:
             return omega
     return 0.0
 
 
 def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
-                  with_gps=True, yaw_snaps=0, initial_hdg=90.0):
+                  with_gps=True, yaw_snaps=0, initial_hdg=90.0, att_dt=0.02,
+                  phases=None):
     """Integrate the flight and write it as a sortie CSV.
 
     roll/pitch/yaw are the *estimator's* values, so the injected bias/drift is
@@ -68,8 +69,9 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
     truth.
     """
 
+    phases = phases if phases is not None else _PHASES
     base = datetime(2026, 7, 20, 12, 0, 0)
-    total = _PHASES[-1][1]
+    total = phases[-1][1]
     sim_dt = 0.01
     lat, lon, hdg = _HOME_LAT, _HOME_LON, initial_hdg
     omega = 0.0  # ramps toward the phase target so roll never steps
@@ -81,7 +83,7 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
     snap_indices = set()
     if yaw_snaps:
         # spread the spikes across the flight; each is one bad attitude sample
-        att_total = int(total / 0.02)
+        att_total = int(total / att_dt)
         step = max(1, att_total // (yaw_snaps + 1))
         snap_indices = {step * (k + 1) for k in range(yaw_snaps)}
 
@@ -89,7 +91,7 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
     max_domega = _OMEGA_RATE_DPS2 * sim_dt
     for step in range(steps + 1):
         t = step * sim_dt
-        target = _omega_dps(t)
+        target = _omega_dps(t, phases)
         omega += max(-max_domega, min(max_domega, target - omega))
         hdg_rad = math.radians(hdg)
         # coordinated bank for the current turn rate (right turn => -roll)
@@ -98,7 +100,7 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
         )
         ts = (base + timedelta(seconds=t)).strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        if t - last_att >= 0.02 - 1e-9:
+        if t - last_att >= att_dt - 1e-9:
             last_att = t
             yaw = hdg + yaw_drift_dps * t
             if att_index in snap_indices:
@@ -144,7 +146,7 @@ def test_clean_flight_passes(tmp_path):
     finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
     assert finding.status == "pass", finding.details
     # The level-flight roll should read essentially zero.
-    roll_line = next(d for d in finding.details if d.startswith("Level-flight roll"))
+    roll_line = next(d for d in finding.details if d.startswith("Turn-compensated level roll"))
     assert "+0.0°" in roll_line or "-0.0°" in roll_line
     # A clean flight must not falsely flag a heading or drift problem.
     assert not any("declination" in d for d in finding.details)
@@ -156,7 +158,7 @@ def test_roll_bias_points_at_board_align(tmp_path):
     _write_flight(path, roll_bias=5.0)
     finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
     assert finding.status == "warn"
-    assert any("Level-flight roll averages +5" in d for d in finding.details)
+    assert any("Turn-compensated level roll averages +5" in d for d in finding.details)
     assert any("board-alignment roll" in d for d in finding.details)
     # The coordinated-turn regression should still see the right sign/scale.
     slope_line = next(d for d in finding.details if "coordinated-turn bank" in d)
@@ -181,8 +183,36 @@ def test_heading_wrap_across_north_is_clean(tmp_path):
     _write_flight(path, initial_hdg=350.0)
     finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
     assert finding.status == "pass", finding.details
-    roll_line = next(d for d in finding.details if d.startswith("Level-flight roll"))
+    roll_line = next(d for d in finding.details if d.startswith("Turn-compensated level roll"))
     assert "+0.0°" in roll_line or "-0.0°" in roll_line
+
+
+def test_shallow_turn_not_flagged(tmp_path):
+    # A continuous gentle 2°/s turn sits below the straight-leg gate, so its
+    # samples feed the level averages. The aircraft is genuinely banked ~4° and
+    # its heading tracks GPS at 2°/s — a clean estimator must not be reported as
+    # a roll board-alignment bias or an R_INIT_YAW drift.
+    path = tmp_path / "shallow.csv"
+    _write_flight(path, phases=[(0.0, 34.0, 2.0)])
+    finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
+    assert finding.status == "pass", finding.details
+    assert not any("board-alignment roll" in d for d in finding.details)
+    assert not any("under-weighted" in d for d in finding.details)
+
+
+def test_snap_detection_adapts_to_slow_cadence(tmp_path):
+    # Rows are stamped at ground-station receive time. At a ~22 Hz received
+    # cadence (45 ms) the detector must still judge consecutive pairs instead of
+    # skipping every one as a "gap".
+    clean = tmp_path / "slow_clean.csv"
+    _write_flight(clean, att_dt=0.045)
+    assert _test_estimator_continuity(load_sortie_streams(str(clean))).status == "pass"
+
+    snappy = tmp_path / "slow_snappy.csv"
+    _write_flight(snappy, att_dt=0.045, yaw_snaps=8)
+    finding = _test_estimator_continuity(load_sortie_streams(str(snappy)))
+    assert finding.status == "warn", finding.details
+    assert any("non-physical" in d for d in finding.details)
 
 
 def test_no_gps_is_no_data(tmp_path):

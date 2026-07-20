@@ -215,6 +215,17 @@ def _std(values: list[float]) -> float:
     return math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
 
 
+def _median(values: list[float]) -> float:
+    ordered = sorted(v for v in values if math.isfinite(v))
+    n = len(ordered)
+    if n == 0:
+        return math.nan
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return 0.5 * (ordered[mid - 1] + ordered[mid])
+
+
 def _linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
     """Least-squares ``y = a + b*x``; returns (a, b, residual std)."""
 
@@ -1018,8 +1029,15 @@ _PITCH_LEVEL_WARN_DEG = 8.0
 _HEADING_OFFSET_WARN_DEG = 8.0
 _HEADING_CONSISTENT_STD_DEG = 6.0  # per-leg offset spread below this => not wind
 _YAW_DRIFT_WARN_DPS = 1.0
-# Estimator-continuity ("snap") detector.
-_SNAP_MAX_DT_S = 0.03  # only judge jumps between consecutive *fresh* samples
+# Estimator-continuity ("snap") detector. Sortie rows are stamped at
+# ground-station receive time, so the nominal attitude interval follows the
+# link/packet rate and jitter, not the fixed 125 Hz FC cadence. Rather than
+# hard-code an interval, judge a pair only when it is within a small multiple
+# of the log's own median interval (so normal cadence and a couple of missed
+# frames count as fresh-to-fresh, but a real dropout is skipped).
+_SNAP_DT_MEDIAN_FACTOR = 3.0
+_SNAP_DT_FLOOR_S = 0.03  # minimum acceptance window (very high-rate logs)
+_SNAP_DT_CEIL_S = 0.25  # never bridge a gap longer than the RC failsafe window
 _SNAP_RATE_DPS = 500.0  # no fixed-wing slews this fast; a jump this steep is
 # an estimator re-acquisition or a corrupted telemetry sample, not real motion.
 _SNAP_WARN_PER_MIN = 6.0
@@ -1247,6 +1265,20 @@ def _test_estimator_continuity(streams: dict[str, _Stream]) -> Finding:
             "Not enough attitude telemetry to check estimator continuity.",
         )
 
+    # Acceptance window scaled to this log's own cadence (see constants).
+    intervals = [
+        times[i] - times[i - 1]
+        for i in range(1, len(times))
+        if times[i] - times[i - 1] > 0.0
+    ]
+    median_dt = _median(intervals)
+    if median_dt > 0.0:
+        max_dt = min(
+            _SNAP_DT_CEIL_S, max(_SNAP_DT_FLOOR_S, _SNAP_DT_MEDIAN_FACTOR * median_dt)
+        )
+    else:
+        max_dt = _SNAP_DT_FLOOR_S
+
     details: list[str] = []
     total_snaps = 0
     worst_rate = 0.0
@@ -1257,8 +1289,8 @@ def _test_estimator_continuity(streams: dict[str, _Stream]) -> Finding:
         snaps = 0
         for i in range(1, len(times)):
             dt = times[i] - times[i - 1]
-            if not 0.0 < dt < _SNAP_MAX_DT_S:
-                continue  # a gap, not a fresh-to-fresh step
+            if not 0.0 < dt <= max_dt:
+                continue  # a dropout gap, not a fresh-to-fresh step
             a, b = values[i - 1], values[i]
             if not (math.isfinite(a) and math.isfinite(b)):
                 continue
@@ -1271,6 +1303,10 @@ def _test_estimator_continuity(streams: dict[str, _Stream]) -> Finding:
             f"{axis}: {snaps} non-physical jump(s) "
             f"(> {_SNAP_RATE_DPS:.0f}°/s between fresh samples)."
         )
+    details.append(
+        f"(judged pairs up to {max_dt * 1000.0:.0f} ms apart; "
+        f"median attitude interval {median_dt * 1000.0:.0f} ms.)"
+    )
 
     duration = times[-1] - times[0]
     per_min = total_snaps / (duration / 60.0) if duration > 0 else 0.0
@@ -1340,6 +1376,14 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
         for i in range(n)
     ]
 
+    # Every level-leg metric is compared against what a *correct* estimate
+    # would read, not against zero: even a leg that passes the straight gate
+    # can carry a small residual turn (up to _STRAIGHT_TURN_RATE_DPS) or climb.
+    # A coordinated turn at rate omega genuinely banks the aircraft by
+    # atan(V*omega/g) and swings its heading at omega, so subtracting the
+    # expected bank / flight-path angle / GPS course slope keeps a clean
+    # estimator from being reported as a roll bias or an R_INIT_YAW drift on a
+    # gently curving leg.
     roll_vals: list[float] = []
     pitch_vals: list[float] = []
     seg_offsets: list[float] = []  # mean(yaw - course) per straight leg
@@ -1351,14 +1395,30 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
         idx = [i for i in range(start, end + 1) if grid[i] >= settle]
         if len(idx) < 2:
             continue
-        roll_vals.extend(roll[i] for i in idx)
-        pitch_vals.extend(pitch[i] for i in idx)
-        offs = [_angdiff_deg(yaw[i], course[i]) for i in idx]
-        offs = [o for o in offs if math.isfinite(o)]
-        if offs:
-            seg_offsets.append(_mean(offs))
-        if grid[idx[-1]] - grid[idx[0]] >= _MIN_DRIFT_SEG_S:
-            _, slope, _ = _linear_fit([grid[i] for i in idx], [yaw[i] for i in idx])
+        for i in idx:
+            expected_bank = -math.degrees(
+                math.atan2(speed[i] * math.radians(turn[i]), _GRAVITY_MS2)
+            )
+            roll_vals.append(roll[i] - expected_bank)
+            if math.isfinite(climb[i]):
+                gamma = math.degrees(math.atan2(climb[i], speed[i]))
+            else:
+                gamma = 0.0
+            pitch_vals.append(pitch[i] - gamma)
+        # Heading *error* (estimate minus GPS track), not raw yaw: its mean is
+        # the heading offset and its slope is the estimator's yaw drift with the
+        # GPS course change already removed.
+        herr = _unwrap_deg([_angdiff_deg(yaw[i], course[i]) for i in idx])
+        finite_herr = [(grid[i], h) for i, h in zip(idx, herr) if math.isfinite(h)]
+        if finite_herr:
+            seg_offsets.append(_mean([h for _, h in finite_herr]))
+        if (
+            len(finite_herr) >= 2
+            and finite_herr[-1][0] - finite_herr[0][0] >= _MIN_DRIFT_SEG_S
+        ):
+            _, slope, _ = _linear_fit(
+                [t for t, _ in finite_herr], [h for _, h in finite_herr]
+            )
             worst_drift = max(worst_drift, abs(slope))
 
     if not roll_vals:
@@ -1372,10 +1432,10 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
     details: list[str] = []
     status = "pass"
 
-    # --- Roll bias (level-flight mean roll should be ~0) -------------------
+    # --- Roll bias (turn-compensated level roll should be ~0) --------------
     roll_bias = _mean(roll_vals)
     details.append(
-        f"Level-flight roll averages {roll_bias:+.1f}° over "
+        f"Turn-compensated level roll averages {roll_bias:+.1f}° over "
         f"{len(roll_vals)} samples (target ~0°)."
     )
     if abs(roll_bias) > _ROLL_BIAS_WARN_DEG:
