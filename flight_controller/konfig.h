@@ -80,14 +80,12 @@
  * FC_ACCEL_CENTRIPETAL_COMPENSATION additionally enabled it outperforms the
  * legacy fusion through turns.
  *
- * Default ON: the fixed decoupled path has now been fully bench-validated --
- * the root-cause fixes above were replayed through the full correction pipeline
- * and the fault-injection scenarios in tests/ekf_decouple_mag_test.cpp. Set to 0
- * for a one-line rollback to the legacy 3-axis path, which stays bit-for-bit
- * unchanged. Consider enabling FC_ACCEL_CENTRIPETAL_COMPENSATION once
- * pitot/GPS/baro are trusted (it restores the accel reference in exactly the
- * turns that stress this build), and expect to tune R_INIT_YAW /
- * MAG_YAW_INNOVATION_GATE for flight. */
+ * Default ON: the fixed decoupled path is the standard estimator; the
+ * root-cause fixes above are covered by the fault-injection scenarios in
+ * tests/ekf_decouple_mag_test.cpp. Set to 0 for a one-line rollback to the
+ * legacy 3-axis path, which stays bit-for-bit unchanged. Consider enabling
+ * FC_ACCEL_CENTRIPETAL_COMPENSATION once pitot/GPS/baro are trusted (it
+ * restores the accel reference in exactly the turns that stress this build). */
 #ifndef FC_EKF_DECOUPLE_MAG
 #define FC_EKF_DECOUPLE_MAG 1
 #endif
