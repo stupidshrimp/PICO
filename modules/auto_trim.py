@@ -223,8 +223,14 @@ class AttitudeAverager:
         except (TypeError, ValueError):
             return
         self._samples.append((t, roll, pitch))
+        # Keep one sample straddling the cutoff so the retained buffer provably
+        # spans the full window. Dropping every sample older than the cutoff
+        # would leave the oldest retained sample just inside it, so with real
+        # (jittered) 200 ms ticks the span sits perpetually a tick under
+        # window_s and ready() would never fire. Only discard samples[0] once
+        # samples[1] is itself old enough to start the window.
         cutoff = t - self.window_s
-        while self._samples and self._samples[0][0] < cutoff:
+        while len(self._samples) > 1 and self._samples[1][0] < cutoff:
             self._samples.popleft()
 
     @property

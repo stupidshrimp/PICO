@@ -766,9 +766,10 @@ class MainWindow(QMainWindow):
         self._last_stick_pitch_norm: Optional[float] = None
         self._last_stick_roll_norm: Optional[float] = None
         self._stick_last_update = 0.0
-        # Timestamp of the last SUCCESSFUL joystick read. _stick_last_update
-        # advances even when a read fails (the cache holds its last value), so
-        # auto-trim's hands-off gate uses this to confirm live stick data.
+        # Monotonic time the joystick last yielded a FRESH axis sample (sourced
+        # from the handler's last_sample_monotonic). _stick_last_update advances
+        # on every tick even when the read returns a stale cache, so auto-trim's
+        # hands-off gate uses this instead to confirm live stick data.
         self._last_stick_sample_time = 0.0
 
         # Timer used to ramp the throttle toward its target value
@@ -1899,10 +1900,17 @@ class MainWindow(QMainWindow):
             norm_roll = max(-1.0, min(1.0, norm_roll))
             self._last_stick_pitch_norm = norm_pitch
             self._last_stick_roll_norm = norm_roll
-            self._last_stick_sample_time = time.monotonic()
         else:
             norm_pitch = self._last_stick_pitch_norm
             norm_roll = self._last_stick_roll_norm
+
+        # Track when the joystick last yielded a FRESH axis sample. get_raw_values
+        # returns the cached roll/pitch when the serial stream stalls, so a
+        # not-None reading alone does not prove live input; the handler advances
+        # last_sample_monotonic only when a new sample is actually consumed.
+        sample_time = getattr(self.joystick, "last_sample_monotonic", None)
+        if sample_time is not None:
+            self._last_stick_sample_time = sample_time
 
         if norm_pitch is not None:
             self.telemetry_state["stick_pitch"] = norm_pitch * self._stick_angle_scale

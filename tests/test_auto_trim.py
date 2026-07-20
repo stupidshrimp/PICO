@@ -147,13 +147,34 @@ def test_averager_ready_and_means_correct():
 
 def test_averager_expires_old_samples_outside_window():
     avg = AttitudeAverager(window_s=1.0, min_samples=1)
-    avg.add(0.0, 10.0, 10.0)   # stale, should expire once newer samples arrive
-    # Fill a full 1.0 s window of level samples; the last add expires t=0.
-    for i in range(11):
-        avg.add(2.0 + i * 0.1, 0.0, 0.0)  # window ends spanning [2.0, 3.0]
+    # A continuous stream: one stale outlier, then level samples out to t=3.0.
+    avg.add(0.0, 10.0, 10.0)   # far outside the final [~2, 3] window
+    t = 0.1
+    while t <= 3.0 + 1e-9:
+        avg.add(round(t, 3), 0.0, 0.0)
+        t += 0.1
     mean_roll, mean_pitch = avg.averages()
-    # The stale 10-degree sample must not skew the mean.
+    # The stale 10-degree outlier is dropped once the stream marches past it.
     assert abs(mean_roll) < 1e-9
+    assert abs(mean_pitch) < 1e-9
+
+
+def test_averager_ready_with_jittered_ticks():
+    # Regression: real 200 ms timer ticks never land exactly on the window
+    # boundary. add() must retain a straddling sample so the span reaches
+    # window_s and ready() actually fires (else it sticks on "Sampling...").
+    avg = AttitudeAverager(window_s=2.0, min_samples=4)
+    jitter = (0.201, 0.199, 0.202, 0.198)  # slightly-off intervals, never 0.200
+    t = 0.0
+    i = 0
+    # Feed ~3 s of jittered samples.
+    while t < 3.0:
+        avg.add(t, 2.0, 0.0)
+        t += jitter[i % len(jitter)]
+        i += 1
+    assert avg.ready()
+    mean_roll, mean_pitch = avg.averages()
+    assert abs(mean_roll - 2.0) < 1e-9
     assert abs(mean_pitch) < 1e-9
 
 
