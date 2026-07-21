@@ -223,3 +223,22 @@ def test_invalid_smoothing_and_sensitivity_inputs_fall_back_to_safe_defaults():
     assert handler.sensitivity == 100
     assert pitch == 1023
     assert roll == 1023
+
+
+def test_full_deadzone_bypasses_smoothing_and_immediately_recenters():
+    handler = _handler_with_queue("X=1023 Y=1023", smoothing=100)
+    handler.get_raw_values()
+    assert handler.roll == 512
+    assert handler.pitch == 512
+
+    handler.roll = 900
+    handler.pitch = 100
+    handler.set_deadzone(100)
+    handler.data_queue.put_nowait("X=1023 Y=0")
+
+    pitch, roll = handler.get_raw_values()
+
+    assert pitch == 512
+    assert roll == 512
+    assert handler.pitch == 512
+    assert handler.roll == 512
