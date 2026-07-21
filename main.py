@@ -2581,10 +2581,24 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         )
 
-        # Auto-trim controls: a button that toggles the session and a checkbox
-        # that switches between "suggest" (report only) and "apply" (closed
-        # loop). The status line below reports the measured bias / recommendation
-        # / progress. See _auto_trim_tick and modules/auto_trim.py.
+        self.trimModeLayout.addWidget(self.trimModeTitle)
+        self.trimModeLayout.addWidget(self.aileronTrimLabel)
+        self.trimModeLayout.addWidget(self.elevatorTrimLabel)
+        self.trimModeLayout.addWidget(self.boardAlignTrimLabel)
+
+        # Auto-trim gets its OWN column beside the trim readout rather than more
+        # rows under it: controlSectionFrame has a fixed 140 px geometry (see
+        # ui_mainwindow.py) that Qt cannot grow, so stacking the button,
+        # checkbox, and status onto the trim column would overflow and clip.
+        # Spreading across the strip's spare width keeps every column short.
+        self.autoTrimLayout = QVBoxLayout()
+        self.autoTrimLayout.setSpacing(4)
+        self.autoTrimLayout.setObjectName("autoTrimLayout")
+        self.autoTrimLayout.setContentsMargins(0, 8, 0, 0)
+
+        # A button that toggles the session and a checkbox that switches between
+        # "suggest" (report only) and "apply" (closed loop). See _auto_trim_tick
+        # and modules/auto_trim.py.
         self.autoTrimButton = QPushButton(parent)
         self.autoTrimButton.setObjectName("autoTrimButton")
         self.autoTrimButton.setText("Auto-Trim: Off")
@@ -2605,20 +2619,24 @@ class MainWindow(QMainWindow):
         )
         self.autoTrimApplyCheck.toggled.connect(self.on_auto_trim_apply_toggled)
 
+        # The status text is the longest string in the strip; wrap it within a
+        # bounded width so it grows downward inside the column instead of
+        # stretching the strip horizontally into the other columns.
         self.autoTrimStatusLabel = QLabel(parent)
         self.autoTrimStatusLabel.setObjectName("autoTrimStatusLabel")
         self.autoTrimStatusLabel.setWordWrap(True)
+        self.autoTrimStatusLabel.setMaximumWidth(190)
         self.autoTrimStatusLabel.setAlignment(
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         )
 
-        self.trimModeLayout.addWidget(self.trimModeTitle)
-        self.trimModeLayout.addWidget(self.aileronTrimLabel)
-        self.trimModeLayout.addWidget(self.elevatorTrimLabel)
-        self.trimModeLayout.addWidget(self.boardAlignTrimLabel)
-        self.trimModeLayout.addWidget(self.autoTrimButton)
-        self.trimModeLayout.addWidget(self.autoTrimApplyCheck)
-        self.trimModeLayout.addWidget(self.autoTrimStatusLabel)
+        # The button's own "Auto-Trim: Off/On" text heads the column, so no
+        # separate title label is needed (keeps the column short enough for the
+        # fixed-height strip).
+        self.autoTrimLayout.addWidget(self.autoTrimButton)
+        self.autoTrimLayout.addWidget(self.autoTrimApplyCheck)
+        self.autoTrimLayout.addWidget(self.autoTrimStatusLabel)
+        self.autoTrimLayout.addStretch(1)
         self._update_auto_trim_status("Idle")
 
         # Poll gating + attitude on a slow, dedicated timer so the closed loop
@@ -2638,8 +2656,10 @@ class MainWindow(QMainWindow):
 
         if spacer_index is None:
             layout.addLayout(self.trimModeLayout)
+            layout.addLayout(self.autoTrimLayout)
         else:
             layout.insertLayout(spacer_index, self.trimModeLayout)
+            layout.insertLayout(spacer_index + 1, self.autoTrimLayout)
 
     @staticmethod
     def _trim_label_text(
