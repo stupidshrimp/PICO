@@ -17,10 +17,13 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from modules.sortie_analysis import (  # noqa: E402
+    Finding,
+    SortieReport,
     _test_attitude_vs_gps,
     _test_estimator_continuity,
     analyze_sortie,
     load_sortie_streams,
+    report_html,
 )
 
 _G = 9.80665
@@ -338,3 +341,30 @@ def test_full_report_includes_advisor(tmp_path):
     names = {finding.name for finding in report.findings}
     assert "EKF attitude vs GPS" in names
     assert "Estimator continuity" in names
+
+
+def test_report_html_escapes_file_errors_and_findings():
+    report = SortieReport(
+        path="bad <sortie>.csv",
+        findings=[
+            Finding(
+                "Name <b>",
+                "fail",
+                "Summary <script>alert(1)</script>",
+                ["Detail with <img src=x onerror=alert(1)>"],
+            )
+        ],
+    )
+
+    html = report_html(report)
+
+    assert "Name &lt;b&gt;" in html
+    assert "Summary &lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "<script>" not in html
+    assert "<img" not in html
+
+    report.error = "Could not read <missing>.csv"
+    error_html = report_html(report)
+    assert "bad &lt;sortie&gt;.csv" in error_html
+    assert "Could not read &lt;missing&gt;.csv" in error_html

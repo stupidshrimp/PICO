@@ -43,6 +43,7 @@ escalates past ``warn`` - a tunable bias is a hint, not a failed flight.
 from __future__ import annotations
 
 import csv
+import html
 import math
 import os
 from dataclasses import dataclass, field
@@ -1680,18 +1681,26 @@ _OVERALL_SUMMARIES = {
 def report_html(report: SortieReport) -> str:
     """Build the rich-text post-flight report shown after a recording stops."""
 
-    name = os.path.basename(report.path)
+    name = html.escape(os.path.basename(report.path))
     if report.error:
-        return f"<b>Post-flight analysis of {name} failed.</b><p>{report.error}</p>"
+        return (
+            f"<b>Post-flight analysis of {name} failed.</b>"
+            f"<p>{html.escape(report.error)}</p>"
+        )
 
     overall = report.overall_status()
     parts = [f"<b>{_OVERALL_SUMMARIES[overall]}</b>", "<ul>"]
     for finding in report.findings:
         icon = _STATUS_ICONS.get(finding.status, "•")
-        parts.append(f"<li>{icon} <b>{finding.name}:</b> {finding.summary}")
+        parts.append(
+            f"<li>{icon} <b>{html.escape(finding.name)}:</b> "
+            f"{html.escape(finding.summary)}"
+        )
         if finding.details:
             parts.append("<ul>")
-            parts.extend(f"<li>{detail}</li>" for detail in finding.details)
+            parts.extend(
+                f"<li>{html.escape(detail)}</li>" for detail in finding.details
+            )
             parts.append("</ul>")
         parts.append("</li>")
     parts.append("</ul>")
