@@ -147,13 +147,25 @@ class JoystickRawHandler(QObject):
         self.reading_thread.start()
 
     def set_deadzone(self, percent):
-        self.deadzone = max(0, min(100, int(percent)))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 0
+        self.deadzone = max(0, min(100, value))
 
     def set_sensitivity(self, percent):
-        self.sensitivity = max(1, int(percent))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 100
+        self.sensitivity = max(1, value)
 
     def set_smoothing(self, percent):
-        self.smoothing = max(0, min(100, int(percent)))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 0
+        self.smoothing = max(0, min(100, value))
 
     # ------------------------------------------------------------------
     # Serial helpers
@@ -229,7 +241,7 @@ class JoystickRawHandler(QObject):
         delta = value - center
         max_delta = 512
         dz = self.deadzone / 100 * max_delta
-        if abs(delta) <= dz:
+        if abs(delta) <= dz or dz >= max_delta:
             delta = 0
         else:
             sign = 1 if delta > 0 else -1
@@ -259,13 +271,24 @@ class JoystickRawHandler(QObject):
             raw_roll, raw_pitch = latest_sample
             proc_roll = self._apply_deadzone_sensitivity(raw_roll)
             proc_pitch = self._apply_deadzone_sensitivity(raw_pitch)
+            now = time.monotonic()
+            self.last_sample_monotonic = now
+
+            if self.deadzone >= 100:
+                # A full deadzone is an explicit failsafe-style request to hold
+                # sticks at centre.  Do not feed the centred sample through the
+                # EMA: a previous deflection would otherwise decay slowly, and
+                # smoothing=100 would make it stick forever.
+                self.roll = 512
+                self.pitch = 512
+                self._smoothing_last_update = now
+                return self.pitch, self.roll
+
             # Rescale the per-call EMA weight against the time elapsed since the
             # last sample so the smoothing time constant is fixed regardless of
             # how often get_raw_values() is polled. At the nominal refresh
             # cadence this is identical to the legacy fixed-weight blend.
             weight = 1.0 - (self.smoothing / 100.0)
-            now = time.monotonic()
-            self.last_sample_monotonic = now
             last = getattr(self, "_smoothing_last_update", None)
             self._smoothing_last_update = now
             if weight >= 1.0:
