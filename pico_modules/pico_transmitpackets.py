@@ -1055,7 +1055,12 @@ class CRSFPacketProcessor(QObject):
             return needed
 
         if packet_type == 0x08:  # Battery
-            minimum = 6
+            # CRSF battery telemetry is network-order: voltage (u16, 0.1 V),
+            # current (u16, 0.1 A), consumed capacity (u24, mAh), and optional
+            # remaining percent (u8).  Parsing this as little-endian 16-bit
+            # fields corrupts normal telemetry (for example 12.3 V becomes
+            # 3148.8 V) and truncates capacities above 65535 mAh.
+            minimum = 7
             if len(view) < minimum:
                 logger.warning(
                     "Battery payload too short: expected at least %d bytes, got %d",
@@ -1065,14 +1070,15 @@ class CRSFPacketProcessor(QObject):
                 return 0
 
             try:
-                voltage_raw, current_raw, capacity = struct.unpack("<HHH", view[:6])
+                voltage_raw, current_raw = struct.unpack(">HH", view[:4])
+                capacity = int.from_bytes(view[4:7], byteorder="big")
             except Exception:
                 logger.exception("Failed to unpack battery payload")
                 return 0
 
-            percent = float(view[6]) if len(view) > 6 else None
+            percent = float(view[7]) if len(view) > 7 else None
 
-            voltage = (voltage_raw + 5) / 10.0
+            voltage = voltage_raw / 10.0
             current = current_raw / 10.0
 
             if percent is not None:
@@ -1080,11 +1086,11 @@ class CRSFPacketProcessor(QObject):
                     self.telemetry_ready.emit(
                         ("battery", voltage, current, capacity, percent)
                     )
-                return 7
+                return 8
 
             if emit:
                 self.telemetry_ready.emit(("battery", voltage, current, capacity))
-            return 6
+            return 7
 
         if packet_type == 0x1E:  # Attitude
             needed = 6
