@@ -189,3 +189,37 @@ def test_serial_unplug_via_in_waiting_triggers_joystick_loss_failsafe():
 
     assert len(messages) == 1
     assert "Serial connection error" in messages[0]
+
+
+def test_full_deadzone_centers_extreme_axis_without_dividing_by_zero():
+    handler = _handler_with_queue("X=1023 Y=0")
+    handler.set_deadzone(100)
+
+    pitch, roll = handler.get_raw_values()
+
+    assert pitch == 512
+    assert roll == 512
+
+
+def test_invalid_deadzone_input_falls_back_to_safe_zero_percent():
+    handler = _handler_with_queue("X=1023 Y=1023")
+
+    handler.set_deadzone("not-a-number")
+    pitch, roll = handler.get_raw_values()
+
+    assert handler.deadzone == 0
+    assert pitch == 1023
+    assert roll == 1023
+
+
+def test_invalid_smoothing_and_sensitivity_inputs_fall_back_to_safe_defaults():
+    handler = _handler_with_queue("X=1023 Y=1023")
+
+    handler.set_smoothing(None)
+    handler.set_sensitivity("bad")
+    pitch, roll = handler.get_raw_values()
+
+    assert handler.smoothing == 0
+    assert handler.sensitivity == 100
+    assert pitch == 1023
+    assert roll == 1023

@@ -147,13 +147,25 @@ class JoystickRawHandler(QObject):
         self.reading_thread.start()
 
     def set_deadzone(self, percent):
-        self.deadzone = max(0, min(100, int(percent)))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 0
+        self.deadzone = max(0, min(100, value))
 
     def set_sensitivity(self, percent):
-        self.sensitivity = max(1, int(percent))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 100
+        self.sensitivity = max(1, value)
 
     def set_smoothing(self, percent):
-        self.smoothing = max(0, min(100, int(percent)))
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            value = 0
+        self.smoothing = max(0, min(100, value))
 
     # ------------------------------------------------------------------
     # Serial helpers
@@ -229,7 +241,7 @@ class JoystickRawHandler(QObject):
         delta = value - center
         max_delta = 512
         dz = self.deadzone / 100 * max_delta
-        if abs(delta) <= dz:
+        if abs(delta) <= dz or dz >= max_delta:
             delta = 0
         else:
             sign = 1 if delta > 0 else -1
