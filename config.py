@@ -150,6 +150,19 @@ DEFAULT_CONFIG = {
     },
 }
 
+
+def _normalise_baudrate(value, default):
+    """Return a positive integer baudrate, falling back on malformed input."""
+
+    try:
+        baudrate = int(value)
+    except (TypeError, ValueError):
+        return default
+    if baudrate <= 0:
+        return default
+    return baudrate
+
+
 def load_config(path: str = "config.json"):
     """Load configuration from a JSON file and environment variables.
 
@@ -200,6 +213,13 @@ def load_config(path: str = "config.json"):
     except (TypeError, ValueError):
         crsf_config["channel_update_interval"] = 8
 
+    config["joystick"]["baudrate"] = _normalise_baudrate(
+        config["joystick"].get("baudrate"), DEFAULT_CONFIG["joystick"]["baudrate"]
+    )
+    crsf_config["baudrate"] = _normalise_baudrate(
+        crsf_config.get("baudrate"), DEFAULT_CONFIG["crsf"]["baudrate"]
+    )
+
     # Remove legacy GS-side throttle PID/stale-timeout keys.  The FC owns these
     # safety-critical control-loop values in flight_controller/Main.ino.
     throttle_config = config.setdefault("throttle", {})
@@ -221,17 +241,33 @@ def load_config(path: str = "config.json"):
         config["joystick"]["port"] = joystick_port
     if joystick_baud:
         try:
-            config["joystick"]["baudrate"] = int(joystick_baud)
-        except ValueError:
-            print(f"Invalid JOYSTICK_BAUDRATE '{joystick_baud}', using default {config['joystick']['baudrate']}")
+            baudrate = int(joystick_baud)
+            if baudrate <= 0:
+                raise ValueError
+            config["joystick"]["baudrate"] = baudrate
+        except (TypeError, ValueError):
+            default_baudrate = DEFAULT_CONFIG["joystick"]["baudrate"]
+            print(
+                f"Invalid JOYSTICK_BAUDRATE '{joystick_baud}', "
+                f"using default {default_baudrate}"
+            )
+            config["joystick"]["baudrate"] = default_baudrate
 
     if crsf_port:
         config["crsf"]["port"] = crsf_port
     if crsf_baud:
         try:
-            config["crsf"]["baudrate"] = int(crsf_baud)
-        except ValueError:
-            print(f"Invalid CRSF_BAUDRATE '{crsf_baud}', using default {config['crsf']['baudrate']}")
+            baudrate = int(crsf_baud)
+            if baudrate <= 0:
+                raise ValueError
+            config["crsf"]["baudrate"] = baudrate
+        except (TypeError, ValueError):
+            default_baudrate = DEFAULT_CONFIG["crsf"]["baudrate"]
+            print(
+                f"Invalid CRSF_BAUDRATE '{crsf_baud}', "
+                f"using default {default_baudrate}"
+            )
+            config["crsf"]["baudrate"] = default_baudrate
 
     return config
 

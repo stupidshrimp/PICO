@@ -113,3 +113,35 @@ def test_load_config_ignores_malformed_known_sections(tmp_path, monkeypatch):
     assert config["crsf"]["port"] == "COM43"
     assert config["crsf"]["packet_interval"] == 4
     assert config["throttle"] == {"target_airspeed_mph": 20.0}
+
+
+def test_load_config_normalises_serial_baudrates(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """{
+            \"joystick\": {\"baudrate\": \"bad\"},
+            \"crsf\": {\"baudrate\": 0}
+        }""",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(config_path))
+
+    assert config["joystick"]["baudrate"] == 9600
+    assert config["crsf"]["baudrate"] == 921600
+
+
+def test_load_config_accepts_numeric_string_serial_baudrates(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """{
+            \"joystick\": {\"baudrate\": \"115200\"},
+            \"crsf\": {\"baudrate\": \"420000\"}
+        }""",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(config_path))
+
+    assert config["joystick"]["baudrate"] == 115200
+    assert config["crsf"]["baudrate"] == 420000
