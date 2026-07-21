@@ -30,7 +30,7 @@ REFERENCE_INTERVAL_S = 0.033
 def time_scaled_weight(
     weight: float, dt: float, reference: float = REFERENCE_INTERVAL_S
 ) -> float:
-    """Return ``weight`` rescaled for an ``dt``-second gap since the last blend.
+    """Return ``weight`` rescaled for a ``dt``-second gap since the last blend.
 
     Parameters
     ----------
