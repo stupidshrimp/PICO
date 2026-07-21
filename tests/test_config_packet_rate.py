@@ -145,3 +145,21 @@ def test_load_config_accepts_numeric_string_serial_baudrates(tmp_path):
 
     assert config["joystick"]["baudrate"] == 115200
     assert config["crsf"]["baudrate"] == 420000
+
+
+def test_invalid_env_baudrate_keeps_configured_file_value(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """{
+            \"joystick\": {\"baudrate\": 115200},
+            \"crsf\": {\"baudrate\": 420000}
+        }""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOYSTICK_BAUDRATE", "bad")
+    monkeypatch.setenv("CRSF_BAUDRATE", "0")
+
+    config = load_config(str(config_path))
+
+    assert config["joystick"]["baudrate"] == 115200
+    assert config["crsf"]["baudrate"] == 420000

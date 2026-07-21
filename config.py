@@ -246,12 +246,11 @@ def load_config(path: str = "config.json"):
                 raise ValueError
             config["joystick"]["baudrate"] = baudrate
         except (TypeError, ValueError):
-            default_baudrate = DEFAULT_CONFIG["joystick"]["baudrate"]
+            configured_baudrate = config["joystick"]["baudrate"]
             print(
                 f"Invalid JOYSTICK_BAUDRATE '{joystick_baud}', "
-                f"using default {default_baudrate}"
+                f"keeping configured value {configured_baudrate}"
             )
-            config["joystick"]["baudrate"] = default_baudrate
 
     if crsf_port:
         config["crsf"]["port"] = crsf_port
@@ -262,12 +261,11 @@ def load_config(path: str = "config.json"):
                 raise ValueError
             config["crsf"]["baudrate"] = baudrate
         except (TypeError, ValueError):
-            default_baudrate = DEFAULT_CONFIG["crsf"]["baudrate"]
+            configured_baudrate = config["crsf"]["baudrate"]
             print(
                 f"Invalid CRSF_BAUDRATE '{crsf_baud}', "
-                f"using default {default_baudrate}"
+                f"keeping configured value {configured_baudrate}"
             )
-            config["crsf"]["baudrate"] = default_baudrate
 
     return config
 
