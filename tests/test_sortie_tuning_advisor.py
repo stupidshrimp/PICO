@@ -61,7 +61,8 @@ def _omega_dps(t: float, phases) -> float:
 
 def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                   with_gps=True, yaw_snaps=0, initial_hdg=90.0, att_dt=0.02,
-                  phases=None, course_value=None, gps_outage=None):
+                  phases=None, course_value=None, gps_outage=None,
+                  wind_ms=(0.0, 0.0)):
     """Integrate the flight and write it as a sortie CSV.
 
     roll/pitch/yaw are the *estimator's* values, so the injected bias/drift is
@@ -94,10 +95,17 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
         target = _omega_dps(t, phases)
         omega += max(-max_domega, min(max_domega, target - omega))
         hdg_rad = math.radians(hdg)
-        # coordinated bank for the current turn rate (right turn => -roll)
+        # coordinated bank for the current (air-relative) turn rate
         bank = -math.degrees(
             math.atan2(_SPEED_MS * math.radians(omega), _G)
         )
+        # Ground velocity = air velocity (along the physical heading) + wind, so
+        # in wind the GPS ground track crabs off the heading and its rate is not
+        # the air-relative yaw rate.
+        wind_e, wind_n = wind_ms
+        gvE = _SPEED_MS * math.sin(hdg_rad) + wind_e
+        gvN = _SPEED_MS * math.cos(hdg_rad) + wind_n
+        ground_course = math.degrees(math.atan2(gvE, gvN)) % 360.0
         ts = (base + timedelta(seconds=t)).strftime("%Y-%m-%d %H:%M:%S.%f")
 
         if t - last_att >= att_dt - 1e-9:
@@ -126,14 +134,14 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                 "airspeed_mph": f"{_SPEED_MS * _MS_TO_MPH:.2f}",
                 "ground_course": (
                     f"{course_value:.2f}" if course_value is not None
-                    else f"{hdg % 360.0:.2f}"
+                    else f"{ground_course:.2f}"
                 ),
                 "satellites": "10",
             }))
 
-        # integrate position and heading for the next step
-        lat += _SPEED_MS * math.cos(hdg_rad) / _M_PER_DEG_LAT * sim_dt
-        lon += _SPEED_MS * math.sin(hdg_rad) / _M_PER_DEG_LON * sim_dt
+        # integrate position (ground velocity) and heading for the next step
+        lat += gvN / _M_PER_DEG_LAT * sim_dt
+        lon += gvE / _M_PER_DEG_LON * sim_dt
         hdg += omega * sim_dt
 
     header = ["timestamp", "packet_type", *_FULL_FIELDS]
@@ -274,6 +282,34 @@ def test_gps_outage_span_not_bridged(tmp_path):
     finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
     assert finding.status == "pass", finding.details
     assert not any("→" in d for d in finding.details)  # no warn guidance lines
+
+
+def test_wind_does_not_trigger_false_roll_scale(tmp_path):
+    # Healthy estimator (roll = true air-relative coordinated bank) flown in a
+    # strong crosswind, with legs at different headings so the crab varies. The
+    # GPS ground-speed turn model then predicts a bank scaled well off the true
+    # one, but that is wind, not a roll scaling error: the advisor must detect
+    # the wind (varying crab) and not emit a scale warning.
+    # A 180° turn flown in a strong crosswind: the air-relative bank is constant
+    # but the GPS ground-speed turn model swings, so the regression slope lands
+    # far from 1 (~0.26 here) purely from wind. The two straight legs point
+    # opposite ways, so their crab differs sharply (large spread) — wind is
+    # detected and the scale warning must be suppressed.
+    path = tmp_path / "wind.csv"
+    _write_flight(
+        path,
+        initial_hdg=0.0,
+        phases=[(0.0, 4.0, 0.0), (4.0, 16.0, 15.0), (16.0, 26.0, 0.0)],
+        wind_ms=(14.0, 0.0),
+    )
+    finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
+    assert finding.status == "pass", finding.details
+    # Slope deviates from 1, but it is reported with the wind caveat, not a
+    # scale warning.
+    assert not any("check the attitude/board-alignment scaling" in d
+                   for d in finding.details), finding.details
+    assert any("deviates from 1" in d and "wind crab" in d
+               for d in finding.details), finding.details
 
 
 def test_no_gps_is_no_data(tmp_path):

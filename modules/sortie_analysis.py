@@ -1573,6 +1573,18 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
         )
 
     # --- Coordinated-turn cross-check (sign + scale of roll) --------------
+    # The prediction uses GPS ground speed x ground-track rate as the
+    # centripetal acceleration that sets bank. That equals the air-relative
+    # V*psi_dot only in still air: in wind the ground path is a trochoid, ground
+    # speed varies through the turn, and V_ground*omega_ground is just the
+    # normal component — so a healthy estimator can read a slope well off 1.
+    # Per-leg heading-vs-track crab that varies between legs is the signature of
+    # wind, so gate the SCALE warning on low, consistent crab. The SIGN check
+    # (a right turn needs right bank) stays valid in any wind.
+    crab_spread = _std(seg_offsets) if len(seg_offsets) >= 2 else None
+    scale_trustworthy = (
+        crab_spread is not None and crab_spread <= _HEADING_CONSISTENT_STD_DEG
+    )
     predicted: list[float] = []
     observed: list[float] = []
     for i in range(n):
@@ -1600,11 +1612,18 @@ def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
                 "sign-convention problem, not a tuning value."
             )
         elif abs(slope - 1.0) > 0.4:
-            status = "warn"
-            details.append(
-                f"→ Roll is scaled {slope:.2f}× versus the coordinated-turn "
-                "bank — check the attitude/board-alignment scaling."
-            )
+            if scale_trustworthy:
+                status = "warn"
+                details.append(
+                    f"→ Roll is scaled {slope:.2f}× versus the coordinated-turn "
+                    "bank — check the attitude/board-alignment scaling."
+                )
+            else:
+                details.append(
+                    f"→ Slope {slope:.2f} deviates from 1, but wind crab is "
+                    "indicated (or too few legs to rule it out), which biases "
+                    "the ground-speed turn model — not flagging a scale error."
+                )
 
     details.append(
         "Note: if heading is accurate in level flight but degrades in turns, "
