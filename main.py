@@ -143,6 +143,16 @@ from modules.board_align_trim import (
     effective_board_align_offset,
     step_board_align_offset,
 )
+from modules.auto_trim import (
+    AUTO_TRIM_ATTITUDE_STALE_S,
+    AUTO_TRIM_MIN_AIRSPEED_MPH,
+    AUTO_TRIM_STICK_STALE_S,
+    AttitudeAverager,
+    apply_trim_step,
+    is_trimmed,
+    recommended_trim_levels,
+    sticks_centered,
+)
 
 
 def validate_port(name: str, port: str) -> bool:
@@ -255,6 +265,13 @@ class MainWindow(QMainWindow):
         # modules/board_align_trim.py and the FC_BOARD_ALIGN_TRIM_* block.
         self.board_align_roll_trim_deg = 0.0
         self.board_align_pitch_trim_deg = 0.0
+        # Auto-trim: derives the surface trim above from the attitude telemetry
+        # while flying hands-off. self.auto_trim_active toggles the session;
+        # self.auto_trim_apply picks "apply" (closed loop) over "suggest" (report
+        # only). See modules/auto_trim.py and _auto_trim_tick.
+        self.auto_trim_active = False
+        self.auto_trim_apply = False
+        self._auto_trim_averager = AttitudeAverager()
         self._setup_trim_indicator()
         self.update_trim_labels()
 
@@ -749,6 +766,11 @@ class MainWindow(QMainWindow):
         self._last_stick_pitch_norm: Optional[float] = None
         self._last_stick_roll_norm: Optional[float] = None
         self._stick_last_update = 0.0
+        # Monotonic time the joystick last yielded a FRESH axis sample (sourced
+        # from the handler's last_sample_monotonic). _stick_last_update advances
+        # on every tick even when the read returns a stale cache, so auto-trim's
+        # hands-off gate uses this instead to confirm live stick data.
+        self._last_stick_sample_time = 0.0
 
         # Timer used to ramp the throttle toward its target value
         self.throttle_ramp_timer = QTimer(self)
@@ -1882,6 +1904,14 @@ class MainWindow(QMainWindow):
             norm_pitch = self._last_stick_pitch_norm
             norm_roll = self._last_stick_roll_norm
 
+        # Track when the joystick last yielded a FRESH axis sample. get_raw_values
+        # returns the cached roll/pitch when the serial stream stalls, so a
+        # not-None reading alone does not prove live input; the handler advances
+        # last_sample_monotonic only when a new sample is actually consumed.
+        sample_time = getattr(self.joystick, "last_sample_monotonic", None)
+        if sample_time is not None:
+            self._last_stick_sample_time = sample_time
+
         if norm_pitch is not None:
             self.telemetry_state["stick_pitch"] = norm_pitch * self._stick_angle_scale
         else:
@@ -2556,6 +2586,67 @@ class MainWindow(QMainWindow):
         self.trimModeLayout.addWidget(self.elevatorTrimLabel)
         self.trimModeLayout.addWidget(self.boardAlignTrimLabel)
 
+        # Auto-trim gets its OWN column beside the trim readout rather than more
+        # rows under it: controlSectionFrame has a fixed 140 px geometry (see
+        # ui_mainwindow.py) that Qt cannot grow, so stacking the button,
+        # checkbox, and status onto the trim column would overflow and clip.
+        # Spreading across the strip's spare width keeps every column short.
+        self.autoTrimLayout = QVBoxLayout()
+        self.autoTrimLayout.setSpacing(4)
+        self.autoTrimLayout.setObjectName("autoTrimLayout")
+        self.autoTrimLayout.setContentsMargins(0, 8, 0, 0)
+
+        # A button that toggles the session and a checkbox that switches between
+        # "suggest" (report only) and "apply" (closed loop). See _auto_trim_tick
+        # and modules/auto_trim.py.
+        self.autoTrimButton = QPushButton(parent)
+        self.autoTrimButton.setObjectName("autoTrimButton")
+        self.autoTrimButton.setText("Auto-Trim: Off")
+        self.autoTrimButton.setCheckable(True)
+        self.autoTrimButton.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.autoTrimButton.setToolTip(
+            "Fly straight-and-level, hands off, then start Auto-Trim to derive "
+            "the elevator/aileron trim from the attitude telemetry."
+        )
+        self.autoTrimButton.toggled.connect(self.on_auto_trim_toggled)
+
+        self.autoTrimApplyCheck = QCheckBox(parent)
+        self.autoTrimApplyCheck.setObjectName("autoTrimApplyCheck")
+        self.autoTrimApplyCheck.setText("Apply automatically")
+        self.autoTrimApplyCheck.setToolTip(
+            "Off: suggest the trim only. On: gently drive the trim to level and "
+            "latch when settled."
+        )
+        self.autoTrimApplyCheck.toggled.connect(self.on_auto_trim_apply_toggled)
+
+        # The status text is the longest string in the strip; wrap it within a
+        # bounded width so it grows downward inside the column instead of
+        # stretching the strip horizontally into the other columns.
+        self.autoTrimStatusLabel = QLabel(parent)
+        self.autoTrimStatusLabel.setObjectName("autoTrimStatusLabel")
+        self.autoTrimStatusLabel.setWordWrap(True)
+        self.autoTrimStatusLabel.setMaximumWidth(190)
+        self.autoTrimStatusLabel.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        # The button's own "Auto-Trim: Off/On" text heads the column, so no
+        # separate title label is needed (keeps the column short enough for the
+        # fixed-height strip).
+        self.autoTrimLayout.addWidget(self.autoTrimButton)
+        self.autoTrimLayout.addWidget(self.autoTrimApplyCheck)
+        self.autoTrimLayout.addWidget(self.autoTrimStatusLabel)
+        self.autoTrimLayout.addStretch(1)
+        self._update_auto_trim_status("Idle")
+
+        # Poll gating + attitude on a slow, dedicated timer so the closed loop
+        # eases toward level over a few seconds rather than snapping at the
+        # ~70 Hz control rate.
+        self.auto_trim_timer = QTimer(self)
+        self.auto_trim_timer.setObjectName("autoTrimTimer")
+        self.auto_trim_timer.timeout.connect(self._auto_trim_tick)
+        self.auto_trim_timer.start(200)
+
         spacer_index = None
         for index in range(layout.count()):
             item = layout.itemAt(index)
@@ -2565,8 +2656,10 @@ class MainWindow(QMainWindow):
 
         if spacer_index is None:
             layout.addLayout(self.trimModeLayout)
+            layout.addLayout(self.autoTrimLayout)
         else:
             layout.insertLayout(spacer_index, self.trimModeLayout)
+            layout.insertLayout(spacer_index + 1, self.autoTrimLayout)
 
     @staticmethod
     def _trim_label_text(
@@ -2708,6 +2801,177 @@ class MainWindow(QMainWindow):
             ),
         )
         return channels
+
+    # ------------------------------------------------------------------
+    # Auto-trim (command page)
+    # ------------------------------------------------------------------
+    def on_auto_trim_toggled(self, checked: bool) -> None:
+        """Start or stop an auto-trim session from the on-screen button."""
+
+        self.auto_trim_active = bool(checked)
+        self.autoTrimButton.setText("Auto-Trim: On" if checked else "Auto-Trim: Off")
+        self._auto_trim_averager.clear()
+        if checked:
+            mode = "apply" if self.auto_trim_apply else "suggest"
+            self._update_auto_trim_status(f"Started ({mode}) — sampling…")
+        else:
+            self._update_auto_trim_status("Idle")
+
+    def on_auto_trim_apply_toggled(self, checked: bool) -> None:
+        """Switch between suggest (report only) and apply (closed loop)."""
+
+        self.auto_trim_apply = bool(checked)
+        # Re-measure cleanly under the new behaviour.
+        self._auto_trim_averager.clear()
+
+    def _update_auto_trim_status(self, text: str, ok: bool = False) -> None:
+        """Refresh the auto-trim status readout below the button."""
+
+        if not hasattr(self, "autoTrimStatusLabel"):
+            return
+        self.autoTrimStatusLabel.setText(text)
+        self.autoTrimStatusLabel.setStyleSheet(
+            "color: rgb(0, 255, 0);" if ok else "color: rgb(200, 200, 200);"
+        )
+
+    def _auto_trim_gate_reason(self) -> Optional[str]:
+        """Return why auto-trim cannot run right now, or ``None`` if clear.
+
+        Surface trim only matters when the pilot is flying the aircraft
+        manually, hands-off, and fast enough for the surfaces to bite; in
+        Fly-By-Wire the FC holds attitude so trim is moot. Each failing
+        precondition maps to a short operator-facing reason.
+        """
+
+        now = time.monotonic()
+        if self.control_mode != "Manual":
+            return "switch to Manual"
+        if not self._is_airborne():
+            return "not airborne"
+        # Airspeed must be both current and fresh. _update_airborne_state()
+        # returns early on stale airspeed without clearing airborne_state or
+        # current_airspeed, so _is_airborne() and the cached speed can both
+        # linger after a pitot/GPS dropout -- confirm the packet is fresh before
+        # trusting the value for control authority.
+        gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        if not self._airspeed_value_fresh(now, gps_timeout):
+            return "airspeed stale"
+        airspeed = self._safe_float(self.current_airspeed)
+        if airspeed is None or airspeed < AUTO_TRIM_MIN_AIRSPEED_MPH:
+            return f"airspeed < {AUTO_TRIM_MIN_AIRSPEED_MPH:.0f} mph"
+        if self.telemetry_roll is None or self.telemetry_pitch is None:
+            return "no attitude"
+        last = self.last_attitude_packet_time
+        if last is None or (now - last) > AUTO_TRIM_ATTITUDE_STALE_S:
+            return "attitude stale"
+        # Confirm the sticks are centred AND the reading is live -- the cache
+        # holds its last good value when a read fails or the worker is closed,
+        # so a frozen centred sample must not keep the hands-off gate open.
+        if (now - self._last_stick_sample_time) > AUTO_TRIM_STICK_STALE_S:
+            return "no stick data"
+        if not sticks_centered(
+            self._last_stick_roll_norm, self._last_stick_pitch_norm
+        ):
+            return "centre the sticks"
+        return None
+
+    def _auto_trim_tick(self) -> None:
+        """Periodic auto-trim step: gate, sample, then suggest or apply."""
+
+        if not self.auto_trim_active:
+            return
+
+        reason = self._auto_trim_gate_reason()
+        if reason is not None:
+            self._auto_trim_averager.clear()
+            self._update_auto_trim_status(f"Paused: {reason}")
+            return
+
+        self._auto_trim_averager.add(
+            time.monotonic(), self.telemetry_roll, self.telemetry_pitch
+        )
+        averages = self._auto_trim_averager.averages()
+        if averages is None:
+            self._update_auto_trim_status("Sampling…")
+            return
+
+        avg_roll, avg_pitch = averages
+        if self.auto_trim_apply:
+            self._auto_trim_apply_cycle(avg_roll, avg_pitch)
+        else:
+            self._auto_trim_suggest(avg_roll, avg_pitch)
+
+    def _auto_trim_suggest(self, avg_roll: float, avg_pitch: float) -> None:
+        """Report the measured bias and recommended trim without changing it."""
+
+        if is_trimmed(avg_roll, avg_pitch):
+            self._update_auto_trim_status(
+                f"Level (bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}°) — trim OK",
+                ok=True,
+            )
+            return
+        rec_ail, rec_elev = recommended_trim_levels(
+            avg_roll,
+            avg_pitch,
+            self.aileron_trim_level,
+            self.elevator_trim_level,
+            max_level=self.TRIM_MAX_LEVEL,
+        )
+        self._update_auto_trim_status(
+            f"Bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}° → "
+            f"suggest Ail {rec_ail:+d}, Elev {rec_elev:+d}"
+        )
+
+    def _auto_trim_apply_cycle(self, avg_roll: float, avg_pitch: float) -> None:
+        """Nudge the trim toward level; latch and stop once settled."""
+
+        if is_trimmed(avg_roll, avg_pitch):
+            self._finish_auto_trim(
+                f"Trimmed (bias R{avg_roll:+.1f}° P{avg_pitch:+.1f}°)"
+            )
+            return
+
+        ail_step, elev_step = apply_trim_step(avg_roll, avg_pitch)
+        changed = self._nudge_trim_levels(ail_step, elev_step)
+        self._update_auto_trim_status(
+            f"Trimming… R{avg_roll:+.1f}° P{avg_pitch:+.1f}° "
+            f"(Ail {self.aileron_trim_level:+d}, Elev {self.elevator_trim_level:+d})"
+        )
+        if changed:
+            # Wait for the aircraft to respond before the next step so the loop
+            # eases toward level instead of over-stepping on stale attitude.
+            self._auto_trim_averager.clear()
+        else:
+            # Both axes are pinned at the trim limit yet still not level.
+            self._finish_auto_trim("At trim limit; level manually")
+
+    def _nudge_trim_levels(self, aileron_step: int, elevator_step: int) -> bool:
+        """Apply signed level steps to both axes; return whether anything moved."""
+
+        before = (self.aileron_trim_level, self.elevator_trim_level)
+        self.aileron_trim_level = max(
+            -self.TRIM_MAX_LEVEL,
+            min(self.TRIM_MAX_LEVEL, self.aileron_trim_level + int(aileron_step)),
+        )
+        self.elevator_trim_level = max(
+            -self.TRIM_MAX_LEVEL,
+            min(self.TRIM_MAX_LEVEL, self.elevator_trim_level + int(elevator_step)),
+        )
+        changed = (self.aileron_trim_level, self.elevator_trim_level) != before
+        if changed:
+            self.update_trim_labels()
+        return changed
+
+    def _finish_auto_trim(self, message: str) -> None:
+        """Stop the session and report the final state."""
+
+        self.autoTrimButton.blockSignals(True)
+        self.autoTrimButton.setChecked(False)
+        self.autoTrimButton.setText("Auto-Trim: Off")
+        self.autoTrimButton.blockSignals(False)
+        self.auto_trim_active = False
+        self._auto_trim_averager.clear()
+        self._update_auto_trim_status(message, ok=True)
 
     def classify_rssi(self, rssi):
         if rssi >= -60:

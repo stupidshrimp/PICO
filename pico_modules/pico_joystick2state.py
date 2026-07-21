@@ -126,6 +126,10 @@ class JoystickRawHandler(QObject):
         self.button_queue = Queue()
         self.roll = 512
         self.pitch = 512
+        # Monotonic time a fresh axis sample was last consumed. Stays put while
+        # the stream is stalled (get_raw_values returns the cached roll/pitch),
+        # so callers can distinguish live input from a frozen cache.
+        self.last_sample_monotonic = None
         self.button_states = {}
         self._button_events = []
         self.deadzone = deadzone  # percent
@@ -261,6 +265,7 @@ class JoystickRawHandler(QObject):
             # cadence this is identical to the legacy fixed-weight blend.
             weight = 1.0 - (self.smoothing / 100.0)
             now = time.monotonic()
+            self.last_sample_monotonic = now
             last = getattr(self, "_smoothing_last_update", None)
             self._smoothing_last_update = now
             if weight >= 1.0:
