@@ -20,10 +20,24 @@ recording stops and look at the whole flight at once:
                           recorded FBW setpoints.
 * Link budget           - RSSI modelled against distance from the first GPS
                           fix, antenna A/B divergence, and link-quality lows.
+* Estimator continuity  - non-physical attitude jumps that betray EKF
+                          innovation-gate re-acquisitions (or telemetry
+                          corruption).
+* EKF attitude vs GPS   - a tuning advisor: cross-checks the attitude estimate
+                          against GPS (which the maiden-bring-up build does not
+                          fuse for roll/pitch/yaw) and turns the disagreement
+                          into "which firmware constant, which direction"
+                          guidance for roll/pitch bias and heading trust.
 
 Each test degrades gracefully: if the flight did not exercise the data a test
-needs (no stick activity, no GPS fix) the test reports ``no_data`` instead of
-guessing.
+needs (no stick activity, no GPS fix, no steady flight) the test reports
+``no_data`` instead of guessing.
+
+The EKF-tuning advisor is deliberately telemetry-only: it works from the
+estimator *output* plus GPS, so it can flag a symptom and the constant to
+reach for, but it cannot solve for a provably-optimal value (that needs the
+EKF's internal innovations/covariance, which are not downlinked). It never
+escalates past ``warn`` - a tunable bias is a hint, not a failed flight.
 """
 
 from __future__ import annotations
@@ -105,6 +119,7 @@ _STREAM_FIELDS = {
         "longitude",
         "altitude_ft",
         "airspeed_mph",
+        "ground_course",
         "satellites",
     ),
     "link_stats": (
@@ -198,6 +213,17 @@ def _std(values: list[float]) -> float:
         return 0.0
     mean = _mean(values)
     return math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(v for v in values if math.isfinite(v))
+    n = len(ordered)
+    if n == 0:
+        return math.nan
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return 0.5 * (ordered[mid - 1] + ordered[mid])
 
 
 def _linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
@@ -976,6 +1002,645 @@ def _test_link_budget(streams: dict[str, _Stream]) -> Finding:
 
 
 # ----------------------------------------------------------------------
+# EKF tuning advisor: cross-check the estimator against GPS
+# ----------------------------------------------------------------------
+# GPS is an independent truth reference the attitude EKF does not fuse for
+# roll/pitch/yaw on the maiden-bring-up build, so its disagreement with the
+# estimate is a clean tuning signal. These tests turn that disagreement into
+# "which constant, which direction" guidance. They are advisory: a detected
+# bias is a hint, never a failed flight, so nothing here escalates past "warn".
+
+_GRAVITY_MS2 = 9.80665
+_FLIGHT_FRAME_DT_S = 0.1  # 10 Hz analysis grid: fine enough for turn rates,
+# coarse enough to keep a whole flight cheap in pure Python.
+# Above walking/taxi speed: the aircraft is airborne and translating, so a
+# GPS ground track is meaningful. Groundspeed is derived from position, so it
+# is independent of both the (unproven) pitot and the EKF under test.
+_FLYING_GROUNDSPEED_MS = 3.0
+_MIN_STRAIGHT_SEG_S = 3.0  # shortest straight-and-level run worth averaging
+_MIN_DRIFT_SEG_S = 6.0  # shortest run long enough to fit a yaw-drift slope
+# Do not bridge a telemetry dropout longer than these when resampling: a span
+# with no real fix/attitude must be excluded from the cross-check, not
+# interpolated into synthetic truth. Generous vs the nominal cadences (GPS ~5 Hz
+# fixes / attitude ~125 Hz) so ordinary jitter still interpolates.
+_GPS_MAX_GAP_S = 1.0
+_ATT_MAX_GAP_S = 0.5
+_SEG_SETTLE_S = 0.5  # discard each segment's entry transient
+_STRAIGHT_TURN_RATE_DPS = 3.0  # |track rate| below this reads as "straight"
+_LEVEL_CLIMB_MS = 1.5  # |climb rate| below this reads as "level"
+_TURN_RATE_MIN_DPS = 6.0  # |track rate| above this reads as a real turn
+# If the receiver's logged ground course typically disagrees with the
+# position-derived track by more than this, treat it as a placeholder (e.g. a
+# GGA-only receiver logging a constant 0°) and use the derived track instead.
+_COURSE_DISAGREE_DEG = 20.0
+# ...and reject a logged course that barely varies (std below the first value)
+# while the derived track really does (std above the second): a constant course
+# through actual turns is a placeholder even if it agrees on average.
+_COURSE_PLACEHOLDER_STD_DEG = 2.0
+_COURSE_MOTION_STD_DEG = 8.0
+# Advisory thresholds (degrees unless noted).
+_ROLL_BIAS_WARN_DEG = 3.0
+_PITCH_LEVEL_WARN_DEG = 8.0
+_HEADING_OFFSET_WARN_DEG = 8.0
+_HEADING_CONSISTENT_STD_DEG = 6.0  # per-leg offset spread below this => not wind
+_YAW_DRIFT_WARN_DPS = 1.0
+# Estimator-continuity ("snap") detector. Sortie rows are stamped at
+# ground-station receive time, so the nominal attitude interval follows the
+# link/packet rate and jitter, not the fixed 125 Hz FC cadence. Rather than
+# hard-code an interval, judge a pair only when it is within a small multiple
+# of the log's own median interval (so normal cadence and a couple of missed
+# frames count as fresh-to-fresh, but a real dropout is skipped).
+_SNAP_DT_MEDIAN_FACTOR = 3.0
+_SNAP_DT_FLOOR_S = 0.03  # minimum acceptance window (very high-rate logs)
+_SNAP_DT_CEIL_S = 0.25  # never bridge a gap longer than the RC failsafe window
+_SNAP_RATE_DPS = 500.0  # no fixed-wing slews this fast; a jump this steep is
+# an estimator re-acquisition or a corrupted telemetry sample, not real motion.
+_SNAP_WARN_PER_MIN = 6.0
+
+
+def _wrap180(delta: float) -> float:
+    """Fold a degree difference into ``[-180, 180]``."""
+
+    return (delta + 180.0) % 360.0 - 180.0
+
+
+def _angdiff_deg(a: float, b: float) -> float:
+    """Smallest signed ``a - b`` in degrees, wrap-aware."""
+
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return math.nan
+    return _wrap180(a - b)
+
+
+def _unwrap_deg(values: list[float]) -> list[float]:
+    """Remove 360° wraps from an angle series, preserving NaN gaps."""
+
+    out = [math.nan] * len(values)
+    offset = 0.0
+    prev: Optional[float] = None
+    for i, v in enumerate(values):
+        if not math.isfinite(v):
+            continue
+        if prev is not None:
+            while (v + offset) - prev > 180.0:
+                offset -= 360.0
+            while (v + offset) - prev < -180.0:
+                offset += 360.0
+        out[i] = v + offset
+        prev = out[i]
+    return out
+
+
+def _smooth(values: list[float], window: int) -> list[float]:
+    """Centred moving average that skips NaNs (window in samples)."""
+
+    if window <= 1:
+        return list(values)
+    n = len(values)
+    out = [math.nan] * n
+    half = window // 2
+    for i in range(n):
+        chunk = [
+            v
+            for v in values[max(0, i - half) : min(n, i + half + 1)]
+            if math.isfinite(v)
+        ]
+        if chunk:
+            out[i] = sum(chunk) / len(chunk)
+    return out
+
+
+def _grid_derivative(values: list[float], dt: float) -> list[float]:
+    """Centred first difference on a uniform grid; NaN where undefined."""
+
+    n = len(values)
+    out = [math.nan] * n
+    for i in range(1, n - 1):
+        a, b = values[i - 1], values[i + 1]
+        if math.isfinite(a) and math.isfinite(b):
+            out[i] = (b - a) / (2.0 * dt)
+    if n >= 2:
+        if math.isfinite(values[0]) and math.isfinite(values[1]):
+            out[0] = (values[1] - values[0]) / dt
+        if math.isfinite(values[-1]) and math.isfinite(values[-2]):
+            out[-1] = (values[-1] - values[-2]) / dt
+    return out
+
+
+def _sample_on_grid(
+    times: list[float],
+    values: list[float],
+    grid: list[float],
+    max_gap: Optional[float] = None,
+) -> list[float]:
+    """Interpolate a series onto ``grid``; NaN outside the series' own span.
+
+    With ``max_gap`` set, grid points that fall inside a source gap longer than
+    ``max_gap`` are left NaN instead of being bridged — a real telemetry
+    dropout must not be interpolated into synthetic "truth" that the advisor
+    would then analyse.
+    """
+
+    pairs = sorted(
+        (t, v) for t, v in zip(times, values) if math.isfinite(v)
+    )
+    if len(pairs) < 2:
+        return [math.nan] * len(grid)
+    ts = [p[0] for p in pairs]
+    vs = [p[1] for p in pairs]
+    lo, hi = ts[0], ts[-1]
+    out: list[float] = []
+    j = 0
+    for t in grid:
+        if t < lo or t > hi:
+            out.append(math.nan)
+            continue
+        while j + 1 < len(ts) and ts[j + 1] < t:
+            j += 1
+        t0, v0 = ts[j], vs[j]
+        t1, v1 = (ts[j + 1], vs[j + 1]) if j + 1 < len(ts) else (t0, v0)
+        if max_gap is not None and t1 - t0 > max_gap:
+            out.append(math.nan)
+        elif t1 <= t0:
+            out.append(v0)
+        else:
+            out.append(v0 + (v1 - v0) * (t - t0) / (t1 - t0))
+    return out
+
+
+def _bool_runs(flags: list[bool]) -> list[tuple[int, int]]:
+    """Contiguous ``True`` spans as inclusive ``(start, end)`` index pairs."""
+
+    runs: list[tuple[int, int]] = []
+    start: Optional[int] = None
+    for i, flag in enumerate(flags):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(flags) - 1))
+    return runs
+
+
+def _flight_frame(streams: dict[str, _Stream]) -> Optional[dict[str, list[float]]]:
+    """Resample attitude + GPS onto one 10 Hz grid with GPS-derived motion.
+
+    Returns None unless there is a usable overlap of attitude telemetry and
+    valid GPS fixes. Groundspeed and ground track are built from GPS position
+    alone, so they stay independent of the pitot and of the attitude estimate
+    the advisor is grading.
+    """
+
+    att = streams["attitude"]
+    gps = streams["gps"]
+    if len(att.times) < 50 or len(gps.times) < 10:
+        return None
+
+    lats = gps.column("latitude")
+    lons = gps.column("longitude")
+    alts = gps.column("altitude_ft")
+    courses = gps.column("ground_course")
+    fix_t: list[float] = []
+    east: list[float] = []
+    north: list[float] = []
+    fix_course: list[float] = []
+    fix_alt: list[float] = []
+    home: Optional[tuple[float, float]] = None
+    for i, t in enumerate(gps.times):
+        lat = lats[i] if i < len(lats) else math.nan
+        lon = lons[i] if i < len(lons) else math.nan
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        if lat == 0.0 and lon == 0.0:
+            continue
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        if home is None:
+            home = (lat, lon)
+        fix_t.append(t)
+        north.append((lat - home[0]) * _METERS_PER_DEG_LAT)
+        east.append(
+            (lon - home[1])
+            * _METERS_PER_DEG_LON_EQUATOR
+            * math.cos(math.radians(home[0]))
+        )
+        c = courses[i] if i < len(courses) else math.nan
+        fix_course.append(c)
+        a = alts[i] if i < len(alts) else math.nan
+        fix_alt.append(a * _FEET_TO_METERS if math.isfinite(a) else math.nan)
+
+    if len(fix_t) < 5:
+        return None
+    t0 = max(att.times[0], fix_t[0])
+    t1 = min(att.times[-1], fix_t[-1])
+    if t1 - t0 < _MIN_STRAIGHT_SEG_S:
+        return None
+
+    dt = _FLIGHT_FRAME_DT_S
+    count = int((t1 - t0) / dt) + 1
+    grid = [t0 + i * dt for i in range(count)]
+
+    east_g = _sample_on_grid(fix_t, east, grid, _GPS_MAX_GAP_S)
+    north_g = _sample_on_grid(fix_t, north, grid, _GPS_MAX_GAP_S)
+    alt_g = _sample_on_grid(fix_t, fix_alt, grid, _GPS_MAX_GAP_S)
+    # Unwrap heading angles *before* interpolating: interpolating across a
+    # 359°->1° wrap would otherwise synthesise a phantom ~180° midpoint.
+    yaw_g = _sample_on_grid(
+        att.times, _unwrap_deg(att.column("yaw")), grid, _ATT_MAX_GAP_S
+    )
+    roll_g = _sample_on_grid(att.times, att.column("roll"), grid, _ATT_MAX_GAP_S)
+    pitch_g = _sample_on_grid(
+        att.times, att.column("pitch"), grid, _ATT_MAX_GAP_S
+    )
+
+    v_east = _grid_derivative(east_g, dt)
+    v_north = _grid_derivative(north_g, dt)
+    speed = _smooth(
+        [
+            math.hypot(ve, vn)
+            if math.isfinite(ve) and math.isfinite(vn)
+            else math.nan
+            for ve, vn in zip(v_east, v_north)
+        ],
+        11,  # ~1 s: tame GPS position-differencing noise
+    )
+
+    # Ground course two ways: the receiver's own report (low noise, but only
+    # valid when the receiver streams RMC/VTG — a GGA-only config logs a
+    # constant 0° placeholder while still moving) and the position-derived
+    # track (independent, noisier). Both are the same physical quantity
+    # (course over ground), so trust the logged course only where it actually
+    # agrees with the motion; otherwise fall back to the track. This keeps a
+    # placeholder course from making every leg read as 0°.
+    track = _unwrap_deg(
+        [
+            math.degrees(math.atan2(v_east[i], v_north[i]))
+            if (
+                math.isfinite(v_east[i])
+                and math.isfinite(v_north[i])
+                and math.isfinite(speed[i])
+                and speed[i] > _FLYING_GROUNDSPEED_MS
+            )
+            else math.nan
+            for i in range(count)
+        ]
+    )
+    logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid, _GPS_MAX_GAP_S)
+    both = [
+        i
+        for i in range(count)
+        if math.isfinite(logged[i]) and math.isfinite(track[i])
+    ]
+    disagreements = [abs(_wrap180(logged[i] - track[i])) for i in both]
+    logged_moving = [logged[i] for i in both]
+    track_moving = [track[i] for i in both]
+    # A near-constant logged course while the derived track actually varies is
+    # a placeholder (e.g. a GGA-only receiver logging ground_course=0 through
+    # turns) — reject it even when the median disagreement is small because the
+    # flight happened to run mostly in the placeholder's direction, otherwise
+    # its turns would be misclassified as straight.
+    is_placeholder = (
+        _std(logged_moving) < _COURSE_PLACEHOLDER_STD_DEG
+        and _std(track_moving) > _COURSE_MOTION_STD_DEG
+    )
+    trust_logged = (
+        len(both) >= 5
+        and _median(disagreements) <= _COURSE_DISAGREE_DEG
+        and not is_placeholder
+    )
+    if trust_logged:
+        course = [
+            logged[i] if math.isfinite(logged[i]) else track[i]
+            for i in range(count)
+        ]
+    else:
+        course = list(track)
+    course = _unwrap_deg(course)
+
+    return {
+        "grid": grid,
+        "yaw": yaw_g,
+        "roll": roll_g,
+        "pitch": pitch_g,
+        "speed": speed,
+        "course": course,
+        "alt": alt_g,
+    }
+
+
+def _test_estimator_continuity(streams: dict[str, _Stream]) -> Finding:
+    """Flag non-physical attitude jumps between consecutive fresh samples."""
+
+    att = streams["attitude"]
+    times = att.times
+    if len(times) < 100:
+        return Finding(
+            "Estimator continuity",
+            "no_data",
+            "Not enough attitude telemetry to check estimator continuity.",
+        )
+
+    # Acceptance window scaled to this log's own cadence (see constants).
+    intervals = [
+        times[i] - times[i - 1]
+        for i in range(1, len(times))
+        if times[i] - times[i - 1] > 0.0
+    ]
+    median_dt = _median(intervals)
+    if median_dt > 0.0:
+        max_dt = min(
+            _SNAP_DT_CEIL_S, max(_SNAP_DT_FLOOR_S, _SNAP_DT_MEDIAN_FACTOR * median_dt)
+        )
+    else:
+        max_dt = _SNAP_DT_FLOOR_S
+
+    details: list[str] = []
+    total_snaps = 0
+    worst_rate = 0.0
+    for axis in ("roll", "pitch", "yaw"):
+        values = att.column(axis)
+        if axis == "yaw":
+            values = _unwrap_deg(values)
+        snaps = 0
+        for i in range(1, len(times)):
+            dt = times[i] - times[i - 1]
+            if not 0.0 < dt <= max_dt:
+                continue  # a dropout gap, not a fresh-to-fresh step
+            a, b = values[i - 1], values[i]
+            if not (math.isfinite(a) and math.isfinite(b)):
+                continue
+            rate = abs(b - a) / dt
+            if rate > _SNAP_RATE_DPS:
+                snaps += 1
+                worst_rate = max(worst_rate, rate)
+        total_snaps += snaps
+        details.append(
+            f"{axis}: {snaps} non-physical jump(s) "
+            f"(> {_SNAP_RATE_DPS:.0f}°/s between fresh samples)."
+        )
+    details.append(
+        f"(judged pairs up to {max_dt * 1000.0:.0f} ms apart; "
+        f"median attitude interval {median_dt * 1000.0:.0f} ms.)"
+    )
+
+    duration = times[-1] - times[0]
+    per_min = total_snaps / (duration / 60.0) if duration > 0 else 0.0
+    if per_min > _SNAP_WARN_PER_MIN:
+        status = "warn"
+        summary = (
+            f"{total_snaps} non-physical attitude jump(s) "
+            f"({per_min:.1f}/min, worst {worst_rate:.0f}°/s)."
+        )
+        details.append(
+            "Frequent snaps are usually EKF innovation-gate re-acquisitions "
+            "(a gate too tight — MAG_YAW_INNOVATION_GATE for yaw, "
+            "ACCEL_INNOVATION_GATE for roll/pitch) or corrupted telemetry; "
+            "cross-check the link-budget finding to tell them apart."
+        )
+    else:
+        status = "pass"
+        summary = (
+            "Attitude evolved continuously (no non-physical jumps)."
+            if total_snaps == 0
+            else f"{total_snaps} isolated attitude jump(s) — within noise."
+        )
+    return Finding("Estimator continuity", status, summary, details)
+
+
+def _test_attitude_vs_gps(streams: dict[str, _Stream]) -> Finding:
+    """Cross-check the attitude estimate against GPS and advise on tuning."""
+
+    frame = _flight_frame(streams)
+    if frame is None:
+        return Finding(
+            "EKF attitude vs GPS",
+            "no_data",
+            "No usable overlap of attitude telemetry and valid GPS fixes to "
+            "cross-check the estimator.",
+        )
+
+    dt = _FLIGHT_FRAME_DT_S
+    grid = frame["grid"]
+    yaw, roll, pitch = frame["yaw"], frame["roll"], frame["pitch"]
+    speed, course, alt = frame["speed"], frame["course"], frame["alt"]
+    n = len(grid)
+    turn = _smooth(_grid_derivative(course, dt), 5)  # deg/s
+    climb = _smooth(_grid_derivative(alt, dt), 11)  # m/s
+
+    flying = [
+        math.isfinite(speed[i])
+        and speed[i] > _FLYING_GROUNDSPEED_MS
+        and math.isfinite(yaw[i])
+        and math.isfinite(roll[i])
+        and math.isfinite(pitch[i])
+        and math.isfinite(course[i])
+        for i in range(n)
+    ]
+    if sum(flying) < int(_MIN_STRAIGHT_SEG_S / dt):
+        return Finding(
+            "EKF attitude vs GPS",
+            "no_data",
+            "The aircraft never translated far enough under GPS for a "
+            "cross-check (mostly stationary or no fix).",
+        )
+
+    straight = [
+        flying[i]
+        and abs(turn[i]) < _STRAIGHT_TURN_RATE_DPS
+        and (not math.isfinite(climb[i]) or abs(climb[i]) < _LEVEL_CLIMB_MS)
+        for i in range(n)
+    ]
+
+    # Every level-leg metric is compared against what a *correct* estimate
+    # would read, not against zero: even a leg that passes the straight gate
+    # can carry a small residual turn (up to _STRAIGHT_TURN_RATE_DPS) or climb.
+    # A coordinated turn at rate omega genuinely banks the aircraft by
+    # atan(V*omega/g) and swings its heading at omega, so subtracting the
+    # expected bank / flight-path angle / GPS course slope keeps a clean
+    # estimator from being reported as a roll bias or an R_INIT_YAW drift on a
+    # gently curving leg.
+    roll_vals: list[float] = []
+    pitch_vals: list[float] = []
+    seg_offsets: list[float] = []  # mean(yaw - course) per straight leg
+    worst_drift = 0.0
+    for start, end in _bool_runs(straight):
+        if grid[end] - grid[start] < _MIN_STRAIGHT_SEG_S:
+            continue
+        settle = grid[start] + _SEG_SETTLE_S
+        idx = [i for i in range(start, end + 1) if grid[i] >= settle]
+        if len(idx) < 2:
+            continue
+        for i in idx:
+            expected_bank = -math.degrees(
+                math.atan2(speed[i] * math.radians(turn[i]), _GRAVITY_MS2)
+            )
+            roll_vals.append(roll[i] - expected_bank)
+            if math.isfinite(climb[i]):
+                gamma = math.degrees(math.atan2(climb[i], speed[i]))
+            else:
+                gamma = 0.0
+            pitch_vals.append(pitch[i] - gamma)
+        # Heading *error* (estimate minus GPS track), not raw yaw: its mean is
+        # the heading offset and its slope is the estimator's yaw drift with the
+        # GPS course change already removed.
+        herr = _unwrap_deg([_angdiff_deg(yaw[i], course[i]) for i in idx])
+        finite_herr = [(grid[i], h) for i, h in zip(idx, herr) if math.isfinite(h)]
+        if finite_herr:
+            seg_offsets.append(_mean([h for _, h in finite_herr]))
+        if (
+            len(finite_herr) >= 2
+            and finite_herr[-1][0] - finite_herr[0][0] >= _MIN_DRIFT_SEG_S
+        ):
+            _, slope, _ = _linear_fit(
+                [t for t, _ in finite_herr], [h for _, h in finite_herr]
+            )
+            worst_drift = max(worst_drift, abs(slope))
+
+    if not roll_vals:
+        return Finding(
+            "EKF attitude vs GPS",
+            "no_data",
+            "No sustained straight-and-level flight was found to average the "
+            "estimator against GPS.",
+        )
+
+    details: list[str] = []
+    status = "pass"
+
+    # --- Roll bias (turn-compensated level roll should be ~0) --------------
+    roll_bias = _mean(roll_vals)
+    details.append(
+        f"Turn-compensated level roll averages {roll_bias:+.1f}° over "
+        f"{len(roll_vals)} samples (target ~0°)."
+    )
+    if abs(roll_bias) > _ROLL_BIAS_WARN_DEG:
+        status = "warn"
+        # FC_BOARD_ALIGN_ROLL_DEG is defined as the roll the firmware reports
+        # when the airframe is actually level (boardAlignInit stores its
+        # inverse), so a residual level-flight roll is *added* to that constant
+        # to null it — increasing it, not subtracting.
+        details.append(
+            f"→ Steady roll bias: increase the board-alignment roll constant "
+            f"FC_BOARD_ALIGN_ROLL_DEG by about {roll_bias:+.1f}°, or suspect "
+            "R_INIT_ACC over-trusting the accelerometer."
+        )
+
+    # --- Pitch in level flight (= angle of attack + any bias) --------------
+    pitch_level = _mean(pitch_vals)
+    details.append(
+        f"Level-flight pitch averages {pitch_level:+.1f}° nose-up "
+        "(a few degrees of angle of attack is normal)."
+    )
+    if abs(pitch_level) > _PITCH_LEVEL_WARN_DEG:
+        status = "warn"
+        details.append(
+            f"→ {pitch_level:+.1f}° is large for level cruise: check "
+            "R_INIT_ACC (specific force during climb/accel biases pitch) or "
+            "the board-alignment pitch trim (FC_BOARD_ALIGN_PITCH_DEG)."
+        )
+
+    # --- Heading: yaw vs GPS ground track ---------------------------------
+    if seg_offsets:
+        offset_mean = _mean(seg_offsets)
+        offset_std = _std(seg_offsets) if len(seg_offsets) >= 2 else 0.0
+        details.append(
+            f"Heading vs GPS track offset {offset_mean:+.1f}° across "
+            f"{len(seg_offsets)} leg(s) (spread {offset_std:.1f}°)."
+        )
+        if abs(offset_mean) > _HEADING_OFFSET_WARN_DEG:
+            if len(seg_offsets) >= 2 and offset_std < _HEADING_CONSISTENT_STD_DEG:
+                status = "warn"
+                details.append(
+                    f"→ Consistent {offset_mean:+.1f}° offset across legs: a "
+                    "magnetic declination (FC_MAG_DECLINATION_RAD) or "
+                    "compass-calibration error, not R_INIT_YAW."
+                )
+            else:
+                details.append(
+                    "→ Offset varies between legs — likely wind crab rather "
+                    "than a calibration error; interpret with caution."
+                )
+
+    if worst_drift > _YAW_DRIFT_WARN_DPS:
+        status = "warn"
+        details.append(
+            f"→ Heading drifted up to {worst_drift:.1f}°/s on a straight leg "
+            "while the GPS track held steady: the compass is under-weighted — "
+            "lower R_INIT_YAW (or check for a reject-happy "
+            "MAG_YAW_INNOVATION_GATE)."
+        )
+
+    # --- Coordinated-turn cross-check (sign + scale of roll) --------------
+    # The prediction uses GPS ground speed x ground-track rate as the
+    # centripetal acceleration that sets bank. That equals the air-relative
+    # V*psi_dot only in still air: in wind the ground path is a trochoid, ground
+    # speed varies through the turn, and V_ground*omega_ground is just the
+    # normal component — so a healthy estimator can read a slope well off 1.
+    # Per-leg heading-vs-track crab that varies between legs is the signature of
+    # wind, so gate the SCALE warning on low, consistent crab. The SIGN check
+    # (a right turn needs right bank) stays valid in any wind.
+    crab_spread = _std(seg_offsets) if len(seg_offsets) >= 2 else None
+    scale_trustworthy = (
+        crab_spread is not None and crab_spread <= _HEADING_CONSISTENT_STD_DEG
+    )
+    predicted: list[float] = []
+    observed: list[float] = []
+    for i in range(n):
+        if not (flying[i] and abs(turn[i]) > _TURN_RATE_MIN_DPS):
+            continue
+        # Coordinated-turn load balance: tan(bank) = V * omega / g. A right
+        # turn (track increasing) needs right bank, which is negative roll in
+        # this firmware's convention, hence the leading minus.
+        bank = -math.degrees(
+            math.atan2(speed[i] * math.radians(turn[i]), _GRAVITY_MS2)
+        )
+        if abs(bank) < 75.0:
+            predicted.append(bank)
+            observed.append(roll[i])
+    if len(predicted) >= 30 and (max(predicted) - min(predicted)) > 10.0:
+        _, slope, _ = _linear_fit(predicted, observed)
+        details.append(
+            f"Roll vs coordinated-turn bank: slope {slope:.2f} over "
+            f"{len(predicted)} turning samples (expect ~1)."
+        )
+        if slope < 0.0:
+            status = "warn"
+            details.append(
+                "→ Roll tracks GPS-derived bank with inverted sign — a roll "
+                "sign-convention problem, not a tuning value."
+            )
+        elif abs(slope - 1.0) > 0.4:
+            if scale_trustworthy:
+                status = "warn"
+                details.append(
+                    f"→ Roll is scaled {slope:.2f}× versus the coordinated-turn "
+                    "bank — check the attitude/board-alignment scaling."
+                )
+            else:
+                details.append(
+                    f"→ Slope {slope:.2f} deviates from 1, but wind crab is "
+                    "indicated (or too few legs to rule it out), which biases "
+                    "the ground-speed turn model — not flagging a scale error."
+                )
+
+    details.append(
+        "Note: if heading is accurate in level flight but degrades in turns, "
+        "suspect the magnetic inclination constant (FC_MAG_INCLINATION_RAD)."
+    )
+
+    if status == "warn":
+        summary = (
+            "Estimator shows a tunable bias against the GPS cross-check — see "
+            "the constant guidance below."
+        )
+    else:
+        summary = "Attitude estimate agreed with the GPS cross-check."
+    return Finding("EKF attitude vs GPS", status, summary, details)
+
+
+# ----------------------------------------------------------------------
 # Entry points
 # ----------------------------------------------------------------------
 def analyze_sortie(path: str) -> SortieReport:
@@ -997,6 +1662,8 @@ def analyze_sortie(path: str) -> SortieReport:
     report.findings.append(_test_control_response(streams))
     report.findings.append(_test_fbw_tracking(streams))
     report.findings.append(_test_link_budget(streams))
+    report.findings.append(_test_estimator_continuity(streams))
+    report.findings.append(_test_attitude_vs_gps(streams))
     return report
 
 
