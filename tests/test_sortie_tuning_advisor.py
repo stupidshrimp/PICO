@@ -61,7 +61,7 @@ def _omega_dps(t: float, phases) -> float:
 
 def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                   with_gps=True, yaw_snaps=0, initial_hdg=90.0, att_dt=0.02,
-                  phases=None, course_value=None):
+                  phases=None, course_value=None, gps_outage=None):
     """Integrate the flight and write it as a sortie CSV.
 
     roll/pitch/yaw are the *estimator's* values, so the injected bias/drift is
@@ -114,7 +114,10 @@ def _write_flight(path, *, roll_bias=0.0, pitch_bias=0.0, yaw_drift_dps=0.0,
                 "stick_throttle": "0", "control_mode": "Manual",
             }))
 
-        if with_gps and t - last_gps >= 0.1 - 1e-9:
+        in_outage = (
+            gps_outage is not None and gps_outage[0] <= t < gps_outage[1]
+        )
+        if with_gps and not in_outage and t - last_gps >= 0.1 - 1e-9:
             last_gps = t
             rows.append((ts, "gps", {
                 "latitude": f"{lat:.7f}",
@@ -254,6 +257,23 @@ def test_placeholder_course_rejected_even_when_mostly_northbound(tmp_path):
     # Turns must be seen via the derived track — impossible if the flat course
     # had been trusted (its turn rate would be ~0 everywhere).
     assert any("coordinated-turn bank" in d for d in finding.details)
+
+
+def test_gps_outage_span_not_bridged(tmp_path):
+    # The aircraft turns (banks ~-35°) during a 6 s GPS outage. If the resampler
+    # bridged the gap, the interpolated straight-line chord would understate the
+    # turn — the real bank then looks mis-scaled against the (bogus) GPS course,
+    # and the advisor emits false roll scale/heading guidance for a span that
+    # had no GPS truth. The gap must be excluded instead, leaving it clean.
+    path = tmp_path / "outage.csv"
+    _write_flight(
+        path,
+        phases=[(0.0, 8.0, 0.0), (8.0, 14.0, 15.0), (14.0, 24.0, 0.0)],
+        gps_outage=(8.0, 14.0),
+    )
+    finding = _test_attitude_vs_gps(load_sortie_streams(str(path)))
+    assert finding.status == "pass", finding.details
+    assert not any("→" in d for d in finding.details)  # no warn guidance lines
 
 
 def test_no_gps_is_no_data(tmp_path):

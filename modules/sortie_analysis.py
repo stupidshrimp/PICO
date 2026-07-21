@@ -1019,6 +1019,12 @@ _FLIGHT_FRAME_DT_S = 0.1  # 10 Hz analysis grid: fine enough for turn rates,
 _FLYING_GROUNDSPEED_MS = 3.0
 _MIN_STRAIGHT_SEG_S = 3.0  # shortest straight-and-level run worth averaging
 _MIN_DRIFT_SEG_S = 6.0  # shortest run long enough to fit a yaw-drift slope
+# Do not bridge a telemetry dropout longer than these when resampling: a span
+# with no real fix/attitude must be excluded from the cross-check, not
+# interpolated into synthetic truth. Generous vs the nominal cadences (GPS ~5 Hz
+# fixes / attitude ~125 Hz) so ordinary jitter still interpolates.
+_GPS_MAX_GAP_S = 1.0
+_ATT_MAX_GAP_S = 0.5
 _SEG_SETTLE_S = 0.5  # discard each segment's entry transient
 _STRAIGHT_TURN_RATE_DPS = 3.0  # |track rate| below this reads as "straight"
 _LEVEL_CLIMB_MS = 1.5  # |climb rate| below this reads as "level"
@@ -1122,19 +1128,44 @@ def _grid_derivative(values: list[float], dt: float) -> list[float]:
 
 
 def _sample_on_grid(
-    times: list[float], values: list[float], grid: list[float]
+    times: list[float],
+    values: list[float],
+    grid: list[float],
+    max_gap: Optional[float] = None,
 ) -> list[float]:
-    """Interpolate a series onto ``grid``; NaN outside the series' own span."""
+    """Interpolate a series onto ``grid``; NaN outside the series' own span.
 
-    pairs = [(t, v) for t, v in zip(times, values) if math.isfinite(v)]
+    With ``max_gap`` set, grid points that fall inside a source gap longer than
+    ``max_gap`` are left NaN instead of being bridged — a real telemetry
+    dropout must not be interpolated into synthetic "truth" that the advisor
+    would then analyse.
+    """
+
+    pairs = sorted(
+        (t, v) for t, v in zip(times, values) if math.isfinite(v)
+    )
     if len(pairs) < 2:
         return [math.nan] * len(grid)
     ts = [p[0] for p in pairs]
     vs = [p[1] for p in pairs]
     lo, hi = ts[0], ts[-1]
-    return [
-        (_interp_at(ts, vs, t) if lo <= t <= hi else math.nan) for t in grid
-    ]
+    out: list[float] = []
+    j = 0
+    for t in grid:
+        if t < lo or t > hi:
+            out.append(math.nan)
+            continue
+        while j + 1 < len(ts) and ts[j + 1] < t:
+            j += 1
+        t0, v0 = ts[j], vs[j]
+        t1, v1 = (ts[j + 1], vs[j + 1]) if j + 1 < len(ts) else (t0, v0)
+        if max_gap is not None and t1 - t0 > max_gap:
+            out.append(math.nan)
+        elif t1 <= t0:
+            out.append(v0)
+        else:
+            out.append(v0 + (v1 - v0) * (t - t0) / (t1 - t0))
+    return out
 
 
 def _bool_runs(flags: list[bool]) -> list[tuple[int, int]]:
@@ -1211,14 +1242,18 @@ def _flight_frame(streams: dict[str, _Stream]) -> Optional[dict[str, list[float]
     count = int((t1 - t0) / dt) + 1
     grid = [t0 + i * dt for i in range(count)]
 
-    east_g = _sample_on_grid(fix_t, east, grid)
-    north_g = _sample_on_grid(fix_t, north, grid)
-    alt_g = _sample_on_grid(fix_t, fix_alt, grid)
+    east_g = _sample_on_grid(fix_t, east, grid, _GPS_MAX_GAP_S)
+    north_g = _sample_on_grid(fix_t, north, grid, _GPS_MAX_GAP_S)
+    alt_g = _sample_on_grid(fix_t, fix_alt, grid, _GPS_MAX_GAP_S)
     # Unwrap heading angles *before* interpolating: interpolating across a
     # 359°->1° wrap would otherwise synthesise a phantom ~180° midpoint.
-    yaw_g = _sample_on_grid(att.times, _unwrap_deg(att.column("yaw")), grid)
-    roll_g = _sample_on_grid(att.times, att.column("roll"), grid)
-    pitch_g = _sample_on_grid(att.times, att.column("pitch"), grid)
+    yaw_g = _sample_on_grid(
+        att.times, _unwrap_deg(att.column("yaw")), grid, _ATT_MAX_GAP_S
+    )
+    roll_g = _sample_on_grid(att.times, att.column("roll"), grid, _ATT_MAX_GAP_S)
+    pitch_g = _sample_on_grid(
+        att.times, att.column("pitch"), grid, _ATT_MAX_GAP_S
+    )
 
     v_east = _grid_derivative(east_g, dt)
     v_north = _grid_derivative(north_g, dt)
@@ -1252,7 +1287,7 @@ def _flight_frame(streams: dict[str, _Stream]) -> Optional[dict[str, list[float]
             for i in range(count)
         ]
     )
-    logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid)
+    logged = _sample_on_grid(fix_t, _unwrap_deg(fix_course), grid, _GPS_MAX_GAP_S)
     both = [
         i
         for i in range(count)
