@@ -1,5 +1,7 @@
+import atexit
+import faulthandler
 import os
-import json
+import sys
 import time
 import csv
 import logging
@@ -27,8 +29,6 @@ logging.basicConfig(
     level=logging.ERROR,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
-import faulthandler, sys, atexit
 
 # Ensure that fatal errors and unhandled exceptions are written to the log
 _logfile = open("debug.log", "a")
