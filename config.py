@@ -163,8 +163,18 @@ def load_config(path: str = "config.json"):
             with open(path, "r", encoding="utf-8") as fh:
                 file_config = json.load(fh)
             for section, values in file_config.items():
-                if section in config and isinstance(values, dict):
-                    config[section].update(values)
+                if section in config:
+                    default_values = config[section]
+                    if isinstance(default_values, dict):
+                        if isinstance(values, dict):
+                            default_values.update(values)
+                        else:
+                            print(
+                                f"Ignoring malformed config section '{section}': "
+                                "expected an object"
+                            )
+                    else:
+                        config[section] = values
                 else:
                     config[section] = values
         except Exception as exc:

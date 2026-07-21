@@ -91,3 +91,25 @@ def test_load_config_falls_back_on_invalid_crsf_channel_stale_timeout(tmp_path):
     config = load_config(str(config_path))
 
     assert config["crsf"]["channel_stale_timeout_s"] == 2.0
+
+
+def test_load_config_ignores_malformed_known_sections(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """{
+            \"joystick\": \"bad\",
+            \"crsf\": null,
+            \"throttle\": 7
+        }""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOYSTICK_PORT", "COM42")
+    monkeypatch.setenv("CRSF_PORT", "COM43")
+
+    config = load_config(str(config_path))
+
+    assert config["joystick"]["port"] == "COM42"
+    assert config["joystick"]["baudrate"] == 9600
+    assert config["crsf"]["port"] == "COM43"
+    assert config["crsf"]["packet_interval"] == 4
+    assert config["throttle"] == {"target_airspeed_mph": 20.0}
