@@ -36,7 +36,7 @@ class LabelManager:
             label.setText(f"{label_name.capitalize()}: {value}")
 
         # Check for error and apply animation if needed
-        if isinstance(value, str) and "Error" in value.lower():
+        if isinstance(value, str) and "error" in value.lower():
             self.apply_error_animation(label_name, label)
 
     def update_labels(self, updates):
