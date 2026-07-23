@@ -170,13 +170,18 @@ bool EKF::bCorrect(const Matrix& Y, const Matrix& U)
     if (!bCalcJacobianH(H, X_Est, U)) {
         return false;
     }
-    
+
+    /* H' is reused by both the residual covariance S and the Kalman gain below,
+     * and neither H nor P changes between the two uses, so compute the transpose
+     * once instead of rebuilding it (and its temporary) twice every correction. */
+    const Matrix Ht = H.Transpose();
+
     /* =========================== Correction of x & P =========================== */
     /* S       = H*P(k|k-1)*H' + R                                      ...{EKF_5} */
-    S = (H*P*(H.Transpose())) + R;
+    S = (H*P*Ht) + R;
 
     /* K       = P(k|k-1)*H'*(S^-1)                                     ...{EKF_6} */
-    Gain = P*(H.Transpose())*(S.Invers());
+    Gain = P*Ht*(S.Invers());
     if (!Gain.bMatrixIsValid()) {
         return false;
     }
