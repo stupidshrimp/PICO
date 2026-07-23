@@ -24,6 +24,30 @@ CRSF_CHANNEL_CENTER = 992
 CRSF_CHANNEL_COUNT = 16
 
 
+def _build_crc8_dvb_s2_table() -> tuple:
+    """Precompute the CRSF CRC8 (DVB-S2, polynomial ``0xD5``) lookup table.
+
+    Each entry ``table[b]`` is the result of running the eight-round bitwise
+    DVB-S2 update on the single byte ``b``.  With the table, a full checksum is
+    one indexed lookup per input byte instead of the eight shift/xor iterations
+    the bitwise form performs, which matters on the RC frame TX (~50 Hz) and on
+    every decoded telemetry frame.
+    """
+
+    table = []
+    for value in range(256):
+        crc = value
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0xD5) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+        table.append(crc)
+    return tuple(table)
+
+
+# Module-level so the eight-round reduction runs once at import rather than per
+# byte on the serial hot path.
+_CRC8_DVB_S2_TABLE = _build_crc8_dvb_s2_table()
+
+
 class _HighResolutionTransmitPacer:
     """Wake at CRSF frame deadlines without busy-polling the Qt event loop."""
 
@@ -397,10 +421,7 @@ class CRSFPacketProcessor(QObject):
         """
         Calculate CRC8 DVB-S2 checksum for a single byte.
         """
-        crc ^= a
-        for _ in range(8):
-            crc = (crc << 1) ^ 0xD5 if crc & 0x80 else crc << 1
-        return crc & 0xFF
+        return _CRC8_DVB_S2_TABLE[(crc ^ a) & 0xFF]
 
     @staticmethod
     def crc8_data(data):
@@ -408,8 +429,9 @@ class CRSFPacketProcessor(QObject):
         Calculate the CRC8 checksum for a sequence of data.
         """
         crc = 0
+        table = _CRC8_DVB_S2_TABLE
         for a in data:
-            crc = CRSFPacketProcessor.crc8_dvb_s2(crc, a)
+            crc = table[(crc ^ a) & 0xFF]
         return crc
 
     @staticmethod
