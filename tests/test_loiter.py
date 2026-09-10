@@ -23,6 +23,7 @@ from modules.loiter import (
     LOITER_DISENGAGED,
     LOITER_ENGAGED,
     REASON_ATTITUDE_STALE,
+    REASON_GROUNDED,
     REASON_NOT_FBW,
     REASON_NO_JOYSTICK,
     REASON_STICK,
@@ -51,7 +52,8 @@ def _ready_gates(stick_roll=0.0, stick_pitch=0.0):
     return LoiterGates(
         fbw_active=True,
         attitude_fresh=True,
-        joystick_present=True,
+        joystick_live=True,
+        airborne=True,
         stick_roll=stick_roll,
         stick_pitch=stick_pitch,
     )
@@ -111,8 +113,8 @@ def test_completed_hold_does_not_also_toggle_on_release():
 def test_refused_hold_does_not_toggle_on_release_either():
     c = LoiterController()
     manual = LoiterGates(
-        fbw_active=False, attitude_fresh=True, joystick_present=True,
-        stick_roll=0.0, stick_pitch=0.0,
+        fbw_active=False, attitude_fresh=True, joystick_live=True,
+        airborne=True, stick_roll=0.0, stick_pitch=0.0,
     )
 
     c.press(0.0)
@@ -169,7 +171,7 @@ def test_cancel_press_cannot_strand_a_running_orbit():
 def test_engage_is_refused_without_fly_by_wire():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=False, attitude_fresh=True, joystick_present=True
+        fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True
     )
     assert _engage(c, gates).reason == REASON_NOT_FBW
 
@@ -177,15 +179,47 @@ def test_engage_is_refused_without_fly_by_wire():
 def test_engage_is_refused_on_stale_attitude():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=True, attitude_fresh=False, joystick_present=True
+        fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True
     )
     assert _engage(c, gates).reason == REASON_ATTITUDE_STALE
+
+
+def test_engage_is_refused_on_the_ground():
+    """A hold made on the ground must be refused at the gesture.
+
+    Without this the GS would raise CH10 while grounded and the FC -- whose
+    airborne check is a continuous predicate -- would begin the orbit the
+    moment its own latch set after takeoff, with no further operator action.
+    The firmware now also requires a fresh request edge, so this is the
+    outer half of a two-sided fix.
+    """
+
+    c = LoiterController()
+    gates = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True, airborne=False
+    )
+    assert _engage(c, gates).reason == REASON_GROUNDED
+    assert not c.engaged
+
+
+def test_landing_during_an_orbit_hands_control_back():
+    c = LoiterController()
+    _engage(c, _ready_gates())
+
+    event = c.poll(
+        3.0,
+        LoiterGates(
+            fbw_active=True, attitude_fresh=True, joystick_live=True, airborne=False
+        ),
+    )
+    assert event.reason == REASON_GROUNDED
+    assert not c.engaged
 
 
 def test_engage_is_refused_without_a_joystick():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=True, attitude_fresh=True, joystick_present=False
+        fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True
     )
     assert _engage(c, gates).reason == REASON_NO_JOYSTICK
 
@@ -238,7 +272,7 @@ def test_losing_fly_by_wire_disengages():
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=False, attitude_fresh=True, joystick_present=True),
+        LoiterGates(fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True),
     )
     assert event.reason == REASON_NOT_FBW
 
@@ -249,18 +283,25 @@ def test_stale_attitude_disengages():
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=True, attitude_fresh=False, joystick_present=True),
+        LoiterGates(fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True),
     )
     assert event.reason == REASON_ATTITUDE_STALE
 
 
 def test_losing_the_joystick_disengages():
+    """Covers a silently stalled serial stream, not just an unplugged stick.
+
+    The handler keeps returning cached axis values when the stream dies, so
+    the caller must compute joystick_live from sample freshness. If it did
+    not, stick-break would be dead exactly when the pilot most needs it.
+    """
+
     c = LoiterController()
     _engage(c, _ready_gates())
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=True, attitude_fresh=True, joystick_present=False),
+        LoiterGates(fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True),
     )
     assert event.reason == REASON_NO_JOYSTICK
 

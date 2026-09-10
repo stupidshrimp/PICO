@@ -25,8 +25,12 @@ Disengagement is deliberately easy and happens on any of:
 * attitude telemetry going stale (the GS cannot see whether the FC has
   dropped to its limited-authority pass-through, so a stale estimate is
   treated as loss of the attitude loop this mode depends on),
-* the joystick disappearing,
+* the joystick disappearing OR its sample stream going stale,
 * a bounded maximum duration elapsing.
+
+Engaging additionally requires the ground station to believe the aircraft is
+airborne, so a hold made on the ground is refused at the gesture rather than
+quietly arming something the FC would later fly.
 
 The FC enforces its own gates independently and continuously -- RC freshness,
 Fly-By-Wire, a converged attitude estimate, and the airborne latch -- so
@@ -81,6 +85,7 @@ REASON_STICK = "stick"
 REASON_NOT_FBW = "not_fbw"
 REASON_ATTITUDE_STALE = "attitude_stale"
 REASON_NO_JOYSTICK = "no_joystick"
+REASON_GROUNDED = "grounded"
 REASON_TIMEOUT = "timeout"
 
 
@@ -88,13 +93,25 @@ REASON_TIMEOUT = "timeout"
 class LoiterGates:
     """Everything the controller needs to decide whether loiter may run.
 
+    ``joystick_live`` must mean "present AND producing fresh samples", not
+    merely that a handler object exists.  The serial reader hands back its last
+    cached axis values when the stream stalls, so an object-existence check
+    would keep loiter engaged while stick movement and button releases could no
+    longer be observed -- disabling the pilot's primary way out of the orbit.
+
+    ``airborne`` is the ground station's own airborne estimate.  The FC gates on
+    its own latch regardless; checking here as well is what lets a hold made on
+    the ground be REFUSED audibly at the gesture instead of silently doing
+    nothing.
+
     ``stick_roll``/``stick_pitch`` are normalized (-1..1) axis values, or
     ``None`` when the joystick has not produced a sample.
     """
 
     fbw_active: bool
     attitude_fresh: bool
-    joystick_present: bool
+    joystick_live: bool
+    airborne: bool = False
     stick_roll: Optional[float] = None
     stick_pitch: Optional[float] = None
 
@@ -127,7 +144,7 @@ def stick_break_exceeded(
     """True when the stick has moved far enough from ``baseline`` to break loiter.
 
     A missing baseline or a missing current sample never breaks loiter on its
-    own: a stalled joystick stream is handled by the ``joystick_present`` gate,
+    own: a stalled joystick stream is handled by the ``joystick_live`` gate,
     and treating "no sample" as movement would drop the mode on serial jitter.
     """
 
@@ -301,23 +318,34 @@ class LoiterController:
     def _refusal_reason(gates: LoiterGates) -> Optional[str]:
         """Why loiter may not engage right now, or ``None`` when it may."""
 
-        if not gates.joystick_present:
+        if not gates.joystick_live:
             return REASON_NO_JOYSTICK
         if not gates.fbw_active:
             return REASON_NOT_FBW
         if not gates.attitude_fresh:
             return REASON_ATTITUDE_STALE
+        if not gates.airborne:
+            return REASON_GROUNDED
         return None
 
     def _hold_failure_reason(self, now: float, gates: LoiterGates) -> Optional[str]:
         """Why a running orbit must stop, or ``None`` when it may continue."""
 
-        if not gates.joystick_present:
+        if not gates.joystick_live:
             return REASON_NO_JOYSTICK
         if not gates.fbw_active:
             return REASON_NOT_FBW
         if not gates.attitude_fresh:
             return REASON_ATTITUDE_STALE
+        if not gates.airborne:
+            # The FC drops the orbit on its own airborne latch, and its
+            # rising-edge requirement means it will NOT resume when the latch
+            # returns.  Following it here keeps the two sides telling the
+            # operator the same story: without this the indicator would still
+            # read "Loiter" while the aircraft had quietly handed the stick
+            # back.  The two detectors use different thresholds, so whichever
+            # calls "grounded" first wins -- which is the safe direction.
+            return REASON_GROUNDED
         if stick_break_exceeded(
             self._stick_baseline,
             gates.stick_roll,

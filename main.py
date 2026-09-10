@@ -143,6 +143,7 @@ from modules.loiter import (
     LOITER_MAX_DURATION_S,
     LOITER_STICK_BREAK_NORM,
     REASON_ATTITUDE_STALE,
+    REASON_GROUNDED,
     REASON_NOT_FBW,
     REASON_NO_JOYSTICK,
     REASON_STICK,
@@ -4276,10 +4277,23 @@ class MainWindow(QMainWindow):
             and last_attitude is not None
             and (now - last_attitude) <= self.LOITER_ATTITUDE_STALE_S
         )
+        # "The handler object exists" is NOT enough. get_raw_values() returns
+        # the last cached axis values when the serial stream stalls, so a
+        # silently dead joystick would leave this gate true while stick
+        # movement and button releases stopped being observable -- disabling
+        # the pilot's primary way out of the orbit. Use the same freshness
+        # signal auto-trim already relies on.
+        last_stick_sample = getattr(self, "_last_stick_sample_time", 0.0)
+        joystick_live = bool(
+            getattr(self, "joystick", None) is not None
+            and last_stick_sample
+            and (now - last_stick_sample) <= AUTO_TRIM_STICK_STALE_S
+        )
         return LoiterGates(
             fbw_active=self.control_mode == "Fly-By-Wire",
             attitude_fresh=attitude_fresh,
-            joystick_present=getattr(self, "joystick", None) is not None,
+            joystick_live=joystick_live,
+            airborne=self._is_airborne(),
             # getattr throughout: the loiter controller is built earlier in
             # __init__ than these caches, so nothing here may assume ordering.
             stick_roll=getattr(self, "_last_stick_roll_norm", None),

@@ -100,6 +100,106 @@ static void test_gate_requires_everything() {
 }
 
 /* --------------------------------------------------------------------------
+ * 2b. The rising-edge latch
+ * ------------------------------------------------------------------------ */
+static void test_ground_request_does_not_spring_after_takeoff() {
+    std::printf("latch (a request raised on the ground must not fly itself)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+
+    /* Operator completes the hold while still on the ground. */
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
+          "a grounded request must not fly");
+    check(!loiterUpdate(&st, true, true, true, true, false), "still grounded, still refused");
+
+    /* Takeoff: the airborne latch sets while CH10 is still high. This is the
+     * exact case that would otherwise roll the model into a 20 degree orbit
+     * seconds after liftoff with no operator action. */
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/true),
+          "the airborne latch setting must NOT engage a standing request");
+    check(!loiterUpdate(&st, true, true, true, true, true),
+          "and it must stay refused on later cycles");
+
+    /* Only dropping and re-raising CH10 arms it. */
+    check(!loiterUpdate(&st, false, true, true, true, true), "release clears the request");
+    check(loiterUpdate(&st, true, true, true, true, true),
+          "a fresh request while airborne must engage");
+
+    std::printf("  ok\n");
+}
+
+static void test_latch_drops_and_requires_a_new_edge() {
+    std::printf("latch (a dropped gate stays dropped until CH10 cycles)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+    check(!loiterUpdate(&st, false, true, true, true, true), "start released");
+    check(loiterUpdate(&st, true, true, true, true, true), "rising edge engages");
+
+    /* Losing the airborne latch (a low pass near the ground) drops the orbit. */
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
+          "losing airborne must drop the orbit");
+    /* Regaining it must NOT silently resume under the same standing request. */
+    check(!loiterUpdate(&st, true, true, true, true, true),
+          "regaining airborne must not resume without a new request");
+
+    std::printf("  ok\n");
+}
+
+static void test_transition_flag_tracks_effective_state() {
+    std::printf("transition flag (PID resets follow the effective state)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+
+    loiterUpdate(&st, false, true, true, true, true);
+    check(!st.transitioned, "no change means no reset");
+
+    loiterUpdate(&st, true, true, true, true, true);
+    check(st.transitioned, "engaging must flag a transition");
+
+    loiterUpdate(&st, true, true, true, true, true);
+    check(!st.transitioned, "steady orbit must not keep resetting the PIDs");
+
+    loiterUpdate(&st, true, true, /*fbwActive=*/false, true, true);
+    check(st.transitioned, "dropping out must flag a transition");
+
+    /* A request that never flies must not flag anything: resetting there would
+     * dump the integrator while the pilot is hand-flying Fly-By-Wire. */
+    loiterStateInit(&st);
+    loiterUpdate(&st, true, true, true, true, /*airborne=*/false);
+    check(!st.transitioned, "a refused request must not touch the PIDs");
+    loiterUpdate(&st, true, true, true, true, false);
+    check(!st.transitioned, "and must keep not touching them");
+
+    std::printf("  ok\n");
+}
+
+static void test_init_rearms_after_failsafe() {
+    std::printf("re-arm (a link recovery must not resume a stale orbit)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+    loiterUpdate(&st, false, true, true, true, true);
+    check(loiterUpdate(&st, true, true, true, true, true), "orbiting before the dropout");
+
+    /* RC failsafe: the caller re-arms. CH10 is still high throughout. */
+    loiterStateInit(&st);
+    check(!st.running, "re-arming must clear the running state");
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
+          "recovery while grounded must not resume");
+
+    /* Recovery while genuinely airborne reads as a fresh edge, matching how
+     * Fly-By-Wire itself re-engages when the link returns. */
+    loiterStateInit(&st);
+    check(loiterUpdate(&st, true, true, true, true, true),
+          "recovery while airborne re-engages, as FBW does");
+
+    std::printf("  ok\n");
+}
+
+/* --------------------------------------------------------------------------
  * 3. Geometry
  * ------------------------------------------------------------------------ */
 static void test_commanded_attitude() {
@@ -144,6 +244,10 @@ int main() {
     std::printf("FC loiter: fixed-bank orbit substituted for the stick inside the FBW branch\n\n");
     test_request_band();
     test_gate_requires_everything();
+    test_ground_request_does_not_spring_after_takeoff();
+    test_latch_drops_and_requires_a_new_edge();
+    test_transition_flag_tracks_effective_state();
+    test_init_rearms_after_failsafe();
     test_commanded_attitude();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
                 g_fail, g_fail == 1 ? "" : "s");

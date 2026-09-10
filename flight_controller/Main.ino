@@ -1022,6 +1022,8 @@ serialReceiverLayer::rcChannels_t latestRcChannels;
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 ThrottleMode throttleMode = THROTTLE_MODE_MANUAL;
 NavMode navMode = NAV_MODE_OFF;
+// Latched loiter state; see loiter_nav.h for why a rising edge is required.
+LoiterState loiterState = { false, false, false };
 
 const uint16_t RC_INPUT_MIN = 172;
 const uint16_t RC_INPUT_MAX = 1811;
@@ -1513,15 +1515,14 @@ void setThrottleMode(ThrottleMode newMode) {
 }
 
 void setNavMode(NavMode newMode) {
-  if (navMode != newMode) {
-    navMode = newMode;
-    // Loiter and hand flying feed the same PIDs from different setpoints, so
-    // clear the accumulated state on every transition in either direction.
-    // Carrying an integrator across the handover would apply correction earned
-    // against the old setpoint to the new one.
-    rollPid.reset();
-    pitchPid.reset();
-  }
+  // Deliberately no PID reset here. What matters for the PIDs is the EFFECTIVE
+  // loiter state, which is not the same as the requested mode: the airborne
+  // latch can start or stop an orbit under a standing request, and a request
+  // raised on the ground never flies at all. Resetting on the request would
+  // both miss those transitions and dump the integrator while the pilot is
+  // still hand-flying Fly-By-Wire. The servo block resets on
+  // loiterState.transitioned instead.
+  navMode = newMode;
 }
 
 // Derive the loiter request from CH10/AUX6. Structured exactly like
@@ -5483,6 +5484,11 @@ void loop() {
       // latched with nobody able to command it. Flying a return under failsafe
       // is a deliberately separate and much more dangerous change.
       setNavMode(NAV_MODE_OFF);
+      // Re-arm the latch as well. Without this, a link that recovers while
+      // CH10 is still high would show no rising edge and resume an orbit whose
+      // gates were never re-checked -- exactly what the edge requirement
+      // exists to prevent.
+      loiterStateInit(&loiterState);
     } else {
       rcFailsafeActive = false;
       rcServoHoldBlendActive = false;
@@ -5585,12 +5591,20 @@ void loop() {
       // conditions they are rather than re-derived. The gate is re-evaluated
       // every control cycle, so losing any of it hands the stick straight back
       // without a transition step.
-      const bool loiterActive = loiterMayEngage(
+      const bool loiterActive = loiterUpdate(
+          &loiterState,
           navMode == NAV_MODE_LOITER,
           /*rcFresh=*/true,
           /*fbwActive=*/true,
           /*attitudeUsable=*/true,
           aircraftAirborne);
+      if (loiterState.transitioned) {
+        // The setpoint source just changed in one direction or the other, so
+        // clear the integrators before they apply correction earned against
+        // the previous setpoint to the new one.
+        rollPid.reset();
+        pitchPid.reset();
+      }
       if (loiterActive) {
         loiterDesiredAttitude(FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
                               &desiredRoll, &desiredPitch);

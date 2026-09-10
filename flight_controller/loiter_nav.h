@@ -94,6 +94,70 @@ static inline bool loiterMayEngage(bool requested,
     return requested && rcFresh && fbwActive && attitudeUsable && airborne;
 }
 
+/* Latched loiter state.
+ *
+ * loiterMayEngage() alone is not enough to drive the orbit, because it is a
+ * CONTINUOUS predicate: a request standing on CH10 while the aircraft is still
+ * on the ground would satisfy it the instant the airborne latch set, and the
+ * model would roll into a 20 degree orbit moments after takeoff without the
+ * operator touching anything. Requiring a rising edge on the request closes
+ * that: a request that was not flyable when it arrived stays refused until the
+ * ground station drops CH10 and raises it again.
+ */
+typedef struct {
+    bool running;        /* the orbit is flying this cycle */
+    bool prevRequested;  /* CH10 state last cycle, for edge detection */
+    bool transitioned;   /* running changed on this call */
+} LoiterState;
+
+static inline void loiterStateInit(LoiterState* st)
+{
+    st->running = false;
+    st->prevRequested = false;
+    st->transitioned = false;
+}
+
+/* Advance the latch and return whether the orbit flies this cycle.
+ *
+ * Call every control cycle while the FBW branch is active, and call
+ * loiterStateInit() from the RC failsafe so a link recovery re-arms rather
+ * than resuming an orbit whose gates were never re-checked.
+ *
+ * ``transitioned`` reports a change in the EFFECTIVE state, which is what the
+ * caller must reset its attitude PIDs on. Watching the requested mode instead
+ * would miss the airborne latch setting or clearing under a standing request
+ * -- entering with integral wound against the pilot's setpoint, or handing the
+ * stick back with the orbit's integral still applied -- and would also fire
+ * spuriously while the pilot is hand-flying.
+ */
+static inline bool loiterUpdate(LoiterState* st,
+                                bool requested,
+                                bool rcFresh,
+                                bool fbwActive,
+                                bool attitudeUsable,
+                                bool airborne)
+{
+    const bool wasRunning = st->running;
+    const bool gatesOk =
+        loiterMayEngage(requested, rcFresh, fbwActive, attitudeUsable, airborne);
+
+    if (!requested) {
+        /* Released: nothing flying, and the next request is a fresh edge. */
+        st->running = false;
+    } else if (!st->prevRequested) {
+        /* Rising edge: engage only if every gate ALREADY passes. */
+        st->running = gatesOk;
+    } else {
+        /* Standing request: keep flying only while the gates keep holding.
+         * Once dropped it stays dropped until CH10 cycles. */
+        st->running = st->running && gatesOk;
+    }
+
+    st->prevRequested = requested;
+    st->transitioned = (st->running != wasRunning);
+    return st->running;
+}
+
 /* Desired attitude for the orbit, in the FBW PIDs' own convention.
  *
  * Clamped into the caller's FBW envelope so that editing the bank constant
