@@ -53,6 +53,30 @@ from typing import Optional
 # How long the control-mode toggle must be held before loiter engages.
 LOITER_HOLD_SECONDS = 2.0
 
+# Floor for the configured hold.  config.json is hand-editable, and a zero or
+# negative value would make the very first poll tick satisfy the hold -- so an
+# ordinary tap spanning one GUI refresh would engage an autonomous mode, which
+# is exactly what the hold gesture exists to prevent.  A tiny positive value
+# fails the same way, so this is a floor rather than a sign check.
+LOITER_MIN_HOLD_SECONDS = 0.5
+
+# Bounds for the configured stick-break threshold.  Too large is the dangerous
+# direction: it would disable the pilot's primary way out of the orbit.  Too
+# small only makes the mode twitchy.
+#
+# The maximum is deliberately BELOW 1.0.  A centred stick has exactly 1.0 of
+# travel available and the comparison is strictly greater-than, so a cap of 1.0
+# would still leave full deflection unable to break out -- the very failure the
+# cap exists to prevent.  0.75 guarantees breakout from any baseline within a
+# quarter of centre.
+LOITER_MIN_STICK_BREAK_NORM = 0.02
+LOITER_MAX_STICK_BREAK_NORM = 0.75
+
+# Which input delivered a press.  Releases are matched against it so an
+# unmatched edge from one control cannot consume the other's press.
+PRESS_SOURCE_KEY = "key"
+PRESS_SOURCE_JOYSTICK = "joystick"
+
 # CH10/AUX6 carries the loiter request.  CH8/CH9 are taken by the
 # board-alignment trim.  Values mirror the CH6/CH7 encoding: an explicit high
 # requests the mode, and the low value means off.
@@ -186,9 +210,27 @@ class LoiterController:
         stick_break_norm: float = LOITER_STICK_BREAK_NORM,
         max_duration_s: float = LOITER_MAX_DURATION_S,
     ) -> None:
-        self.hold_seconds = float(hold_seconds)
-        self.stick_break_norm = float(stick_break_norm)
-        self.max_duration_s = float(max_duration_s)
+        # Validate rather than trust: these come from a hand-editable config
+        # file, and the failure modes are asymmetric -- a bad hold or a bad
+        # break threshold makes an autonomous mode easier to enter or harder to
+        # escape.  Guarding here rather than at the call site keeps every
+        # caller safe, including tests and any future one.
+        hold = float(hold_seconds)
+        if not (hold > 0.0):
+            hold = LOITER_HOLD_SECONDS
+        self.hold_seconds = max(LOITER_MIN_HOLD_SECONDS, hold)
+
+        break_norm = float(stick_break_norm)
+        if not (break_norm > 0.0):
+            break_norm = LOITER_STICK_BREAK_NORM
+        self.stick_break_norm = min(
+            LOITER_MAX_STICK_BREAK_NORM, max(LOITER_MIN_STICK_BREAK_NORM, break_norm)
+        )
+
+        # A non-positive duration disables the timeout, which is documented and
+        # intentional; normalise negatives to 0 so the intent reads clearly.
+        duration = float(max_duration_s)
+        self.max_duration_s = duration if duration > 0.0 else 0.0
 
         self._state = LOITER_DISENGAGED
         self._press_start: Optional[float] = None
@@ -198,6 +240,9 @@ class LoiterController:
         # loiter, been refused, or disengaged a running orbit).  The matching
         # release must then NOT also fire the ordinary mode toggle.
         self._release_consumed = False
+        # Which input owns the outstanding press, so a release from the other
+        # one cannot consume it.
+        self._press_source: Optional[str] = None
         # True between a press edge and its matching release.  Guards against
         # an UNMATCHED release, which the joystick really can deliver: connect
         # or reconnect while the button is already held and the parser forwards
@@ -242,7 +287,9 @@ class LoiterController:
     # ------------------------------------------------------------------
     # Edges
     # ------------------------------------------------------------------
-    def press(self, now: float) -> Optional[LoiterEvent]:
+    def press(
+        self, now: float, source: str = PRESS_SOURCE_KEY
+    ) -> Optional[LoiterEvent]:
         """Register a press edge of the control-mode toggle.
 
         While an orbit is running this is the pilot's primary way out, so it
@@ -253,7 +300,12 @@ class LoiterController:
         the instant they touch the control.
         """
 
+        # A press is always honoured, whichever control it came from: it is the
+        # disengage path, and refusing one because another control is mid-hold
+        # would leave the operator unable to stop a running orbit.  The most
+        # recent press simply owns the gesture from here.
         self._press_active = True
+        self._press_source = source
 
         if self._state == LOITER_ENGAGED:
             self._release_consumed = True
@@ -264,7 +316,9 @@ class LoiterController:
         self._release_consumed = False
         return None
 
-    def release(self, now: float) -> Optional[str]:
+    def release(
+        self, now: float, source: str = PRESS_SOURCE_KEY
+    ) -> Optional[str]:
         """Register a release edge.
 
         Returns ``"toggle"`` when the press was a short tap that should perform
@@ -273,11 +327,15 @@ class LoiterController:
         when no press was outstanding at all.
         """
 
-        if not self._press_active:
-            # Unmatched release (see _press_active): no press was observed, so
-            # there is no tap to act on.
+        if not self._press_active or source != self._press_source:
+            # Either no press was observed at all, or this release belongs to
+            # the other control.  Both must be ignored: an unmatched joystick
+            # release arriving while Ctrl+M is held would otherwise cancel the
+            # keyboard hold and toggle Manual/Fly-By-Wire with the key still
+            # down.
             return None
         self._press_active = False
+        self._press_source = None
 
         consumed = self._release_consumed
         self._release_consumed = False
@@ -305,6 +363,7 @@ class LoiterController:
         # The abandoned press has no matching action left, so its eventual
         # release must be ignored rather than read as a tap.
         self._press_active = False
+        self._press_source = None
         self._press_start = None
         self._release_consumed = False
         self._state = LOITER_DISENGAGED

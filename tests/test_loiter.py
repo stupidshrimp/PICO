@@ -30,6 +30,11 @@ from modules.loiter import (
     REASON_STICK,
     REASON_TIMEOUT,
     REASON_TOGGLE,
+    LOITER_HOLD_SECONDS,
+    LOITER_MAX_STICK_BREAK_NORM,
+    LOITER_MIN_HOLD_SECONDS,
+    PRESS_SOURCE_JOYSTICK,
+    PRESS_SOURCE_KEY,
     LoiterController,
     LoiterGates,
     loiter_channel_value,
@@ -446,3 +451,104 @@ def test_off_value_is_not_merely_centre():
 
     assert LOITER_CHANNEL_OFF_VALUE < FC_LOITER_REQUEST_MIN
     assert 992 < FC_LOITER_REQUEST_MIN
+
+
+# ---------------------------------------------------------------------------
+# Configuration robustness
+# ---------------------------------------------------------------------------
+
+
+def test_nonpositive_hold_falls_back_to_the_default():
+    """config.json is hand-editable and 0 or negative would defeat the gesture.
+
+    With a non-positive hold the very first poll tick satisfies
+    `now - press_start >= hold_seconds`, so an ordinary tap spanning one GUI
+    refresh (~14 ms) would engage an autonomous mode.
+    """
+
+    gates = _ready_gates()
+    for bad in (0.0, -5.0):
+        c = LoiterController(hold_seconds=bad)
+        assert c.hold_seconds == LOITER_HOLD_SECONDS
+        c.press(0.0)
+        assert c.poll(0.014, gates) is None, "a tap must not engage an orbit"
+        assert not c.engaged
+
+
+def test_tiny_hold_is_floored():
+    """A small positive hold fails the same way, so the guard is a floor."""
+
+    c = LoiterController(hold_seconds=0.01)
+    assert c.hold_seconds == LOITER_MIN_HOLD_SECONDS
+    c.press(0.0)
+    assert c.poll(0.014, _ready_gates()) is None
+    assert not c.engaged
+
+
+def test_stick_break_threshold_is_bounded():
+    """Too large is the dangerous direction: it disables the way out."""
+
+    c = LoiterController(stick_break_norm=99.0)
+    assert c.stick_break_norm == LOITER_MAX_STICK_BREAK_NORM
+    _engage(c, _ready_gates(stick_roll=0.0))
+    # Full deflection must still break out at the clamped threshold.
+    event = c.poll(3.0, _ready_gates(stick_roll=-1.0))
+    assert event is not None and event.reason == REASON_STICK
+
+    # Non-positive falls back to the default rather than breaking instantly.
+    c2 = LoiterController(stick_break_norm=-1.0)
+    assert c2.stick_break_norm > 0.0
+    _engage(c2, _ready_gates())
+    assert c2.poll(3.0, _ready_gates()) is None
+
+
+def test_negative_max_duration_normalises_to_disabled():
+    c = LoiterController(max_duration_s=-10.0)
+    assert c.max_duration_s == 0.0
+    _engage(c, _ready_gates())
+    assert c.poll(10_000.0, _ready_gates()) is None
+    assert c.engaged
+
+
+# ---------------------------------------------------------------------------
+# Input source matching
+# ---------------------------------------------------------------------------
+
+
+def test_release_from_the_other_source_is_ignored():
+    """An orphan joystick release must not cancel a keyboard hold.
+
+    The joystick can deliver an unmatched release after a reconnect. Sharing
+    one press flag between both controls let that release consume the Ctrl+M
+    press and toggle Manual/Fly-By-Wire with the key still held down.
+    """
+
+    c = LoiterController()
+    c.press(0.0, PRESS_SOURCE_KEY)
+
+    assert c.release(0.5, PRESS_SOURCE_JOYSTICK) is None
+    assert c.state == LOITER_ARMING, "the keyboard hold must survive"
+
+    # The keyboard's own release still resolves normally.
+    assert c.release(0.6, PRESS_SOURCE_KEY) == REASON_TOGGLE
+
+
+def test_keyboard_hold_still_matures_despite_a_foreign_release():
+    c = LoiterController()
+    gates = _ready_gates()
+    c.press(0.0, PRESS_SOURCE_KEY)
+    c.release(0.5, PRESS_SOURCE_JOYSTICK)
+    assert c.poll(2.0, gates).kind == EVENT_ENGAGED
+
+
+def test_a_press_from_either_source_can_disengage():
+    """Disengaging must never be blocked by which control started the orbit."""
+
+    c = LoiterController()
+    _engage(c, _ready_gates())
+    c.release(2.1, PRESS_SOURCE_KEY)
+
+    event = c.press(5.0, PRESS_SOURCE_JOYSTICK)
+    assert event.kind == EVENT_DISENGAGED
+    assert event.reason == REASON_TOGGLE
+    assert not c.engaged

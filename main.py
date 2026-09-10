@@ -152,6 +152,8 @@ from modules.loiter import (
     REASON_TOGGLE,
     LoiterController,
     LoiterGates,
+    PRESS_SOURCE_JOYSTICK,
+    PRESS_SOURCE_KEY,
     loiter_channel_value,
 )
 from modules.board_align_trim import (
@@ -2601,9 +2603,9 @@ class MainWindow(QMainWindow):
                 # Both edges: a tap toggles Manual/Fly-By-Wire on release, a
                 # 2 s hold engages loiter. Mirrors the Ctrl+M path exactly.
                 if pressed:
-                    self._loiter_press()
+                    self._loiter_press(PRESS_SOURCE_JOYSTICK)
                 else:
-                    self._loiter_release()
+                    self._loiter_release(PRESS_SOURCE_JOYSTICK)
             elif button == self.JOYSTICK_THROTTLE_MODE_BUTTON and pressed:
                 self.toggle_throttle_mode()
             elif button == self.JOYSTICK_YAW_LEFT_BUTTON:
@@ -4314,17 +4316,21 @@ class MainWindow(QMainWindow):
             stick_pitch=getattr(self, "_last_stick_pitch_norm", None),
         )
 
-    def _loiter_press(self) -> None:
+    def _loiter_press(self, source: str = PRESS_SOURCE_KEY) -> None:
         """Handle a press edge of the control-mode toggle (key or button)."""
 
-        self._handle_loiter_event(
-            self.loiter.press(time.monotonic())
-        )
+        self._handle_loiter_event(self.loiter.press(time.monotonic(), source))
 
-    def _loiter_release(self) -> None:
-        """Handle a release edge; a short tap still toggles Manual/Fly-By-Wire."""
+    def _loiter_release(self, source: str = PRESS_SOURCE_KEY) -> None:
+        """Handle a release edge; a short tap still toggles Manual/Fly-By-Wire.
 
-        if self.loiter.release(time.monotonic()) == REASON_TOGGLE:
+        The source is carried through so a release from one control cannot
+        consume a press from the other -- an unmatched joystick release while
+        Ctrl+M is held would otherwise cancel the keyboard hold and toggle the
+        flight mode with the key still down.
+        """
+
+        if self.loiter.release(time.monotonic(), source) == REASON_TOGGLE:
             self.toggle_control_mode()
 
     def _poll_loiter(self) -> None:
