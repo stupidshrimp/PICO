@@ -36,14 +36,17 @@ axes to servo PWM `1000..2000 us` only after receiving the CRSF packet.
 
 | Array index | Radio channel | Name | GS unit / encoding | FC interpretation |
 | ---: | ---: | --- | --- | --- |
-| `0` | CH1 | Roll | CRSF raw axis, `172..1811`, center `992`; optional trim and GS FBW command limiting apply before transmit; overwritten with a constant commanded attitude while GS loiter runs | Manual aileron command, or FBW desired roll = normalized axis × `80 deg` (FC hard limit) |
-| `1` | CH2 | Pitch | CRSF raw axis, `172..1811`, center `992`; optional trim and GS FBW command limiting apply before transmit; overwritten with a constant commanded attitude while GS loiter runs | Manual elevator command, or FBW desired pitch = normalized axis × `80 deg` (FC hard limit) |
+| `0` | CH1 | Roll | CRSF raw axis, `172..1811`, center `992`; optional trim and GS FBW command limiting apply before transmit | Manual aileron command, or FBW desired roll = normalized axis × `80 deg` (FC hard limit) |
+| `1` | CH2 | Pitch | CRSF raw axis, `172..1811`, center `992`; optional trim and GS FBW command limiting apply before transmit | Manual elevator command, or FBW desired pitch = normalized axis × `80 deg` (FC hard limit) |
 | `2` | CH3 | Throttle / auto-throttle setpoint | Manual: throttle percent mapped to `172..1811`; Auto Throttle: desired airspeed mapped linearly over `0..100 mph` | Manual throttle percent, or FC auto-throttle target airspeed |
 | `3` | CH4 | Yaw | CRSF raw axis, `172..1811`, center `992` | Manual rudder command; held/blended to neutral during short RC decode gaps |
 | `4` | CH5 / AUX1 | ELRS arm keepalive | GS drives high (`1811`) | Reserved for link/arm state; FC control modes do not use it |
 | `5` | CH6 / AUX2 | Control mode | Low (`400`) = Manual, high (`1700`) = Fly-By-Wire | FBW enabled when value is at least `1550`; otherwise Manual |
 | `6` | CH7 / AUX3 | Throttle mode / compass-cal request | Low (`400`) = Manual Throttle, high (`1700`) = Auto Throttle, center (`992`, GS "Calibrate compass" button) = on-ground magnetometer-calibration request | Auto throttle enabled when value is at least `1550`; otherwise Manual Throttle. Values inside `891..1091` additionally request the in-field magnetometer calibration, honored only on the ground (not airborne-latched, Manual control mode, throttle stick at minimum) after the band is held for `1 s`; the calibration holds the surfaces in a distinctive pose while sampling, forces throttle cut, and leaving the band ends the run. Ending the run computes a fit and plays exactly one completion signal: a valid fit reaches the flash save, which stalls the FC ~1-2 s while the sector is erased (surfaces freeze at the pose) before signalling, and — once it verifies — is applied live + persisted and acknowledged with one continuous SLOW glide (pose -> min -> max -> center, ~3.5 s, never stepping); any failure keeps the previous calibration and plays a rapid full-travel flutter with no preceding stall on a rejected run — 4 wags = run rejected/aborted (coverage, samples, ground gates), 8 wags = fit was good but the flash save did not verify. While the GS request is active it also forces CH3 to minimum |
-| `7..15` | CH8..CH16 | Reserved | Center (`992`) unless future features define them | Ignored by current FC firmware |
+| `7` | CH8 / AUX4 | Board-alignment roll trim | Center (`992`) = no delta | Interim on-ground level trim (`FC_BOARD_ALIGN_TRIM_RC`) |
+| `8` | CH9 / AUX5 | Board-alignment pitch trim | Center (`992`) = no delta | Interim on-ground level trim (`FC_BOARD_ALIGN_TRIM_RC`) |
+| `9` | CH10 / AUX6 | Loiter request | Low (`400`) = off, high (`1700`) = request the fixed-bank orbit | Loiter requested when value is at least `1550`; the FC additionally requires RC fresh, Fly-By-Wire, a fresh and converged attitude estimate, and the airborne latch before the orbit actually flies |
+| `10..15` | CH11..CH16 | Reserved | Center (`992`) unless future features define them | Ignored by current FC firmware |
 
 ### Command limits and tuning ownership
 
@@ -65,26 +68,34 @@ axes to servo PWM `1000..2000 us` only after receiving the CRSF packet.
 | FC auto-throttle output limit | `±100 percent/s` | `flight_controller/Main.ino` (`AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S`) |
 | FC auto-throttle stale decay | `50 percent/s` | `flight_controller/Main.ino` (`AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S`) |
 
-### GS loiter mode (fixed-bank orbit)
+### Loiter (fixed-bank orbit)
 
-Loiter is a **ground-station-only** mode: it introduces no new channel, no new
-frame type, and no firmware change. While it runs, the GS overwrites CH1/CH2
-with a constant commanded attitude and the FC flies it through the ordinary
-Fly-By-Wire path, unable to distinguish it from stick input. The FC contract
-above is therefore unchanged; what follows pins the GS behaviour.
+Loiter is flown by the **flight controller**. It substitutes a constant desired
+bank and a level desired pitch for the pilot's stick inside the existing
+Fly-By-Wire branch, so the same attitude PIDs fly the orbit and the aircraft
+circles wherever it happens to be. It performs no navigation and drifts
+downwind; holding the circle over a point needs a position loop, which does not
+exist yet.
+
+The ground station only *requests* the mode on CH10 and never commands an
+attitude. That split is deliberate: a pilot reaches for loiter when the model is
+far away and the link is weakest, so the loop that holds the wings over has to
+live on the aircraft. What stays on the GS is everything involving a joystick.
 
 | Item | Current value | Authority / note |
 | --- | ---: | --- |
-| Engage gesture | hold `2.0 s` | `config.py` (`loiter.hold_seconds`); the control-mode toggle (Ctrl+M or joystick button `13`) held for this long. A short tap of the same control still toggles Manual/Fly-By-Wire, so that toggle now fires on the RELEASE edge |
-| Commanded bank | `20 deg` | `config.py` (`loiter.bank_angle_deg`), clamped into `fbw.max_roll_angle_deg` and then normalized against the FC's `80 deg` hard limit |
-| Commanded pitch | `0 deg` (level) | v1 holds no altitude; the bank does the work and the aircraft descends or climbs with trim |
-| Bank direction | `+1` | `config.py` (`loiter.bank_direction`); follows the FC roll convention (left roll positive), not a compass direction |
-| Engage gates | FBW active, attitude telemetry fresh, joystick present | `main.py` (`_loiter_gates`); a hold that fails any gate is refused audibly and does not toggle the flight mode |
-| Attitude freshness window | `1.0 s` | `main.py` (`LOITER_ATTITUDE_STALE_S`), matching `check_attitude_connection` |
-| Stick-break threshold | `0.25` normalized | `config.py` (`loiter.stick_break_norm`); measured against where the stick sat at engage time, not against centre |
-| Maximum orbit duration | `300 s` | `config.py` (`loiter.max_duration_s`); `0` disables |
-| Channel scaling | bypasses `_apply_fbw_command_limits` | Loiter commands an absolute angle, so it is written after the stick-path limiting; running it through that scaling would fly `20 × (45/80) = 11.25 deg` instead of `20 deg`. Trim is deliberately not applied |
-| Link loss | loiter ends | The GS stops being able to command, and the FC's own `RC_FAILSAFE_TIMEOUT_US` failsafe takes over exactly as it does in any other mode. This mode can therefore never serve as a link-loss return-to-home |
+| Request channel | CH10 / AUX6, index `9` | `flight_controller/loiter_nav.h` (`LOITER_REQUEST_TARGET` `1700`, `LOITER_REQUEST_DEADBAND` `150`, threshold `1550`); GS values in `modules/loiter.py` |
+| Commanded bank | `20 deg` | `flight_controller/loiter_nav.h` (`LOITER_BANK_ANGLE_DEG`), clamped into `FBW_MAX_ROLL_ANGLE_DEG` |
+| Commanded pitch | `0 deg` (level) | v1 holds no altitude; the bank does the work and the airframe's trim decides whether it sinks |
+| Bank direction | `+1` | `flight_controller/loiter_nav.h` (`LOITER_BANK_DIRECTION`); follows the FC roll convention (left roll positive), **not** a compass direction. Which way the model circles is a first-flight observation — flip the sign and reflash if it turns the wrong way |
+| FC engage gates | request AND RC fresh AND FBW AND attitude fresh+converged AND airborne | `flight_controller/loiter_nav.h` (`loiterMayEngage`); re-evaluated every control cycle, so losing any condition hands the stick straight back with no transition step |
+| PID handling on transition | roll/pitch integrators reset | `flight_controller/Main.ino` (`setNavMode`); carrying an integrator across the handover would apply correction earned against the old setpoint |
+| RC loss | loiter dropped with the rest of the failsafe | `flight_controller/Main.ino`; `setNavMode(NAV_MODE_OFF)` runs alongside the existing Manual latch and throttle cut, so the model glides exactly as it does today. Loiter deliberately does **not** outlive the link |
+| GS engage gesture | hold `2.0 s` | `config.py` (`loiter.hold_seconds`); the control-mode toggle (Ctrl+M or joystick button `13`) held this long. A short tap of the same control still toggles Manual/Fly-By-Wire, so that toggle now fires on the RELEASE edge |
+| GS-side drop conditions | toggle press, stick moved, FBW lost, attitude stale, joystick lost, timeout | `modules/loiter.py`; these lower CH10. They are one of two independent ways the orbit ends — the FC gates above are the other |
+| GS stick-break threshold | `0.25` normalized | `config.py` (`loiter.stick_break_norm`); measured against where the stick sat at engage time, not against centre |
+| GS attitude freshness window | `1.0 s` | `main.py` (`LOITER_ATTITUDE_STALE_S`), matching `check_attitude_connection` |
+| GS maximum orbit duration | `300 s` | `config.py` (`loiter.max_duration_s`); `0` disables |
 
 ## FC mode thresholds and failsafes
 

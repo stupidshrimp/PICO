@@ -1,19 +1,16 @@
-"""Ground-station loiter mode: a fixed-bank orbit flown over the CRSF link.
+"""Ground-station half of loiter: the operator interface to the FC orbit.
 
-Loiter v1 deliberately performs NO navigation.  It commands a constant bank
-angle and level pitch through the existing Fly-By-Wire path: the flight
-controller closes its 125 Hz attitude loop exactly as it does for stick input,
-and the aircraft simply circles where it is.  There is no GPS dependency, no
-position loop, and no new firmware on the FC.
+The orbit itself is flown by the flight controller (see
+``flight_controller/loiter_nav.h``), which substitutes a fixed bank and level
+pitch for the pilot's stick inside its own Fly-By-Wire branch.  This module
+owns only what the FC cannot: the engage gesture, the conditions the ground
+station can see, and handing control back.  All it transmits is a request on
+CH10 -- it never commands an attitude.
 
-Two consequences of that choice, both deliberate for a first autonomous mode:
-
-* The circle drifts downwind.  Holding it over a fixed point needs a position
-  loop, which is the next stage rather than this one.
-* Loiter ends the moment the link drops.  The FC's own RC failsafe
-  (``RC_FAILSAFE_TIMEOUT_US``, 250 ms) takes over and the model glides, which
-  is the existing proven behaviour.  This mode therefore can never become a
-  link-loss return-to-home; that requires the loop to live on the FC.
+That division is deliberate.  A pilot reaches for loiter when the model is far
+away and they need a moment, which is exactly when the link is weakest, so the
+loop that holds the wings over has to live on the aircraft.  What stays here is
+everything involving a joystick, which the FC knows nothing about.
 
 Engagement is a *hold* of the control-mode toggle (Ctrl+M or the joystick's
 control-mode button) for ``hold_seconds``.  A short tap of the same control
@@ -31,6 +28,10 @@ Disengagement is deliberately easy and happens on any of:
 * the joystick disappearing,
 * a bounded maximum duration elapsing.
 
+The FC enforces its own gates independently and continuously -- RC freshness,
+Fly-By-Wire, a converged attitude estimate, and the airborne latch -- so
+dropping the request here is one of two ways the orbit ends, not the only one.
+
 Kept free of Qt imports so the state machine is unit-testable headless (the
 package initializer is deliberately empty for the same reason).
 """
@@ -47,20 +48,12 @@ from typing import Optional
 # How long the control-mode toggle must be held before loiter engages.
 LOITER_HOLD_SECONDS = 2.0
 
-# Commanded bank angle for the orbit.  Well inside the default GS Fly-By-Wire
-# roll limit (45 deg) and far inside the FC's 80 deg hard clamp, so both
-# existing envelopes stay redundant rather than active.
-LOITER_BANK_ANGLE_DEG = 20.0
-
-# Commanded pitch for the orbit.  Level: this version holds no altitude, it
-# only stops the nose wandering while the bank does the work.
-LOITER_PITCH_ANGLE_DEG = 0.0
-
-# Sign of the commanded bank.  This follows the FC's roll convention rather
-# than a compass direction -- per docs/protocol_contract.md the firmware
-# treats left rolls as positive -- so confirm which way the aircraft actually
-# circles on the first flight and flip this if it turns the wrong way.
-LOITER_BANK_DIRECTION = 1.0
+# CH10/AUX6 carries the loiter request.  CH8/CH9 are taken by the
+# board-alignment trim.  Values mirror the CH6/CH7 encoding: an explicit high
+# requests the mode, and the low value means off.
+LOITER_CHANNEL_INDEX = 9
+LOITER_CHANNEL_REQUEST_VALUE = 1700
+LOITER_CHANNEL_OFF_VALUE = 400
 
 # How far the stick must move from where it sat at engage time before loiter
 # hands control back.  Normalized stick units (-1..1), so 0.25 is a quarter of
@@ -114,27 +107,15 @@ class LoiterEvent:
     reason: Optional[str] = None
 
 
-def bank_to_channel_norm(
-    bank_deg: float, fc_limit_deg: float, gs_limit_deg: Optional[float] = None
-) -> float:
-    """Return the normalized channel value that commands ``bank_deg`` at the FC.
+def loiter_channel_value(engaged: bool) -> int:
+    """Return the CH10/AUX6 value for the current loiter state.
 
-    The FC reads roll/pitch channels as ``normalized * FC hard limit``, so a
-    loiter command that wants a true angle has to be expressed against that
-    hard limit directly rather than against the stick's scaled range.  When
-    ``gs_limit_deg`` is supplied the request is first clamped into the
-    operator's own Fly-By-Wire envelope, so loiter can never command a
-    steeper attitude than the configured limits allow by hand.
+    The FC treats anything below its threshold as off, so the low value is not
+    merely conventional: it is what stops a centred or defaulted channel from
+    ever reading as a request.
     """
 
-    if not fc_limit_deg or fc_limit_deg <= 0.0:
-        return 0.0
-    target = float(bank_deg)
-    if gs_limit_deg is not None:
-        limit = abs(float(gs_limit_deg))
-        target = max(-limit, min(limit, target))
-    normalized = target / float(fc_limit_deg)
-    return max(-1.0, min(1.0, normalized))
+    return LOITER_CHANNEL_REQUEST_VALUE if engaged else LOITER_CHANNEL_OFF_VALUE
 
 
 def stick_break_exceeded(
@@ -174,16 +155,10 @@ class LoiterController:
         self,
         *,
         hold_seconds: float = LOITER_HOLD_SECONDS,
-        bank_angle_deg: float = LOITER_BANK_ANGLE_DEG,
-        pitch_angle_deg: float = LOITER_PITCH_ANGLE_DEG,
-        bank_direction: float = LOITER_BANK_DIRECTION,
         stick_break_norm: float = LOITER_STICK_BREAK_NORM,
         max_duration_s: float = LOITER_MAX_DURATION_S,
     ) -> None:
         self.hold_seconds = float(hold_seconds)
-        self.bank_angle_deg = float(bank_angle_deg)
-        self.pitch_angle_deg = float(pitch_angle_deg)
-        self.bank_direction = 1.0 if float(bank_direction) >= 0.0 else -1.0
         self.stick_break_norm = float(stick_break_norm)
         self.max_duration_s = float(max_duration_s)
 
@@ -227,21 +202,6 @@ class LoiterController:
         if self._engaged_at is None:
             return 0.0
         return max(0.0, float(now) - self._engaged_at)
-
-    # ------------------------------------------------------------------
-    # Commanded attitude
-    # ------------------------------------------------------------------
-    def command_angles(
-        self, gs_roll_limit_deg: float, gs_pitch_limit_deg: float
-    ) -> tuple[float, float]:
-        """Return the (roll, pitch) degrees this orbit wants, already clamped."""
-
-        roll = self.bank_angle_deg * self.bank_direction
-        roll_limit = abs(float(gs_roll_limit_deg))
-        pitch_limit = abs(float(gs_pitch_limit_deg))
-        roll = max(-roll_limit, min(roll_limit, roll))
-        pitch = max(-pitch_limit, min(pitch_limit, self.pitch_angle_deg))
-        return roll, pitch
 
     # ------------------------------------------------------------------
     # Edges

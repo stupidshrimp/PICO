@@ -40,6 +40,7 @@
 #include "ms4525d0.h" 
 #include "m8n.h"
 #include "control_mode.h"
+#include "loiter_nav.h"
 #include "mag_cal_fit.h"
 #include "mag_cal_flash.h"
 #include <CRSFforArduino.hpp>
@@ -898,6 +899,7 @@ struct ControlDebugCounters {
   uint32_t airspeedInvalidReads;
   uint32_t imuReadFailures;
   uint32_t fbwStaleAttitudeFallbacks;
+  uint32_t loiterCycles;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -982,6 +984,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.airspeedInvalidReads = 0;
   controlDebugCounters.imuReadFailures = 0;
   controlDebugCounters.fbwStaleAttitudeFallbacks = 0;
+  controlDebugCounters.loiterCycles = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -1018,6 +1021,7 @@ serialReceiverLayer::rcChannels_t latestRcChannels;
 
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 ThrottleMode throttleMode = THROTTLE_MODE_MANUAL;
+NavMode navMode = NAV_MODE_OFF;
 
 const uint16_t RC_INPUT_MIN = 172;
 const uint16_t RC_INPUT_MAX = 1811;
@@ -1033,6 +1037,11 @@ const uint16_t CONTROL_MODE_FLY_BY_WIRE_MIN = CONTROL_MODE_FLY_BY_WIRE_TARGET - 
 const uint16_t THROTTLE_MODE_AUTO_TARGET = 1700;
 const uint16_t THROTTLE_MODE_SWITCH_DEADBAND = 150;
 const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MODE_SWITCH_DEADBAND;
+
+// Loiter is requested on CH10/AUX6: CH8/CH9 already carry the board-alignment
+// trim. The band and the orbit geometry live in loiter_nav.h so the host tests
+// compile the same constants the firmware flies.
+const size_t LOITER_MODE_CHANNEL_INDEX = 9;
 
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
 const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
@@ -1503,6 +1512,47 @@ void setThrottleMode(ThrottleMode newMode) {
   }
 }
 
+void setNavMode(NavMode newMode) {
+  if (navMode != newMode) {
+    navMode = newMode;
+    // Loiter and hand flying feed the same PIDs from different setpoints, so
+    // clear the accumulated state on every transition in either direction.
+    // Carrying an integrator across the handover would apply correction earned
+    // against the old setpoint to the new one.
+    rollPid.reset();
+    pitchPid.reset();
+  }
+}
+
+// Derive the loiter request from CH10/AUX6. Structured exactly like
+// updateControlMode(): only an explicit high value requests the mode, every
+// other value means off, and a stale link leaves the decision to the failsafe
+// block rather than re-deriving it from channel values that are no longer
+// being refreshed.
+//
+// This function only tracks what the ground station is ASKING for. Whether the
+// orbit may actually run is decided every control cycle by loiterMayEngage(),
+// which additionally requires Fly-By-Wire, a usable attitude estimate, and the
+// airborne latch -- so a request standing on the channel while the aircraft is
+// on the ground, or in Manual, simply does nothing.
+void updateNavMode() {
+  if (!rcInputFresh(micros())) {
+    return;
+  }
+
+  const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if (LOITER_MODE_CHANNEL_INDEX >= channelCount) {
+    setNavMode(NAV_MODE_OFF);
+    return;
+  }
+
+  if (loiterRequestedFromChannel(latestRcChannels.value[LOITER_MODE_CHANNEL_INDEX])) {
+    setNavMode(NAV_MODE_LOITER);
+  } else {
+    setNavMode(NAV_MODE_OFF);
+  }
+}
+
 void updateControlMode() {
   // Manual/Fly-By-Wire mode is carried on CH6/AUX2 so CH5/AUX1 can remain
   // dedicated to the ELRS arm state.  CRSF channel arrays are zero-indexed.
@@ -1603,6 +1653,7 @@ void serviceCrsfLink() {
 #endif
   updateControlMode();
   updateThrottleMode();
+  updateNavMode();
 }
 
 // ----- GPS -----
@@ -3381,6 +3432,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" airspeed_invalid_hz="); Serial.print(controlDebugCounters.airspeedInvalidReads * scale, 1);
   Serial.print(" imu_read_fail_hz="); Serial.print(controlDebugCounters.imuReadFailures * scale, 1);
   Serial.print(" fbw_stale_att_hz="); Serial.print(controlDebugCounters.fbwStaleAttitudeFallbacks * scale, 1);
+  Serial.print(" loiter_hz="); Serial.print(controlDebugCounters.loiterCycles * scale, 1);
   Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
   Serial.print(" tlm_sats="); Serial.print(satsInUse);
   Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
@@ -3416,6 +3468,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.print(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+  Serial.print(" nav="); Serial.print(navMode == NAV_MODE_LOITER ? "LOITER" : "OFF");
   Serial.print(" mode_ch="); Serial.print(latestRcChannels.value[5]);
   Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
   Serial.print(" throttle_mode_ch="); Serial.print(latestRcChannels.value[6]);
@@ -5424,6 +5477,12 @@ void loop() {
       rcFailsafeActive = true;
       setControlMode(CONTROL_MODE_MANUAL);
       setThrottleMode(THROTTLE_MODE_MANUAL);
+      // Loiter does not outlive the link. Dropping it here keeps the existing
+      // failsafe behaviour exactly as it is -- Manual, throttle cut, surfaces
+      // blended to neutral, model glides -- rather than leaving an orbit
+      // latched with nobody able to command it. Flying a return under failsafe
+      // is a deliberately separate and much more dangerous change.
+      setNavMode(NAV_MODE_OFF);
     } else {
       rcFailsafeActive = false;
       rcServoHoldBlendActive = false;
@@ -5516,8 +5575,27 @@ void loop() {
       const float rollCommandNorm = mapRcToNormalized(rcRollRaw);
       const float pitchCommandNorm = mapRcToNormalized(rcPitchRaw);
 
-      const float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
-      const float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
+      float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
+      float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
+
+      // Loiter substitutes a fixed bank and level pitch for the stick. Reaching
+      // this branch already proves the attitude estimate is fresh AND converged
+      // (the branch above falls through to pass-through otherwise) and that RC
+      // is fresh and Fly-By-Wire is selected, so those are passed in as the
+      // conditions they are rather than re-derived. The gate is re-evaluated
+      // every control cycle, so losing any of it hands the stick straight back
+      // without a transition step.
+      const bool loiterActive = loiterMayEngage(
+          navMode == NAV_MODE_LOITER,
+          /*rcFresh=*/true,
+          /*fbwActive=*/true,
+          /*attitudeUsable=*/true,
+          aircraftAirborne);
+      if (loiterActive) {
+        loiterDesiredAttitude(FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
+                              &desiredRoll, &desiredPitch);
+        ++controlDebugCounters.loiterCycles;
+      }
 
       const float rollPidOutput = rollPid.update(desiredRoll, roll, controlDt);
       const float pitchPidOutput = pitchPid.update(desiredPitch, pitch, controlDt);

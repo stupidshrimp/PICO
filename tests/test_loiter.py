@@ -1,15 +1,14 @@
-"""Ground-station loiter state machine (modules/loiter.py).
+"""Ground-station half of loiter (modules/loiter.py).
 
-Loiter v1 is a fixed-bank orbit commanded through the existing Fly-By-Wire
-path, engaged by HOLDING the control-mode toggle and dropped by pressing it
-again, moving the stick, or losing any of the conditions it depends on.
+The orbit is flown by the FC (flight_controller/loiter_nav.h, covered by
+tests/test_loiter_nav.py); this module owns the operator interface -- the
+2 s hold that engages it, the conditions the ground station can see, and
+handing control back.
 
 These tests pin the parts that are easy to get subtly wrong and expensive to
 discover in the air: that a short tap still performs the ordinary mode toggle
-(and a hold does not *also* toggle), that every documented disengage path
-fires, and that the commanded bank is expressed against the FC's 80 deg hard
-limit rather than the stick's scaled range -- the arithmetic that decides
-whether the aircraft banks 20 degrees or 11.
+while a hold does not *also* toggle, that every documented disengage path
+fires, and that CH10 only ever carries the FC's explicit request value.
 """
 import pathlib
 import sys
@@ -31,14 +30,19 @@ from modules.loiter import (
     REASON_TOGGLE,
     LoiterController,
     LoiterGates,
-    bank_to_channel_norm,
+    loiter_channel_value,
     stick_break_exceeded,
 )
+from modules.loiter import (
+    LOITER_CHANNEL_INDEX,
+    LOITER_CHANNEL_OFF_VALUE,
+    LOITER_CHANNEL_REQUEST_VALUE,
+)
 
-# FC-side contract value (flight_controller/Main.ino FBW_MAX_ROLL_ANGLE_DEG).
-FC_HARD_LIMIT_DEG = 80.0
-# Ground-station default envelope (config.py "fbw").
-GS_ROLL_LIMIT_DEG = 45.0
+# FC-side contract values (flight_controller/loiter_nav.h).
+FC_LOITER_REQUEST_MIN = 1700 - 150
+# CH8/CH9 carry the board-alignment trim, so loiter is CH10/AUX6.
+FC_LOITER_CHANNEL_INDEX = 9
 
 
 def _ready_gates(stick_roll=0.0, stick_pitch=0.0):
@@ -287,38 +291,31 @@ def test_stick_break_is_symmetric_about_the_baseline():
 
 
 # ---------------------------------------------------------------------------
-# Commanded attitude arithmetic
+# CH10 request encoding
 # ---------------------------------------------------------------------------
 
 
-def test_bank_is_expressed_against_the_fc_hard_limit():
-    """20 deg of bank must normalize against 80, not against the GS limit.
+def test_channel_values_match_the_firmware_threshold():
+    """The request value must clear the FC gate; the off value must not."""
 
-    Normalizing against the 45 deg GS limit instead would command 45 * (20/45)
-    through the scaled stick path and fly an 11 degree turn.
+    assert loiter_channel_value(True) >= FC_LOITER_REQUEST_MIN
+    assert loiter_channel_value(False) < FC_LOITER_REQUEST_MIN
+    assert loiter_channel_value(True) == LOITER_CHANNEL_REQUEST_VALUE
+    assert loiter_channel_value(False) == LOITER_CHANNEL_OFF_VALUE
+
+
+def test_channel_index_is_ch10():
+    """CH8/CH9 belong to the board-alignment trim."""
+
+    assert LOITER_CHANNEL_INDEX == FC_LOITER_CHANNEL_INDEX
+
+
+def test_off_value_is_not_merely_centre():
+    """A centred channel must read as off to the FC, and so must our off value.
+
+    The FC treats anything below its threshold as off, so this is really a
+    guard against someone "simplifying" the off value up into the request band.
     """
 
-    norm = bank_to_channel_norm(20.0, FC_HARD_LIMIT_DEG, GS_ROLL_LIMIT_DEG)
-    assert norm == 20.0 / 80.0
-
-
-def test_bank_request_is_clamped_into_the_operator_envelope():
-    norm = bank_to_channel_norm(70.0, FC_HARD_LIMIT_DEG, GS_ROLL_LIMIT_DEG)
-    assert norm == GS_ROLL_LIMIT_DEG / FC_HARD_LIMIT_DEG
-
-
-def test_bank_normalisation_is_signed_and_bounded():
-    assert bank_to_channel_norm(-20.0, FC_HARD_LIMIT_DEG) == -0.25
-    assert bank_to_channel_norm(500.0, FC_HARD_LIMIT_DEG) == 1.0
-    assert bank_to_channel_norm(20.0, 0.0) == 0.0
-
-
-def test_command_angles_respect_the_configured_limits_and_direction():
-    c = LoiterController(bank_angle_deg=20.0, bank_direction=-1.0)
-    roll, pitch = c.command_angles(GS_ROLL_LIMIT_DEG, 30.0)
-    assert roll == -20.0
-    assert pitch == 0.0
-
-    tight = LoiterController(bank_angle_deg=60.0)
-    roll, _ = tight.command_angles(GS_ROLL_LIMIT_DEG, 30.0)
-    assert roll == GS_ROLL_LIMIT_DEG
+    assert LOITER_CHANNEL_OFF_VALUE < FC_LOITER_REQUEST_MIN
+    assert 992 < FC_LOITER_REQUEST_MIN

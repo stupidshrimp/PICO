@@ -138,8 +138,7 @@ from modules.loiter import (
     EVENT_DISENGAGED,
     EVENT_ENGAGED,
     EVENT_REFUSED,
-    LOITER_BANK_ANGLE_DEG,
-    LOITER_BANK_DIRECTION,
+    LOITER_CHANNEL_INDEX,
     LOITER_HOLD_SECONDS,
     LOITER_MAX_DURATION_S,
     LOITER_STICK_BREAK_NORM,
@@ -151,7 +150,7 @@ from modules.loiter import (
     REASON_TOGGLE,
     LoiterController,
     LoiterGates,
-    bank_to_channel_norm,
+    loiter_channel_value,
 )
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
@@ -525,19 +524,14 @@ class MainWindow(QMainWindow):
         self.fbw_cfg["max_roll_angle_deg"] = self.fbw_max_roll_angle_deg
         self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
 
-        # Loiter: a fixed-bank orbit commanded through the Fly-By-Wire path.
-        # The commanded angles are clamped into the fbw limits above, so the
-        # operator's own envelope stays authoritative over this mode.
+        # Loiter: the ground-station half of the FC's fixed-bank orbit. The
+        # orbit geometry lives in flight_controller/loiter_nav.h; everything
+        # here is the operator interface -- the engage gesture, the conditions
+        # the GS can see, and handing control back.
         self.loiter_cfg = self.config.setdefault("loiter", {})
         self.loiter = LoiterController(
             hold_seconds=self._safe_float(
                 self.loiter_cfg.get("hold_seconds"), LOITER_HOLD_SECONDS
-            ),
-            bank_angle_deg=self._safe_float(
-                self.loiter_cfg.get("bank_angle_deg"), LOITER_BANK_ANGLE_DEG
-            ),
-            bank_direction=self._safe_float(
-                self.loiter_cfg.get("bank_direction"), LOITER_BANK_DIRECTION
             ),
             stick_break_norm=self._safe_float(
                 self.loiter_cfg.get("stick_break_norm"), LOITER_STICK_BREAK_NORM
@@ -4051,10 +4045,14 @@ class MainWindow(QMainWindow):
         """Refresh the OSD cue from the same joystick-to-CRSF mapping as TX."""
 
         if self.loiter.engaged:
-            # The orbit, not the stick, is commanding attitude right now, and
-            # _build_control_channels already published that cue. Recomputing
-            # from stick position here would show the pilot's idle hand
-            # instead of what the aircraft was told to fly.
+            # The FC is choosing the attitude now and does not report the
+            # setpoint back, so the GS genuinely does not know it. Hide the cue
+            # rather than draw the pilot's idle stick as if it were commanding
+            # something.
+            self._update_desired_fbw_attitude(
+                getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16),
+                enabled=False,
+            )
             return
 
         if self.control_mode != "Fly-By-Wire":
@@ -4157,10 +4155,10 @@ class MainWindow(QMainWindow):
 
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)
-        # Loiter owns roll/pitch outright while it runs, so it lands after the
-        # stick-path limiting above (see _loiter_command_channels for why).
-        if self.loiter.engaged:
-            self._loiter_command_channels(channels)
+        # Loiter is a request on CH10, not an attitude: unlike the FBW limits
+        # above it never rewrites roll/pitch, so ordering against them does not
+        # matter.
+        self._apply_loiter_to_channels(channels)
         self._update_desired_fbw_attitude(channels)
         return channels
 
@@ -4322,33 +4320,19 @@ class MainWindow(QMainWindow):
 
         self.update_control_mode_label()
 
-    def _loiter_command_channels(self, channels: list[int]) -> list[int]:
-        """Overwrite roll/pitch with the orbit's commanded attitude.
+    def _apply_loiter_to_channels(self, channels: list[int]) -> list[int]:
+        """Drive CH10/AUX6 with the loiter request.
 
-        This runs *after* ``_apply_fbw_command_limits`` on purpose. That helper
-        rescales stick travel so the GS limit reads as full stick, but loiter
-        commands an absolute angle: putting it through the same scaling would
-        shrink a 20 degree request to 20 * (45/80) = 11 degrees. The angles are
-        instead clamped into the operator's FBW envelope by ``command_angles``
-        and then normalized against the FC's own hard limit, which is what the
-        firmware actually multiplies the channel by.
-
-        Trim is intentionally discarded here: trim biases a stick command, and
-        the FC's attitude PID already drives the surfaces to whatever the
-        commanded angle needs.
+        The GS asks; the FC decides. This never touches roll or pitch: the
+        orbit's attitude is the firmware's to command, which is what keeps it
+        flying through the link jitter and ground-station stalls that a
+        GS-closed loop would not survive.
         """
 
-        if len(channels) < 2:
-            channels.extend([CRSF_CHANNEL_CENTER] * (2 - len(channels)))
-        roll_deg, pitch_deg = self.loiter.command_angles(
-            self.fbw_max_roll_angle_deg, self.fbw_max_pitch_angle_deg
-        )
-        channels[0] = self._map_axis_to_crsf(
-            bank_to_channel_norm(roll_deg, self.FBW_FC_MAX_ROLL_ANGLE_DEG)
-        )
-        channels[1] = self._map_axis_to_crsf(
-            bank_to_channel_norm(pitch_deg, self.FBW_FC_MAX_PITCH_ANGLE_DEG)
-        )
+        needed = LOITER_CHANNEL_INDEX + 1
+        if len(channels) < needed:
+            channels.extend([CRSF_CHANNEL_CENTER] * (needed - len(channels)))
+        channels[LOITER_CHANNEL_INDEX] = loiter_channel_value(self.loiter.engaged)
         return channels
 
     def _setup_throttle_mode_indicator(self) -> None:
