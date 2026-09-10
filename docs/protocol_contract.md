@@ -96,6 +96,7 @@ live on the aircraft. What stays on the GS is everything involving a joystick.
 | GS stick-break threshold | `0.25` normalized | `config.py` (`loiter.stick_break_norm`); measured against where the stick sat at engage time, not against centre |
 | GS attitude freshness window | `1.0 s` | `main.py` (`LOITER_ATTITUDE_STALE_S`), matching `check_attitude_connection` |
 | GS maximum orbit duration | `300 s` | `config.py` (`loiter.max_duration_s`); `0` disables |
+| Blackbox column | `loiter_requested` | `main.py`; records the GS **request**, not the flown orbit. The FC's gates (airborne latch, converged attitude) are not reported down, so "requested and refused" is indistinguishable from "requested and flown" in a sortie log. The FC's own `loiter_hz` / `nav=` debug counters are the authority on whether an orbit actually flew |
 
 ## FC mode thresholds and failsafes
 

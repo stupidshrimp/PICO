@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
             "stick_yaw",
             "stick_throttle",
             "control_mode",
-            "loiter_active",
+            "loiter_requested",
             "fbw_setpoint_roll",
             "fbw_setpoint_pitch",
             "fbw_limit_roll",
@@ -1911,9 +1911,13 @@ class MainWindow(QMainWindow):
         # These let post-flight analysis grade Fly-By-Wire tracking directly;
         # in Manual mode the setpoints record blank.
         self.telemetry_state["control_mode"] = self.control_mode
-        # Records when the fixed-bank orbit was flying the aircraft, so a
-        # post-flight pass can separate loiter from hand-flown Fly-By-Wire.
-        self.telemetry_state["loiter_active"] = 1 if self.loiter.engaged else 0
+        # Records when the ground station was REQUESTING the orbit, which is
+        # not the same as the FC flying one: the firmware gates loiter on the
+        # airborne latch and a converged attitude estimate, and reports neither
+        # decision back down. A post-flight pass can separate a requested orbit
+        # from hand-flown Fly-By-Wire, but "requested and refused" looks the
+        # same here as "requested and flown".
+        self.telemetry_state["loiter_requested"] = 1 if self.loiter.engaged else 0
         self.telemetry_state["fbw_setpoint_roll"] = self.desired_fbw_roll
         self.telemetry_state["fbw_setpoint_pitch"] = self.desired_fbw_pitch
         self.telemetry_state["fbw_limit_roll"] = self.fbw_max_roll_angle_deg
