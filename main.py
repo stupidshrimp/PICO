@@ -829,6 +829,9 @@ class MainWindow(QMainWindow):
         self._stick_angle_scale = 90.0
         self._last_stick_pitch_norm: Optional[float] = None
         self._last_stick_roll_norm: Optional[float] = None
+        # Pre-processing counterparts, used only by the loiter stick-break.
+        self._last_stick_pitch_phys_norm: Optional[float] = None
+        self._last_stick_roll_phys_norm: Optional[float] = None
         self._stick_last_update = 0.0
         # Monotonic time the joystick last yielded a FRESH axis sample (sourced
         # from the handler's last_sample_monotonic). _stick_last_update advances
@@ -1979,6 +1982,25 @@ class MainWindow(QMainWindow):
         # returns the cached roll/pitch when the serial stream stalls, so a
         # not-None reading alone does not prove live input; the handler advances
         # last_sample_monotonic only when a new sample is actually consumed.
+        # Physical (pre-deadzone, pre-sensitivity, pre-smoothing) stick
+        # position, cached separately for the loiter stick-break. That check
+        # asks whether the PILOT moved the stick, which must not depend on a
+        # command-shaping preference: at 25% sensitivity a full deflection only
+        # reaches 0.25 of the processed range, so a threshold applied to the
+        # processed values becomes uncrossable and the takeover path dies.
+        if self.joystick is not None and hasattr(self.joystick, "get_physical_values"):
+            try:
+                phys_pitch, phys_roll = self.joystick.get_physical_values()
+            except Exception:  # noqa: BLE001 - fall back to the processed cache
+                phys_pitch = phys_roll = None
+            if phys_pitch is not None and phys_roll is not None:
+                self._last_stick_pitch_phys_norm = max(
+                    -1.0, min(1.0, (phys_pitch - 512) / 512)
+                )
+                self._last_stick_roll_phys_norm = max(
+                    -1.0, min(1.0, (phys_roll - 512) / 512)
+                )
+
         sample_time = getattr(self.joystick, "last_sample_monotonic", None)
         if sample_time is not None:
             self._last_stick_sample_time = sample_time
@@ -4310,10 +4332,12 @@ class MainWindow(QMainWindow):
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
             airborne=self._is_airborne(),
-            # getattr throughout: the loiter controller is built earlier in
-            # __init__ than these caches, so nothing here may assume ordering.
-            stick_roll=getattr(self, "_last_stick_roll_norm", None),
-            stick_pitch=getattr(self, "_last_stick_pitch_norm", None),
+            # Physical stick position, not the sensitivity-scaled command:
+            # see _capture_stick_state. getattr throughout because the loiter
+            # controller is built earlier in __init__ than these caches, so
+            # nothing here may assume ordering.
+            stick_roll=getattr(self, "_last_stick_roll_phys_norm", None),
+            stick_pitch=getattr(self, "_last_stick_pitch_phys_norm", None),
         )
 
     def _loiter_press(self, source: str = PRESS_SOURCE_KEY) -> None:

@@ -126,6 +126,14 @@ class JoystickRawHandler(QObject):
         self.button_queue = Queue()
         self.roll = 512
         self.pitch = 512
+        # Last axis sample BEFORE deadzone, sensitivity and smoothing are
+        # applied. Consumers that need to know whether the pilot physically
+        # moved the stick -- as opposed to how much command that produces --
+        # must use these: at 25% sensitivity a full deflection only reaches
+        # 0.25 of the processed range, so a displacement threshold applied to
+        # the processed values can become uncrossable.
+        self.raw_roll = 512
+        self.raw_pitch = 512
         # Monotonic time a fresh axis sample was last consumed. Stays put while
         # the stream is stalled (get_raw_values returns the cached roll/pitch),
         # so callers can distinguish live input from a frozen cache.
@@ -250,8 +258,23 @@ class JoystickRawHandler(QObject):
         delta = max(-max_delta, min(max_delta, delta))
         return center + delta
 
+    def get_physical_values(self):
+        """Return the most recent pitch and roll BEFORE any processing.
+
+        Deadzone, sensitivity and smoothing all shape how much command a given
+        deflection produces; none of them should change whether a caller can
+        tell that the pilot moved the stick.  Use this for that question and
+        ``get_raw_values`` for the command itself.
+        """
+
+        return self.raw_pitch, self.raw_roll
+
     def get_raw_values(self):
-        """Return the most recent processed pitch and roll values."""
+        """Return the most recent PROCESSED pitch and roll values.
+
+        Despite the name these have deadzone, sensitivity and smoothing
+        applied; ``get_physical_values`` returns the unprocessed sample.
+        """
         latest_sample = None
         while True:
             try:
@@ -269,6 +292,8 @@ class JoystickRawHandler(QObject):
 
         if latest_sample is not None:
             raw_roll, raw_pitch = latest_sample
+            self.raw_roll = raw_roll
+            self.raw_pitch = raw_pitch
             proc_roll = self._apply_deadzone_sensitivity(raw_roll)
             proc_pitch = self._apply_deadzone_sensitivity(raw_pitch)
             now = time.monotonic()
