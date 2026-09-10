@@ -5511,6 +5511,33 @@ void loop() {
     uint16_t rcThrottleRaw = (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_MIN;
     uint16_t rcYawRaw = (channelCount > 3) ? latestRcChannels.value[3] : RC_INPUT_CENTER;
 
+    // Advance the loiter latch ONCE per control cycle, before the branch chain
+    // below picks a servo mode, and with the real gate values rather than the
+    // ones a particular branch implies. Doing it inside the Fly-By-Wire branch
+    // meant the latch never observed a failing gate that routed control
+    // somewhere else: an attitude outage takes the pass-through branch above,
+    // so `running` stayed set through the outage and the orbit resumed
+    // silently on recovery with no fresh request edge and no PID reset. It
+    // also meant a request raised during the watchdog-convergence window was
+    // first seen only after convergence, and so read as a valid rising edge.
+    const bool loiterAttitudeUsable =
+        attitudeEstimateFresh(servoUpdateUs) && attitudeEstimateConvergedForFbw();
+    const bool loiterActive = loiterUpdate(
+        &loiterState,
+        navMode == NAV_MODE_LOITER,
+        rcFresh,
+        controlMode == CONTROL_MODE_FLY_BY_WIRE,
+        loiterAttitudeUsable,
+        aircraftAirborne);
+    if (loiterState.transitioned) {
+      // The setpoint source just changed in one direction or the other, so
+      // clear the integrators before they apply correction earned against the
+      // previous setpoint to the new one. Out here rather than in the FBW
+      // branch so a drop that routes control elsewhere still resets.
+      rollPid.reset();
+      pitchPid.reset();
+    }
+
     uint16_t rollCommandUs = SERVO_CENTER_US;
     uint16_t pitchCommandUs = SERVO_CENTER_US;
     uint16_t yawCommandUs = rcFresh ? mapRcToUs(rcYawRaw) : SERVO_CENTER_US;
@@ -5584,27 +5611,10 @@ void loop() {
       float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
       float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
 
-      // Loiter substitutes a fixed bank and level pitch for the stick. Reaching
-      // this branch already proves the attitude estimate is fresh AND converged
-      // (the branch above falls through to pass-through otherwise) and that RC
-      // is fresh and Fly-By-Wire is selected, so those are passed in as the
-      // conditions they are rather than re-derived. The gate is re-evaluated
-      // every control cycle, so losing any of it hands the stick straight back
-      // without a transition step.
-      const bool loiterActive = loiterUpdate(
-          &loiterState,
-          navMode == NAV_MODE_LOITER,
-          /*rcFresh=*/true,
-          /*fbwActive=*/true,
-          /*attitudeUsable=*/true,
-          aircraftAirborne);
-      if (loiterState.transitioned) {
-        // The setpoint source just changed in one direction or the other, so
-        // clear the integrators before they apply correction earned against
-        // the previous setpoint to the new one.
-        rollPid.reset();
-        pitchPid.reset();
-      }
+      // Loiter substitutes a fixed bank and level pitch for the stick. The
+      // latch was already advanced above against the real gate values, so this
+      // only consumes its result; losing any gate drops loiterActive there and
+      // hands the stick straight back on this same cycle.
       if (loiterActive) {
         loiterDesiredAttitude(FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
                               &desiredRoll, &desiredPitch);

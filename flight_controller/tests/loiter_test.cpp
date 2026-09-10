@@ -147,6 +147,55 @@ static void test_latch_drops_and_requires_a_new_edge() {
     std::printf("  ok\n");
 }
 
+static void test_attitude_outage_does_not_resume_silently() {
+    std::printf("latch (an attitude outage must not resume on recovery)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+    loiterUpdate(&st, false, true, true, true, true);
+    check(loiterUpdate(&st, true, true, true, true, true), "orbiting");
+
+    /* A dead IMU or an unconverged EKF after a watchdog boot routes control to
+     * the pass-through branch. The latch must still be advanced with the real
+     * value: if it is skipped, `running` stays set through the outage. */
+    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true),
+          "an unusable attitude estimate must drop the orbit");
+    check(st.transitioned, "and must flag the transition so the PIDs reset");
+
+    /* Recovery under the same standing request must NOT resume. */
+    check(!loiterUpdate(&st, true, true, true, true, true),
+          "recovery must not resume without a fresh request edge");
+    check(!st.transitioned, "and must not re-flag a transition");
+
+    /* Only a CH10 cycle brings it back. */
+    check(!loiterUpdate(&st, false, true, true, true, true), "release");
+    check(loiterUpdate(&st, true, true, true, true, true), "fresh request re-engages");
+
+    std::printf("  ok\n");
+}
+
+static void test_request_during_convergence_is_refused() {
+    std::printf("latch (a request raised while attitude is unusable is refused)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+
+    /* Watchdog-recovery boot: the estimate is fresh but not yet converged, so
+     * the FC is in limited-authority pass-through. Critically the ground
+     * station CANNOT see this -- attitude telemetry keeps flowing -- so it
+     * will happily raise CH10. The latch has to catch it. */
+    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true),
+          "a request raised during convergence must not fly");
+    check(!loiterUpdate(&st, true, true, true, false, true), "still refused");
+
+    /* Convergence completes. Without observing the request during the outage
+     * this would look like a first rising edge and be accepted. */
+    check(!loiterUpdate(&st, true, true, true, true, true),
+          "convergence completing must not accept the standing request");
+
+    std::printf("  ok\n");
+}
+
 static void test_transition_flag_tracks_effective_state() {
     std::printf("transition flag (PID resets follow the effective state)\n");
 
@@ -246,6 +295,8 @@ int main() {
     test_gate_requires_everything();
     test_ground_request_does_not_spring_after_takeoff();
     test_latch_drops_and_requires_a_new_edge();
+    test_attitude_outage_does_not_resume_silently();
+    test_request_during_convergence_is_refused();
     test_transition_flag_tracks_effective_state();
     test_init_rearms_after_failsafe();
     test_commanded_attitude();
