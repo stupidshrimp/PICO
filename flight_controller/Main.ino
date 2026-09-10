@@ -5478,17 +5478,20 @@ void loop() {
       rcFailsafeActive = true;
       setControlMode(CONTROL_MODE_MANUAL);
       setThrottleMode(THROTTLE_MODE_MANUAL);
-      // Loiter does not outlive the link. Dropping it here keeps the existing
-      // failsafe behaviour exactly as it is -- Manual, throttle cut, surfaces
-      // blended to neutral, model glides -- rather than leaving an orbit
-      // latched with nobody able to command it. Flying a return under failsafe
-      // is a deliberately separate and much more dangerous change.
-      setNavMode(NAV_MODE_OFF);
-      // Re-arm the latch as well. Without this, a link that recovers while
-      // CH10 is still high would show no rising edge and resume an orbit whose
-      // gates were never re-checked -- exactly what the edge requirement
-      // exists to prevent.
-      loiterStateInit(&loiterState);
+      // Loiter does not outlive the link, but it is stopped by the rcFresh
+      // gate in loiterUpdate() rather than from here, and navMode is
+      // deliberately LEFT ALONE. Forcing it off would make the standing CH10
+      // request look released, so the first recovered packet would read as a
+      // fresh rising edge and the aircraft would resume a 20 degree orbit on
+      // its own after a brief dropout -- with its attitude disturbed by the
+      // failsafe blend and its throttle cut, and with the pilot given no say.
+      //
+      // The edge is meant to represent an OPERATOR action; synthesising one
+      // internally defeats it. updateNavMode() already declines to re-derive
+      // the mode while RC is stale, so the request simply stays latched and
+      // blocked until a real low CH10 value is seen. Resuming automatically is
+      // right for Fly-By-Wire, which only restores what the pilot's stick
+      // means, and wrong for an autonomous mode that flies with no input.
     } else {
       rcFailsafeActive = false;
       rcServoHoldBlendActive = false;

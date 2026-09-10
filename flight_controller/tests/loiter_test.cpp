@@ -225,25 +225,34 @@ static void test_transition_flag_tracks_effective_state() {
     std::printf("  ok\n");
 }
 
-static void test_init_rearms_after_failsafe() {
-    std::printf("re-arm (a link recovery must not resume a stale orbit)\n");
+static void test_rc_failsafe_does_not_resume_on_recovery() {
+    std::printf("failsafe (a link dropout must not resume the orbit by itself)\n");
 
     LoiterState st;
     loiterStateInit(&st);
     loiterUpdate(&st, false, true, true, true, true);
     check(loiterUpdate(&st, true, true, true, true, true), "orbiting before the dropout");
 
-    /* RC failsafe: the caller re-arms. CH10 is still high throughout. */
-    loiterStateInit(&st);
-    check(!st.running, "re-arming must clear the running state");
-    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
-          "recovery while grounded must not resume");
+    /* Link lost. The firmware must NOT force the request off: doing so would
+     * make the standing CH10 look released, and the first recovered packet
+     * would then read as a fresh rising edge. The request stays high and is
+     * blocked by the rcFresh gate instead. */
+    check(!loiterUpdate(&st, true, /*rcFresh=*/false, true, true, true),
+          "a stale link must stop the orbit");
+    check(st.transitioned, "and must flag the transition so the PIDs reset");
+    check(!loiterUpdate(&st, true, false, true, true, true), "still stopped while stale");
 
-    /* Recovery while genuinely airborne reads as a fresh edge, matching how
-     * Fly-By-Wire itself re-engages when the link returns. */
-    loiterStateInit(&st);
-    check(loiterUpdate(&st, true, true, true, true, true),
-          "recovery while airborne re-engages, as FBW does");
+    /* Link recovers with CH10 still high, and control mode restored. This is
+     * the case that must NOT fly: the aircraft has just been through a
+     * failsafe -- surfaces blended to neutral, throttle cut -- so resuming an
+     * orbit on its own is precisely what the edge requirement forbids. */
+    check(!loiterUpdate(&st, true, true, true, true, true),
+          "recovery must not resume the orbit without an operator gesture");
+    check(!loiterUpdate(&st, true, true, true, true, true), "and must stay dropped");
+
+    /* The operator cycling CH10 is the only way back. */
+    check(!loiterUpdate(&st, false, true, true, true, true), "operator releases");
+    check(loiterUpdate(&st, true, true, true, true, true), "and re-requests");
 
     std::printf("  ok\n");
 }
@@ -298,7 +307,7 @@ int main() {
     test_attitude_outage_does_not_resume_silently();
     test_request_during_convergence_is_refused();
     test_transition_flag_tracks_effective_state();
-    test_init_rearms_after_failsafe();
+    test_rc_failsafe_does_not_resume_on_recovery();
     test_commanded_attitude();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
                 g_fail, g_fail == 1 ? "" : "s");
