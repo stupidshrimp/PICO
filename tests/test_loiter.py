@@ -143,6 +143,24 @@ def test_cancel_press_abandons_the_hold_without_toggling():
     assert c.poll(5.0, gates) is None
 
 
+def test_cancel_press_cannot_strand_a_running_orbit():
+    """Cancelling after the hold matured must not arm a late release.
+
+    Focus loss while the key is still down cancels the press. If that cleared
+    the consumed flag on an engaged orbit, the eventual release would fire the
+    ordinary mode toggle and drop the aircraft out of Fly-By-Wire mid-orbit.
+    """
+
+    c = LoiterController()
+    gates = _ready_gates()
+    _engage(c, gates)
+
+    c.cancel_press()
+    assert c.engaged, "cancelling a matured press must not end the orbit"
+    assert c.release(3.0) is None, "a late release must not toggle the flight mode"
+    assert c.engaged
+
+
 # ---------------------------------------------------------------------------
 # Engage gates
 # ---------------------------------------------------------------------------

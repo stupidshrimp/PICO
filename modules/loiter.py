@@ -244,12 +244,22 @@ class LoiterController:
         return REASON_TOGGLE
 
     def cancel_press(self) -> None:
-        """Forget any in-flight press without toggling (focus loss, disconnect)."""
+        """Forget an in-flight engage hold without toggling (focus loss, disconnect).
+
+        Only an *arming* press can be cancelled.  Once a press has matured into
+        an engage there is nothing in flight to cancel, and clearing the
+        consumed flag then would leave a late release free to fire the ordinary
+        mode toggle -- flipping a running orbit out of Fly-By-Wire.  Callers
+        that also swallow the release edge mask that, but the state machine
+        must not depend on them doing so.
+        """
+
+        if self._state != LOITER_ARMING:
+            return
 
         self._press_start = None
         self._release_consumed = False
-        if self._state == LOITER_ARMING:
-            self._state = LOITER_DISENGAGED
+        self._state = LOITER_DISENGAGED
 
     # ------------------------------------------------------------------
     # Periodic update
