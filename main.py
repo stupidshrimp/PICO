@@ -134,6 +134,25 @@ from modules.compass_cal import (
     compass_cal_start_blockers,
     throttle_mode_channel_value,
 )
+from modules.loiter import (
+    EVENT_DISENGAGED,
+    EVENT_ENGAGED,
+    EVENT_REFUSED,
+    LOITER_BANK_ANGLE_DEG,
+    LOITER_BANK_DIRECTION,
+    LOITER_HOLD_SECONDS,
+    LOITER_MAX_DURATION_S,
+    LOITER_STICK_BREAK_NORM,
+    REASON_ATTITUDE_STALE,
+    REASON_NOT_FBW,
+    REASON_NO_JOYSTICK,
+    REASON_STICK,
+    REASON_TIMEOUT,
+    REASON_TOGGLE,
+    LoiterController,
+    LoiterGates,
+    bank_to_channel_norm,
+)
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
     BOARD_ALIGN_ROLL_CHANNEL_INDEX,
@@ -183,6 +202,17 @@ class MainWindow(QMainWindow):
     FBW_FC_MAX_PITCH_ANGLE_DEG = 80.0
     DEFAULT_FBW_MAX_ROLL_ANGLE_DEG = 45.0
     DEFAULT_FBW_MAX_PITCH_ANGLE_DEG = 30.0
+
+    # How stale attitude telemetry may get before loiter refuses to engage or
+    # hands control back. Matches the 1.0 s window check_attitude_connection
+    # already uses to declare attitude telemetry offline.
+    LOITER_ATTITUDE_STALE_S = 1.0
+    # Audio cues, drawn from the existing audio/ set. Drop in dedicated loiter
+    # recordings and repoint these names when they exist.
+    LOITER_SOUND_ENGAGED = "beepalarm"
+    LOITER_SOUND_DISENGAGED = "manual"
+    LOITER_SOUND_REFUSED = "errorsound"
+    LOITER_SOUND_FAULT = "autopilotfailurewarning"
     # Keep in lockstep with AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH in
     # flight_controller/Main.ino; CH3 auto-throttle setpoints are scaled by this
     # fixed range on both the GS and FC.
@@ -236,9 +266,19 @@ class MainWindow(QMainWindow):
         self.desired_fbw_pitch = None
         self._latest_control_channels = [CRSF_CHANNEL_CENTER] * 16
         self.update_control_mode_label()
-        # Shortcut to toggle control mode
-        self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
-        self.mode_shortcut.activated.connect(self.toggle_control_mode)
+        # Control-mode toggle: Ctrl+M.  Deliberately NOT a QShortcut any more.
+        # Loiter engages on a 2 s HOLD of this same control, so a tap can only
+        # be told apart from a hold on the RELEASE edge and the handler needs
+        # both edges -- QShortcut exposes neither a release nor a way to stop
+        # auto-repeat from re-firing while the key is held.  An application
+        # event filter keeps the old "works wherever focus is" reach that
+        # QShortcut's WindowShortcut context gave us.  One visible consequence:
+        # a plain Manual/Fly-By-Wire toggle now happens when Ctrl+M is
+        # released rather than when it is pressed.
+        self._loiter_key_down = False
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Throttle mode setup. Manual mode sends CH3 as throttle percent; auto
         # throttle sends CH3 as a desired airspeed setpoint for the FC-side PID.
@@ -297,6 +337,7 @@ class MainWindow(QMainWindow):
             "stick_yaw",
             "stick_throttle",
             "control_mode",
+            "loiter_active",
             "fbw_setpoint_roll",
             "fbw_setpoint_pitch",
             "fbw_limit_roll",
@@ -483,6 +524,31 @@ class MainWindow(QMainWindow):
         )
         self.fbw_cfg["max_roll_angle_deg"] = self.fbw_max_roll_angle_deg
         self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
+
+        # Loiter: a fixed-bank orbit commanded through the Fly-By-Wire path.
+        # The commanded angles are clamped into the fbw limits above, so the
+        # operator's own envelope stays authoritative over this mode.
+        self.loiter_cfg = self.config.setdefault("loiter", {})
+        self.loiter = LoiterController(
+            hold_seconds=self._safe_float(
+                self.loiter_cfg.get("hold_seconds"), LOITER_HOLD_SECONDS
+            ),
+            bank_angle_deg=self._safe_float(
+                self.loiter_cfg.get("bank_angle_deg"), LOITER_BANK_ANGLE_DEG
+            ),
+            bank_direction=self._safe_float(
+                self.loiter_cfg.get("bank_direction"), LOITER_BANK_DIRECTION
+            ),
+            stick_break_norm=self._safe_float(
+                self.loiter_cfg.get("stick_break_norm"), LOITER_STICK_BREAK_NORM
+            ),
+            # 0 deliberately disables the timeout, so this must not fall back
+            # to the default on a falsy value -- only on a missing/invalid one.
+            max_duration_s=self._safe_float(
+                self.loiter_cfg.get("max_duration_s"), LOITER_MAX_DURATION_S
+            ),
+        )
+
         self.throttle_cfg = self.config.setdefault("throttle", {})
         self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
@@ -1851,6 +1917,9 @@ class MainWindow(QMainWindow):
         # These let post-flight analysis grade Fly-By-Wire tracking directly;
         # in Manual mode the setpoints record blank.
         self.telemetry_state["control_mode"] = self.control_mode
+        # Records when the fixed-bank orbit was flying the aircraft, so a
+        # post-flight pass can separate loiter from hand-flown Fly-By-Wire.
+        self.telemetry_state["loiter_active"] = 1 if self.loiter.engaged else 0
         self.telemetry_state["fbw_setpoint_roll"] = self.desired_fbw_roll
         self.telemetry_state["fbw_setpoint_pitch"] = self.desired_fbw_pitch
         self.telemetry_state["fbw_limit_roll"] = self.fbw_max_roll_angle_deg
@@ -1990,6 +2059,10 @@ class MainWindow(QMainWindow):
             self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
         self._handle_joystick_button_events()
+        # Ordered after the button edges so a press registered this cycle can
+        # mature into an engage on the very next poll, and after the stick
+        # capture above so the gates see this cycle's axis values.
+        self._poll_loiter()
         self._update_desired_fbw_attitude_from_stick(joy_pitch, joy_roll)
 
         if norm_pitch is None or norm_roll is None:
@@ -2519,8 +2592,13 @@ class MainWindow(QMainWindow):
             return
 
         for button, pressed in joystick.consume_button_events():
-            if button == self.JOYSTICK_CONTROL_MODE_BUTTON and pressed:
-                self.toggle_control_mode()
+            if button == self.JOYSTICK_CONTROL_MODE_BUTTON:
+                # Both edges: a tap toggles Manual/Fly-By-Wire on release, a
+                # 2 s hold engages loiter. Mirrors the Ctrl+M path exactly.
+                if pressed:
+                    self._loiter_press()
+                else:
+                    self._loiter_release()
             elif button == self.JOYSTICK_THROTTLE_MODE_BUTTON and pressed:
                 self.toggle_throttle_mode()
             elif button == self.JOYSTICK_YAW_LEFT_BUTTON:
@@ -3972,6 +4050,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Refresh the OSD cue from the same joystick-to-CRSF mapping as TX."""
 
+        if self.loiter.engaged:
+            # The orbit, not the stick, is commanding attitude right now, and
+            # _build_control_channels already published that cue. Recomputing
+            # from stick position here would show the pilot's idle hand
+            # instead of what the aircraft was told to fly.
+            return
+
         if self.control_mode != "Fly-By-Wire":
             self._update_desired_fbw_attitude(
                 getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16),
@@ -4072,6 +4157,10 @@ class MainWindow(QMainWindow):
 
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)
+        # Loiter owns roll/pitch outright while it runs, so it lands after the
+        # stick-path limiting above (see _loiter_command_channels for why).
+        if self.loiter.engaged:
+            self._loiter_command_channels(channels)
         self._update_desired_fbw_attitude(channels)
         return channels
 
@@ -4095,6 +4184,15 @@ class MainWindow(QMainWindow):
     def update_control_mode_label(self):
         """Update the control mode indicator text and color."""
         if hasattr(self.ui, "controlModeLabel"):
+            # The guard matters: this runs once during __init__ before the
+            # loiter controller exists.
+            loiter = getattr(self, "loiter", None)
+            if loiter is not None and loiter.engaged:
+                # Loiter is flying the aircraft, so name it rather than the
+                # Fly-By-Wire mode it rides on.
+                self.ui.controlModeLabel.setText("Loiter")
+                self.ui.controlModeLabel.setStyleSheet("color: rgb(0, 170, 255);")
+                return
             color = "rgb(0, 255, 0)" if self.control_mode == "Manual" else "rgb(255, 165, 0)"
             self.ui.controlModeLabel.setText(self.control_mode)
             self.ui.controlModeLabel.setStyleSheet(f"color: {color};")
@@ -4108,6 +4206,150 @@ class MainWindow(QMainWindow):
         )
         sound_name = "fbw" if self.control_mode == "Fly-By-Wire" else "manual"
         self.play_sound(sound_name)
+
+    # ------------------------------------------------------------------
+    # Loiter (fixed-bank orbit; see modules/loiter.py)
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt override naming
+        """Route Ctrl+M key edges to the loiter hold handler.
+
+        Both edges are needed to tell a tap (ordinary Manual/Fly-By-Wire
+        toggle) from a 2 s hold (engage loiter), which is why this replaced the
+        old QShortcut. The release is matched on the key alone rather than on
+        Ctrl+M: releasing Control before M would otherwise drop the modifier
+        from the release event and strand the hold with no way out.
+        """
+
+        event_type = event.type()
+        if event_type == QEvent.KeyPress:
+            if (
+                event.key() == Qt.Key_M
+                and event.modifiers() & Qt.ControlModifier
+                and not event.isAutoRepeat()
+                and not self._loiter_key_down
+                # The filter sits on the application, so without this it would
+                # also fire from dialogs and text fields. QShortcut's default
+                # WindowShortcut context scoped the old binding to this window
+                # and this keeps that behaviour.
+                and self.isActiveWindow()
+            ):
+                self._loiter_key_down = True
+                self._loiter_press()
+                return True
+        elif event_type == QEvent.KeyRelease:
+            if (
+                event.key() == Qt.Key_M
+                and self._loiter_key_down
+                and not event.isAutoRepeat()
+            ):
+                self._loiter_key_down = False
+                self._loiter_release()
+                return True
+        elif event_type == QEvent.WindowDeactivate and self._loiter_key_down:
+            # Focus left mid-hold, so the matching release will never arrive.
+            # Abandon the press instead of letting the hold mature into an
+            # engage the operator did not ask for.
+            self._loiter_key_down = False
+            self.loiter.cancel_press()
+        return super().eventFilter(obj, event)
+
+    def _loiter_gates(self) -> LoiterGates:
+        """Snapshot every condition the loiter state machine depends on."""
+
+        now = time.monotonic()
+        last_attitude = getattr(self, "last_attitude_packet_time", None)
+        # Attitude freshness stands in for "the FC's attitude loop is closed".
+        # The GS cannot see the FC's limited-authority pass-through directly
+        # (nothing in the downlink reports it), but the stale-attitude cause of
+        # that fallback does stop attitude frames, so this catches it.
+        attitude_fresh = bool(
+            getattr(self, "attitude_connected", False)
+            and last_attitude is not None
+            and (now - last_attitude) <= self.LOITER_ATTITUDE_STALE_S
+        )
+        return LoiterGates(
+            fbw_active=self.control_mode == "Fly-By-Wire",
+            attitude_fresh=attitude_fresh,
+            joystick_present=getattr(self, "joystick", None) is not None,
+            # getattr throughout: the loiter controller is built earlier in
+            # __init__ than these caches, so nothing here may assume ordering.
+            stick_roll=getattr(self, "_last_stick_roll_norm", None),
+            stick_pitch=getattr(self, "_last_stick_pitch_norm", None),
+        )
+
+    def _loiter_press(self) -> None:
+        """Handle a press edge of the control-mode toggle (key or button)."""
+
+        self._handle_loiter_event(
+            self.loiter.press(time.monotonic())
+        )
+
+    def _loiter_release(self) -> None:
+        """Handle a release edge; a short tap still toggles Manual/Fly-By-Wire."""
+
+        if self.loiter.release(time.monotonic()) == REASON_TOGGLE:
+            self.toggle_control_mode()
+
+    def _poll_loiter(self) -> None:
+        """Advance the engage hold and re-check the gates for a running orbit."""
+
+        self._handle_loiter_event(
+            self.loiter.poll(time.monotonic(), self._loiter_gates())
+        )
+
+    def _handle_loiter_event(self, event) -> None:
+        """Annunciate a loiter transition and refresh the mode indicator."""
+
+        if event is None:
+            return
+
+        if event.kind == EVENT_ENGAGED:
+            logging.info("Loiter engaged: fixed-bank orbit")
+            self.play_sound(self.LOITER_SOUND_ENGAGED)
+        elif event.kind == EVENT_REFUSED:
+            logging.info("Loiter refused: %s", event.reason)
+            self.play_sound(self.LOITER_SOUND_REFUSED)
+        elif event.kind == EVENT_DISENGAGED:
+            logging.info("Loiter disengaged: %s", event.reason)
+            # A pilot-commanded exit is a normal handover; anything else means
+            # the mode lost a condition it needed and deserves the fault cue.
+            pilot_commanded = event.reason in (REASON_TOGGLE, REASON_STICK)
+            self.play_sound(
+                self.LOITER_SOUND_DISENGAGED
+                if pilot_commanded
+                else self.LOITER_SOUND_FAULT
+            )
+
+        self.update_control_mode_label()
+
+    def _loiter_command_channels(self, channels: list[int]) -> list[int]:
+        """Overwrite roll/pitch with the orbit's commanded attitude.
+
+        This runs *after* ``_apply_fbw_command_limits`` on purpose. That helper
+        rescales stick travel so the GS limit reads as full stick, but loiter
+        commands an absolute angle: putting it through the same scaling would
+        shrink a 20 degree request to 20 * (45/80) = 11 degrees. The angles are
+        instead clamped into the operator's FBW envelope by ``command_angles``
+        and then normalized against the FC's own hard limit, which is what the
+        firmware actually multiplies the channel by.
+
+        Trim is intentionally discarded here: trim biases a stick command, and
+        the FC's attitude PID already drives the surfaces to whatever the
+        commanded angle needs.
+        """
+
+        if len(channels) < 2:
+            channels.extend([CRSF_CHANNEL_CENTER] * (2 - len(channels)))
+        roll_deg, pitch_deg = self.loiter.command_angles(
+            self.fbw_max_roll_angle_deg, self.fbw_max_pitch_angle_deg
+        )
+        channels[0] = self._map_axis_to_crsf(
+            bank_to_channel_norm(roll_deg, self.FBW_FC_MAX_ROLL_ANGLE_DEG)
+        )
+        channels[1] = self._map_axis_to_crsf(
+            bank_to_channel_norm(pitch_deg, self.FBW_FC_MAX_PITCH_ANGLE_DEG)
+        )
+        return channels
 
     def _setup_throttle_mode_indicator(self) -> None:
         """Make the throttle mode indicator act as the mode toggle."""

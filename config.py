@@ -102,6 +102,24 @@ DEFAULT_CONFIG = {
         "max_roll_angle_deg": 45.0,
         "max_pitch_angle_deg": 30.0,
     },
+    "loiter": {
+        # Fixed-bank orbit flown through the Fly-By-Wire path (modules/loiter.py).
+        # Engaged by HOLDING the control-mode toggle (Ctrl+M or the joystick
+        # control-mode button) for hold_seconds.  Commanded angles are still
+        # clamped into the "fbw" limits above, and the FC's 80 degree hard
+        # clamp remains redundant behind both.
+        "hold_seconds": 2.0,
+        "bank_angle_deg": 20.0,
+        # Sign follows the FC roll convention (left roll positive), not a
+        # compass direction: confirm which way the model actually circles on
+        # the first flight and flip this to -1 if it turns the wrong way.
+        "bank_direction": 1,
+        # Stick travel (normalized, 0..1) away from where the stick sat at
+        # engage time that hands control back to the pilot.
+        "stick_break_norm": 0.25,
+        # Upper bound on one orbit, in seconds. 0 disables the timeout.
+        "max_duration_s": 300.0,
+    },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator
         "attitude_smoothing": 20,
