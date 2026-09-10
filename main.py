@@ -4021,8 +4021,19 @@ class MainWindow(QMainWindow):
         """Cache and publish the desired FBW attitude cue for the OSD."""
 
         self._latest_control_channels = list(channels[:16])
+        # The cue means "the attitude the ground station is commanding". During
+        # loiter the GS commands nothing -- the FC picks the bank and does not
+        # report its setpoint back -- so the honest cue is no cue at all.
+        # Deciding that here rather than at each call site matters: the
+        # transmit path and the stick path both publish this, and if they
+        # disagree the marker flickers between them at the beat frequency of
+        # their two timers.
+        loiter = getattr(self, "loiter", None)
+        loiter_engaged = loiter is not None and loiter.engaged
         show_desired = (
-            self.control_mode == "Fly-By-Wire" if enabled is None else enabled
+            (self.control_mode == "Fly-By-Wire" and not loiter_engaged)
+            if enabled is None
+            else enabled
         )
         if show_desired:
             self.desired_fbw_roll, self.desired_fbw_pitch = (
@@ -4045,14 +4056,10 @@ class MainWindow(QMainWindow):
         """Refresh the OSD cue from the same joystick-to-CRSF mapping as TX."""
 
         if self.loiter.engaged:
-            # The FC is choosing the attitude now and does not report the
-            # setpoint back, so the GS genuinely does not know it. Hide the cue
-            # rather than draw the pilot's idle stick as if it were commanding
-            # something.
-            self._update_desired_fbw_attitude(
-                getattr(self, "_latest_control_channels", [CRSF_CHANNEL_CENTER] * 16),
-                enabled=False,
-            )
+            # _update_desired_fbw_attitude already hides the cue while the
+            # orbit is flying; recomputing it from stick position here would
+            # publish the pilot's idle hand as a commanded attitude and fight
+            # that decision every transmit cycle.
             return
 
         if self.control_mode != "Fly-By-Wire":
