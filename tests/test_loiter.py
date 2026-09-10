@@ -24,6 +24,7 @@ from modules.loiter import (
     LOITER_ENGAGED,
     REASON_ATTITUDE_STALE,
     REASON_GROUNDED,
+    REASON_NOT_TRANSMITTING,
     REASON_NOT_FBW,
     REASON_NO_JOYSTICK,
     REASON_STICK,
@@ -54,6 +55,7 @@ def _ready_gates(stick_roll=0.0, stick_pitch=0.0):
         attitude_fresh=True,
         joystick_live=True,
         airborne=True,
+        transmitting=True,
         stick_roll=stick_roll,
         stick_pitch=stick_pitch,
     )
@@ -214,6 +216,40 @@ def test_engage_is_refused_on_stale_attitude():
         fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True
     )
     assert _engage(c, gates).reason == REASON_ATTITUDE_STALE
+
+
+def test_engage_is_refused_when_not_transmitting():
+    """Intent to transmit is not enough; the uplink must actually be up.
+
+    Terminating transmission stops RC frames while telemetry keeps arriving,
+    so every other gate stays satisfied with nothing reaching the aircraft.
+    Engaging then would arm CH10 locally, and the next "start transmitting"
+    click would carry it high as a fresh FC-side rising edge -- making that
+    click, not a loiter gesture, the thing that starts the orbit.
+    """
+
+    c = LoiterController()
+    gates = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        airborne=True, transmitting=False,
+    )
+    assert _engage(c, gates).reason == REASON_NOT_TRANSMITTING
+    assert not c.engaged
+
+
+def test_stopping_transmission_drops_a_running_orbit():
+    c = LoiterController()
+    _engage(c, _ready_gates())
+
+    event = c.poll(
+        3.0,
+        LoiterGates(
+            fbw_active=True, attitude_fresh=True, joystick_live=True,
+            airborne=True, transmitting=False,
+        ),
+    )
+    assert event.reason == REASON_NOT_TRANSMITTING
+    assert not c.engaged
 
 
 def test_engage_is_refused_on_the_ground():

@@ -144,6 +144,7 @@ from modules.loiter import (
     LOITER_STICK_BREAK_NORM,
     REASON_ATTITUDE_STALE,
     REASON_GROUNDED,
+    REASON_NOT_TRANSMITTING,
     REASON_NOT_FBW,
     REASON_NO_JOYSTICK,
     REASON_STICK,
@@ -2009,6 +2010,11 @@ class MainWindow(QMainWindow):
                     "Failed to close joystick after worker error", exc_info=True
                 )
             self.joystick = None
+            # The release edge for any hold in progress died with the handler,
+            # so abandon it. Otherwise a reconnect completing before the 2 s
+            # deadline lets the stale hold mature into an orbit the operator
+            # stopped asking for.
+            self.loiter.cancel_press()
             self.update_connection_status(self.control_status, False)
             self._update_flight_controls_indicator()
             # Losing the joystick removes roll/pitch authority (those channels
@@ -4289,8 +4295,16 @@ class MainWindow(QMainWindow):
             and last_stick_sample
             and (now - last_stick_sample) <= AUTO_TRIM_STICK_STALE_S
         )
+        # Intent to transmit is not enough: terminating transmission stops the
+        # RC frames while telemetry keeps arriving, so every other gate can
+        # stay satisfied with nothing reaching the aircraft. Reuse the same
+        # "really transmitting" test the TX indicator uses.
+        transmitting = bool(getattr(self, "transmission_active", False)) and (
+            self._crsf_serial_link_up()
+        )
         return LoiterGates(
             fbw_active=self.control_mode == "Fly-By-Wire",
+            transmitting=transmitting,
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
             airborne=self._is_airborne(),
@@ -5769,6 +5783,11 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
+        # Abandon a hold in progress. A running orbit is dropped by the
+        # transmitting gate on the next poll (audibly, which is right), but a
+        # pending hold has nothing to announce -- and letting it mature would
+        # arm CH10 with nothing to carry it.
+        self.loiter.cancel_press()
         # Without RC frames the FC aborts any running compass calibration on
         # its own (stale-link abort); reflect that in the button state.
         self._finish_compass_cal(reason="packet transmission stopped")
@@ -6013,6 +6032,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 logging.error("Failed to close joystick on reselect", exc_info=True)
             self.joystick = None
+            # Same reason as the worker-error path: the old handler owned the
+            # release edge for any hold in progress, so abandon it rather than
+            # let a reconnect complete the gesture on the operator's behalf.
+            self.loiter.cancel_press()
         if validate_port("joystick", port):
             try:
                 self.joystick = JoystickRawHandler(

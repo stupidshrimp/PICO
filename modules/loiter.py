@@ -26,6 +26,7 @@ Disengagement is deliberately easy and happens on any of:
   dropped to its limited-authority pass-through, so a stale estimate is
   treated as loss of the attitude loop this mode depends on),
 * the joystick disappearing OR its sample stream going stale,
+* packet transmission being terminated,
 * a bounded maximum duration elapsing.
 
 Engaging additionally requires the ground station to believe the aircraft is
@@ -86,6 +87,7 @@ REASON_NOT_FBW = "not_fbw"
 REASON_ATTITUDE_STALE = "attitude_stale"
 REASON_NO_JOYSTICK = "no_joystick"
 REASON_GROUNDED = "grounded"
+REASON_NOT_TRANSMITTING = "not_transmitting"
 REASON_TIMEOUT = "timeout"
 
 
@@ -98,6 +100,14 @@ class LoiterGates:
     cached axis values when the stream stalls, so an object-existence check
     would keep loiter engaged while stick movement and button releases could no
     longer be observed -- disabling the pilot's primary way out of the orbit.
+
+    ``transmitting`` must reflect a genuinely open uplink, not merely the
+    intent to transmit.  Terminating transmission from the configuration page
+    stops the RC frames while leaving telemetry flowing, so every other gate
+    here can stay satisfied with nothing reaching the aircraft.  Engaging then
+    would arm CH10 locally and the NEXT "start transmitting" click would carry
+    it high as a fresh edge -- making the click that restores control, rather
+    than a loiter gesture, the thing that starts the orbit.
 
     ``airborne`` is the ground station's own airborne estimate.  The FC gates on
     its own latch regardless; checking here as well is what lets a hold made on
@@ -112,6 +122,7 @@ class LoiterGates:
     attitude_fresh: bool
     joystick_live: bool
     airborne: bool = False
+    transmitting: bool = True
     stick_roll: Optional[float] = None
     stick_pitch: Optional[float] = None
 
@@ -338,6 +349,8 @@ class LoiterController:
     def _refusal_reason(gates: LoiterGates) -> Optional[str]:
         """Why loiter may not engage right now, or ``None`` when it may."""
 
+        if not gates.transmitting:
+            return REASON_NOT_TRANSMITTING
         if not gates.joystick_live:
             return REASON_NO_JOYSTICK
         if not gates.fbw_active:
@@ -351,6 +364,11 @@ class LoiterController:
     def _hold_failure_reason(self, now: float, gates: LoiterGates) -> Optional[str]:
         """Why a running orbit must stop, or ``None`` when it may continue."""
 
+        if not gates.transmitting:
+            # Nothing is reaching the aircraft, so the local "engaged" state is
+            # a fiction. Dropping it here also stops CH10 being left high for
+            # the next start-transmitting click to deliver as a fresh edge.
+            return REASON_NOT_TRANSMITTING
         if not gates.joystick_live:
             return REASON_NO_JOYSTICK
         if not gates.fbw_active:
