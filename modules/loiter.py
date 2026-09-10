@@ -368,6 +368,32 @@ class LoiterController:
         self._release_consumed = False
         self._state = LOITER_DISENGAGED
 
+    def abort(self, reason: str) -> Optional[LoiterEvent]:
+        """Force loiter off immediately, outside the poll cycle.
+
+        The gates in ``poll()`` are periodic, so they only catch a condition
+        that is still false when the next tick runs.  A transport or handler
+        being torn down and rebuilt inside a single GUI callback never presents
+        such a tick: the link looks continuously healthy across the swap, and a
+        running orbit would survive a device change that removed the very input
+        the pilot would take over with -- or, worse, seed the replacement
+        transport with CH10 already high, which a freshly connected FC reads as
+        a rising edge and flies.
+
+        Callers must therefore abort synchronously at the teardown itself.
+        Cancels any outstanding press too, so the eventual release is ignored
+        rather than read as a tap.
+        """
+
+        self._press_active = False
+        self._press_source = None
+        self._press_start = None
+        self._release_consumed = False
+        if self._state == LOITER_ENGAGED:
+            return self._disengage(reason)
+        self._state = LOITER_DISENGAGED
+        return None
+
     # ------------------------------------------------------------------
     # Periodic update
     # ------------------------------------------------------------------

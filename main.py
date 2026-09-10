@@ -2034,11 +2034,13 @@ class MainWindow(QMainWindow):
                     "Failed to close joystick after worker error", exc_info=True
                 )
             self.joystick = None
-            # The release edge for any hold in progress died with the handler,
-            # so abandon it. Otherwise a reconnect completing before the 2 s
-            # deadline lets the stale hold mature into an orbit the operator
-            # stopped asking for.
-            self.loiter.cancel_press()
+            # Abort rather than cancel_press: that is deliberately a no-op once
+            # the hold has matured, so an ENGAGED orbit would survive losing the
+            # very device the pilot takes over with. Clearing the sample
+            # timestamp keeps joystick_live honest until a replacement actually
+            # produces one, instead of coasting on the dead handler's.
+            self._last_stick_sample_time = 0.0
+            self._abort_loiter(REASON_NO_JOYSTICK)
             self.update_connection_status(self.control_status, False)
             self._update_flight_controls_indicator()
             # Losing the joystick removes roll/pitch authority (those channels
@@ -4357,6 +4359,18 @@ class MainWindow(QMainWindow):
         if self.loiter.release(time.monotonic(), source) == REASON_TOGGLE:
             self.toggle_control_mode()
 
+    def _abort_loiter(self, reason: str) -> None:
+        """Force loiter off synchronously at a teardown the gates cannot see.
+
+        A transport or joystick handler replaced inside one GUI callback never
+        presents the periodic gates with an unhealthy tick, so a running orbit
+        would otherwise survive the swap -- and the rebuilt transport would be
+        seeded with CH10 already high for a reconnecting FC to read as a fresh
+        request edge.
+        """
+
+        self._handle_loiter_event(self.loiter.abort(reason))
+
     def _poll_loiter(self) -> None:
         """Advance the engage hold and re-check the gates for a running orbit."""
 
@@ -5813,11 +5827,10 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
-        # Abandon a hold in progress. A running orbit is dropped by the
-        # transmitting gate on the next poll (audibly, which is right), but a
-        # pending hold has nothing to announce -- and letting it mature would
-        # arm CH10 with nothing to carry it.
-        self.loiter.cancel_press()
+        # Drop loiter at the teardown rather than waiting for the transmitting
+        # gate: synchronous, so CH10 cannot be left high for a later restart to
+        # deliver as a fresh edge.
+        self._abort_loiter(REASON_NOT_TRANSMITTING)
         # Without RC frames the FC aborts any running compass calibration on
         # its own (stale-link abort); reflect that in the button state.
         self._finish_compass_cal(reason="packet transmission stopped")
@@ -6062,10 +6075,11 @@ class MainWindow(QMainWindow):
             except Exception:
                 logging.error("Failed to close joystick on reselect", exc_info=True)
             self.joystick = None
-            # Same reason as the worker-error path: the old handler owned the
-            # release edge for any hold in progress, so abandon it rather than
-            # let a reconnect complete the gesture on the operator's behalf.
-            self.loiter.cancel_press()
+            # Same reason as the worker-error path, and the same reason abort
+            # is used rather than cancel_press: a running orbit must not
+            # outlive the device its takeover input comes from.
+            self._last_stick_sample_time = 0.0
+            self._abort_loiter(REASON_NO_JOYSTICK)
         if validate_port("joystick", port):
             try:
                 self.joystick = JoystickRawHandler(
@@ -6130,6 +6144,11 @@ class MainWindow(QMainWindow):
         # would put CH7 straight back into the request band on auto-reconnect
         # and could restart the FC calibration with nobody at the button.
         self._finish_compass_cal(reason="CRSF link disconnected or reselected")
+        # Same hazard, same reasoning as the compass-cal line above: a stale
+        # loiter request would seed the rebuilt transport with CH10 high, and a
+        # reconnecting airborne FC reads that as a fresh rising edge and enters
+        # the orbit with nobody having asked for it.
+        self._abort_loiter(REASON_NOT_TRANSMITTING)
         if not preserve_preference:
             self.crsf_cfg["port"] = port
             self._crsf_desired_port = port

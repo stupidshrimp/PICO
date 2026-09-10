@@ -552,3 +552,55 @@ def test_a_press_from_either_source_can_disengage():
     assert event.kind == EVENT_DISENGAGED
     assert event.reason == REASON_TOGGLE
     assert not c.engaged
+
+
+# ---------------------------------------------------------------------------
+# Synchronous abort (teardown the periodic gates cannot observe)
+# ---------------------------------------------------------------------------
+
+
+def test_abort_disengages_a_running_orbit():
+    """Teardown inside one GUI callback never shows the gates an unhealthy tick.
+
+    A CRSF transport or joystick handler torn down and rebuilt synchronously
+    looks continuously healthy to poll(), so a running orbit would survive the
+    swap -- and the rebuilt transport would be seeded with CH10 already high
+    for a reconnecting FC to read as a fresh request edge.
+    """
+
+    c = LoiterController()
+    _engage(c, _ready_gates())
+
+    event = c.abort(REASON_NOT_TRANSMITTING)
+    assert event is not None
+    assert event.kind == EVENT_DISENGAGED
+    assert event.reason == REASON_NOT_TRANSMITTING
+    assert not c.engaged
+    assert c.state == LOITER_DISENGAGED
+
+
+def test_abort_cancels_a_pending_hold_and_its_release():
+    c = LoiterController()
+    c.press(0.0)
+    assert c.abort(REASON_NO_JOYSTICK) is None, "nothing was flying, nothing to announce"
+    assert c.state == LOITER_DISENGAGED
+    # The hold must not mature afterwards...
+    assert c.poll(5.0, _ready_gates()) is None
+    assert not c.engaged
+    # ...and its release must not read as a tap.
+    assert c.release(5.1) is None
+
+
+def test_abort_when_idle_is_silent():
+    c = LoiterController()
+    assert c.abort(REASON_NO_JOYSTICK) is None
+    assert c.state == LOITER_DISENGAGED
+
+
+def test_abort_leaves_the_controller_reusable():
+    c = LoiterController()
+    _engage(c, _ready_gates())
+    c.abort(REASON_NO_JOYSTICK)
+
+    c.press(10.0)
+    assert c.poll(12.0, _ready_gates()).kind == EVENT_ENGAGED
