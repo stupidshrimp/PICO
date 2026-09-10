@@ -110,6 +110,8 @@ typedef struct {
     bool transitioned;   /* running changed on this call */
 } LoiterState;
 
+/* Initialise the latch. Boot-time only: see loiterUpdate() for why calling
+ * this from the RC failsafe would reintroduce automatic loiter resume. */
 static inline void loiterStateInit(LoiterState* st)
 {
     st->running = false;
@@ -119,9 +121,18 @@ static inline void loiterStateInit(LoiterState* st)
 
 /* Advance the latch and return whether the orbit flies this cycle.
  *
- * Call every control cycle while the FBW branch is active, and call
- * loiterStateInit() from the RC failsafe so a link recovery re-arms rather
- * than resuming an orbit whose gates were never re-checked.
+ * Call this EVERY control cycle, before the caller picks a servo mode, and
+ * pass the real gate values. Calling it only from inside a Fly-By-Wire branch
+ * hides failing gates that route control elsewhere: an unusable attitude
+ * estimate takes a pass-through path, the latch never observes it, and the
+ * orbit resumes silently once the estimate recovers.
+ *
+ * Do NOT reset the state from the RC failsafe. It is tempting -- the orbit
+ * must not outlive the link -- but the rcFresh gate already stops it, and
+ * clearing the latch makes a standing high CH10 look released, so the first
+ * recovered packet reads as a synthetic rising edge and the aircraft resumes
+ * an orbit on its own after a dropout. Leave the request latched and let the
+ * gate block it. loiterStateInit() is for initialisation only.
  *
  * ``transitioned`` reports a change in the EFFECTIVE state, which is what the
  * caller must reset its attitude PIDs on. Watching the requested mode instead

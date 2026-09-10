@@ -125,6 +125,38 @@ def test_refused_hold_does_not_toggle_on_release_either():
     assert c.release(2.1) is None
 
 
+def test_unmatched_release_does_not_toggle():
+    """A release with no preceding press must be ignored.
+
+    The joystick can genuinely deliver one: connect or reconnect while button
+    13 is already held and the parser forwards the eventual "RELEASED" with no
+    "PRESSED" before it. Treating that as a tap would flip Manual/Fly-By-Wire
+    with nobody having pressed anything.
+    """
+
+    c = LoiterController()
+    assert c.release(0.0) is None
+    assert c.state == LOITER_DISENGAGED
+    # And a second one, in case the stream repeats.
+    assert c.release(0.1) is None
+
+
+def test_release_is_consumed_once_only():
+    """A duplicated release must not toggle twice off one press."""
+
+    c = LoiterController()
+    c.press(0.0)
+    assert c.release(0.2) == REASON_TOGGLE
+    assert c.release(0.3) is None
+
+
+def test_cancelled_press_release_is_ignored_not_treated_as_a_tap():
+    c = LoiterController()
+    c.press(0.0)
+    c.cancel_press()
+    assert c.release(0.5) is None
+
+
 def test_hold_progress_reports_the_arming_fraction():
     c = LoiterController()
     gates = _ready_gates()

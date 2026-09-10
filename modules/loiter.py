@@ -187,6 +187,14 @@ class LoiterController:
         # loiter, been refused, or disengaged a running orbit).  The matching
         # release must then NOT also fire the ordinary mode toggle.
         self._release_consumed = False
+        # True between a press edge and its matching release.  Guards against
+        # an UNMATCHED release, which the joystick really can deliver: connect
+        # or reconnect while the button is already held and the parser forwards
+        # the eventual "RELEASED" with no "PRESSED" before it.  Treating that as
+        # a tap would flip Manual/Fly-By-Wire with nobody having pressed
+        # anything.  (The Ctrl+M path guards this in the event filter; the
+        # joystick path has no equivalent, so it belongs here.)
+        self._press_active = False
 
     # ------------------------------------------------------------------
     # Introspection
@@ -234,6 +242,8 @@ class LoiterController:
         the instant they touch the control.
         """
 
+        self._press_active = True
+
         if self._state == LOITER_ENGAGED:
             self._release_consumed = True
             return self._disengage(REASON_TOGGLE)
@@ -248,8 +258,15 @@ class LoiterController:
 
         Returns ``"toggle"`` when the press was a short tap that should perform
         the ordinary Manual/Fly-By-Wire toggle, and ``None`` when the press has
-        already been consumed by engaging, refusing, or disengaging loiter.
+        already been consumed by engaging, refusing, or disengaging loiter, or
+        when no press was outstanding at all.
         """
+
+        if not self._press_active:
+            # Unmatched release (see _press_active): no press was observed, so
+            # there is no tap to act on.
+            return None
+        self._press_active = False
 
         consumed = self._release_consumed
         self._release_consumed = False
@@ -274,6 +291,9 @@ class LoiterController:
         if self._state != LOITER_ARMING:
             return
 
+        # The abandoned press has no matching action left, so its eventual
+        # release must be ignored rather than read as a tap.
+        self._press_active = False
         self._press_start = None
         self._release_consumed = False
         self._state = LOITER_DISENGAGED
