@@ -4349,8 +4349,12 @@ class MainWindow(QMainWindow):
         # running orbit the FC was perfectly happy to keep flying.
         gs_airborne = self._is_airborne()
         airspeed_mph = self._safe_float(self.telemetry_state.get("airspeed_mph"))
+        height_agl_ft = self._current_altitude_agl_ft()
         self._fc_airborne_latched = fc_airborne_latched(
-            getattr(self, "_fc_airborne_latched", False), gs_airborne, airspeed_mph
+            getattr(self, "_fc_airborne_latched", False),
+            gs_airborne,
+            airspeed_mph,
+            height_agl_ft,
         )
 
         return LoiterGates(
@@ -4359,11 +4363,15 @@ class MainWindow(QMainWindow):
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
             airborne=self._fc_airborne_latched,
-            # Re-derived, never the latch: a stale latch must not authorise a
-            # new request. After a watchdog reset in flight the firmware clears
-            # its airborne flag on airspeed, which the GS cannot observe, so
-            # the latch can read true while the FC has dropped the orbit.
-            engage_airborne=fc_airborne_engage_ok(gs_airborne, airspeed_mph),
+            # Re-derived, never the latch, and BOTH halves of the firmware's
+            # condition. The latch can read true while the FC has dropped its
+            # own: after a watchdog reset it clears on airspeed (invisible to
+            # the GS), and in normal flight it clears at 1.5 m while the GS
+            # needs a sustained low-and-slow landing debounce -- so a fast low
+            # pass leaves the GS airborne at cruise speed with the FC grounded.
+            engage_airborne=fc_airborne_engage_ok(
+                gs_airborne, airspeed_mph, height_agl_ft
+            ),
             # Physical stick position, not the sensitivity-scaled command:
             # see _capture_stick_state. getattr throughout because the loiter
             # controller is built earlier in __init__ than these caches, so

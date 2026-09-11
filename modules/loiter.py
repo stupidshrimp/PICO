@@ -95,6 +95,20 @@ LOITER_MAX_STICK_BREAK_NORM = 0.75
 # The orbit then never flies while the ground station believes it is flying.
 FC_AIRBORNE_ENGAGE_AIRSPEED_MPH = 17.9
 
+# The other half of that engage condition: the firmware requires height above
+# its ground reference as well as airspeed.  Authority is
+# AIRBORNE_ENGAGE_HEIGHT_M (3.0 m) in flight_controller/Main.ino; the test suite
+# reads that macro too.
+#
+# Height is where the two detectors diverge most sharply.  The FC clears its
+# latch the moment height falls to AIRBORNE_DISENGAGE_HEIGHT_M (1.5 m) and will
+# not set it again below 3 m, while the ground station needs low speed AND low
+# altitude sustained for its landing debounce.  Through a fast low pass or a
+# touch-and-go the GS therefore stays airborne at full cruise speed while the
+# FC has already gone grounded -- so an engage check on airspeed alone approves
+# a request the firmware will reject and never retry.
+FC_AIRBORNE_ENGAGE_HEIGHT_FT = 9.84
+
 # Which input delivered a press.  Releases are matched against it so an
 # unmatched edge from one control cannot consume the other's press.
 PRESS_SOURCE_KEY = "key"
@@ -187,32 +201,49 @@ class LoiterEvent:
 
 
 def fc_airborne_engage_ok(
-    gs_airborne: bool, airspeed_mph: Optional[float]
+    gs_airborne: bool,
+    airspeed_mph: Optional[float],
+    height_agl_ft: Optional[float],
 ) -> bool:
-    """The FC's airborne ENGAGE condition, evaluated fresh.
+    """The FC's airborne ENGAGE condition, evaluated fresh, in FULL.
 
     Used to authorise a NEW request, never to keep an existing one running.
     A request the FC refuses is never retried -- its rising-edge rule keeps it
     refused even once the FC does latch airborne -- so accepting one on a stale
-    belief leaves the orbit permanently unflown while the operator is told
-    otherwise.  Re-deriving the condition rather than trusting a latch is what
-    makes that impossible.
+    or partial belief leaves the orbit permanently unflown while the operator is
+    told otherwise.  Re-deriving the condition rather than trusting a latch is
+    what makes that impossible.
 
-    A missing airspeed reading refuses: the GS cannot establish the FC's
-    condition without one.
+    BOTH halves of the firmware's condition are required.  Airspeed alone is
+    not enough: the FC also needs height above its ground reference, and that
+    is where the two detectors diverge most -- through a fast low pass the
+    ground station stays airborne at cruise speed while the FC has already
+    cleared its latch on height.
+
+    A missing reading of either refuses.  The GS cannot establish the FC's
+    condition without both, and refusing is the safe answer: it costs the
+    operator a repeated gesture, where accepting costs them an orbit that
+    never flies.
     """
 
-    if not gs_airborne or airspeed_mph is None:
+    if not gs_airborne or airspeed_mph is None or height_agl_ft is None:
         return False
     try:
         speed = float(airspeed_mph)
+        height = float(height_agl_ft)
     except (TypeError, ValueError):
         return False
-    return speed >= FC_AIRBORNE_ENGAGE_AIRSPEED_MPH
+    return (
+        speed >= FC_AIRBORNE_ENGAGE_AIRSPEED_MPH
+        and height >= FC_AIRBORNE_ENGAGE_HEIGHT_FT
+    )
 
 
 def fc_airborne_latched(
-    previous: bool, gs_airborne: bool, airspeed_mph: Optional[float]
+    previous: bool,
+    gs_airborne: bool,
+    airspeed_mph: Optional[float],
+    height_agl_ft: Optional[float],
 ) -> bool:
     """Track whether the FC probably still considers the aircraft airborne.
 
@@ -245,7 +276,7 @@ def fc_airborne_latched(
         return False
     if previous:
         return True
-    return fc_airborne_engage_ok(gs_airborne, airspeed_mph)
+    return fc_airborne_engage_ok(gs_airborne, airspeed_mph, height_agl_ft)
 
 
 def loiter_channel_value(engaged: bool) -> int:
