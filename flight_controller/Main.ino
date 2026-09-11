@@ -5525,13 +5525,25 @@ void loop() {
     // first seen only after convergence, and so read as a valid rising edge.
     const bool loiterAttitudeUsable =
         attitudeEstimateFresh(servoUpdateUs) && attitudeEstimateConvergedForFbw();
+    // Barometric altitude for the hold. Absolute (not relative to the boot
+    // ground reference) because the target is captured at engage, so a
+    // watchdog-recovery boot that never captured a ground reference can still
+    // hold the height it was circling at. latestAmbientPressurePa > 0 proves
+    // the cache has produced at least one real reading rather than its zero
+    // default, which would otherwise read as "sea level" and command a dive.
+    const float loiterAltitudeM = sensorAltitudeCm * 0.01f;
+    const bool loiterAltitudeValid = barometerHealthy && (latestAmbientPressurePa > 0.0f);
+    const bool loiterAirspeedValid = airspeedInputFresh(servoUpdateUs);
+
     const bool loiterActive = loiterUpdate(
         &loiterState,
         navMode == NAV_MODE_LOITER,
         rcFresh,
         controlMode == CONTROL_MODE_FLY_BY_WIRE,
         loiterAttitudeUsable,
-        aircraftAirborne);
+        aircraftAirborne,
+        loiterAltitudeM,
+        loiterAltitudeValid);
     if (loiterState.transitioned) {
       // The setpoint source just changed in one direction or the other, so
       // clear the integrators before they apply correction earned against the
@@ -5619,7 +5631,10 @@ void loop() {
       // only consumes its result; losing any gate drops loiterActive there and
       // hands the stick straight back on this same cycle.
       if (loiterActive) {
-        loiterDesiredAttitude(FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
+        loiterDesiredAttitude(&loiterState,
+                              FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
+                              loiterAltitudeM, loiterAltitudeValid,
+                              latestAirspeedMph, loiterAirspeedValid,
                               &desiredRoll, &desiredPitch);
         ++controlDebugCounters.loiterCycles;
       }

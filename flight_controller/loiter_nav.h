@@ -57,9 +57,44 @@
  * the model actually circles is a first-flight observation; flip the sign here
  * and reflash if it turns the wrong way.
  * ------------------------------------------------------------------------- */
-#define LOITER_BANK_ANGLE_DEG  20.0f
+#define LOITER_BANK_ANGLE_DEG  15.0f
 #define LOITER_PITCH_ANGLE_DEG 0.0f
 #define LOITER_BANK_DIRECTION  1.0f
+
+/* ---------------------------------------------------------------------------
+ * Altitude hold
+ *
+ * A fixed bank with a level PITCH ATTITUDE does not hold height: in a turn the
+ * lift vector tilts, so at 15 deg of bank about 3.4% of it no longer opposes
+ * gravity and the orbit settles the whole time it runs. Holding altitude turns
+ * the orbit from something the pilot must watch descend into something that
+ * stays put.
+ *
+ * The loop is deliberately timid, because pitch-holds-altitude/throttle-holds-
+ * speed is the coupling that kills aeroplanes:
+ *
+ *   - PROPORTIONAL ONLY. An integrator against an airframe whose phugoid
+ *     period has not been measured will wind up and porpoise. Steady-state
+ *     droop is the accepted price: expect to settle a few metres low, because
+ *     holding height in the bank needs a small standing nose-up command and
+ *     only a standing error can produce one without an integrator.
+ *   - A hard pitch clamp well inside the FBW envelope, so the loop can never
+ *     command a large attitude however large the altitude error grows.
+ *   - An AIRSPEED FLOOR that outranks altitude entirely. A loop that pitches
+ *     up to hold height while the throttle cannot sustain the climb will fly
+ *     the wing to a stall. Below the floor -- or with no trustworthy airspeed
+ *     at all -- the altitude loop is abandoned and pitch returns to level,
+ *     which is the un-held orbit: it descends and gains speed. That is the
+ *     same behaviour as having no altitude hold, so the degraded case is never
+ *     worse than not having the feature.
+ *
+ * LOITER_MIN_AIRSPEED_MPH MUST be set above the airframe's measured clean
+ * stall speed before flying this. The shipped value is a placeholder chosen
+ * below the auto-throttle default, not a measurement.
+ * ------------------------------------------------------------------------- */
+#define LOITER_ALT_KP_DEG_PER_M    0.5f
+#define LOITER_ALT_PITCH_LIMIT_DEG 10.0f
+#define LOITER_MIN_AIRSPEED_MPH    18.0f
 
 /* True when CH10 explicitly requests the orbit. */
 static inline bool loiterRequestedFromChannel(uint16_t channelValue)
@@ -82,8 +117,8 @@ static inline bool loiterRequestedFromChannel(uint16_t channelValue)
  *   attitudeUsable  - the attitude estimate is fresh AND converged. Banking on
  *                     a frozen or still-settling estimate would hold whatever
  *                     error the filter last believed.
- *   airborne        - the latched airborne state. A commanded 20 degree bank
- *                     during a ground roll is a dropped wingtip.
+ *   airborne        - the latched airborne state. A commanded bank during a
+ *                     ground roll is a dropped wingtip.
  */
 static inline bool loiterMayEngage(bool requested,
                                    bool rcFresh,
@@ -99,8 +134,8 @@ static inline bool loiterMayEngage(bool requested,
  * loiterMayEngage() alone is not enough to drive the orbit, because it is a
  * CONTINUOUS predicate: a request standing on CH10 while the aircraft is still
  * on the ground would satisfy it the instant the airborne latch set, and the
- * model would roll into a 20 degree orbit moments after takeoff without the
- * operator touching anything. Requiring a rising edge on the request closes
+ * model would roll into the orbit moments after takeoff without the operator
+ * touching anything. Requiring a rising edge on the request closes
  * that: a request that was not flyable when it arrived stays refused until the
  * ground station drops CH10 and raises it again.
  */
@@ -108,6 +143,12 @@ typedef struct {
     bool running;        /* the orbit is flying this cycle */
     bool prevRequested;  /* CH10 state last cycle, for edge detection */
     bool transitioned;   /* running changed on this call */
+    /* Altitude captured when this orbit engaged, and whether it is usable.
+     * Taken at engage rather than from a ground reference so the hold works
+     * from wherever the pilot chose to start circling, and needs no agreement
+     * with the ground station about what the target is. */
+    float targetAltitudeM;
+    bool  targetAltitudeValid;
 } LoiterState;
 
 /* Initialise the latch. Boot-time only: see loiterUpdate() for why calling
@@ -117,6 +158,8 @@ static inline void loiterStateInit(LoiterState* st)
     st->running = false;
     st->prevRequested = false;
     st->transitioned = false;
+    st->targetAltitudeM = 0.0f;
+    st->targetAltitudeValid = false;
 }
 
 /* Advance the latch and return whether the orbit flies this cycle.
@@ -146,7 +189,9 @@ static inline bool loiterUpdate(LoiterState* st,
                                 bool rcFresh,
                                 bool fbwActive,
                                 bool attitudeUsable,
-                                bool airborne)
+                                bool airborne,
+                                float altitudeM,
+                                bool altitudeValid)
 {
     const bool wasRunning = st->running;
     const bool gatesOk =
@@ -166,21 +211,62 @@ static inline bool loiterUpdate(LoiterState* st,
 
     st->prevRequested = requested;
     st->transitioned = (st->running != wasRunning);
+
+    if (st->transitioned) {
+        if (st->running) {
+            /* Capture the hold target at the moment the orbit starts. An
+             * unusable barometer here simply means no altitude hold for this
+             * orbit -- pitch stays level, which is the un-held behaviour --
+             * rather than holding against a number that means nothing. */
+            st->targetAltitudeM = altitudeM;
+            st->targetAltitudeValid = altitudeValid;
+        } else {
+            st->targetAltitudeValid = false;
+        }
+    }
+
     return st->running;
 }
 
 /* Desired attitude for the orbit, in the FBW PIDs' own convention.
  *
- * Clamped into the caller's FBW envelope so that editing the bank constant
- * above can never command past the limit the rest of the firmware enforces.
+ * Roll is the fixed bank. Pitch holds the altitude captured at engage, unless
+ * anything about that is untrustworthy -- no captured target, an unusable
+ * barometer now, no trustworthy airspeed, or airspeed below the floor -- in
+ * which case it returns to level and the orbit simply descends as it would
+ * without altitude hold. Every failure path degrades to the un-held orbit
+ * rather than to a held one flying on bad numbers.
+ *
+ * Both axes are clamped into the caller's FBW envelope, so editing the
+ * constants above can never command past the limit the rest of the firmware
+ * enforces.
  */
-static inline void loiterDesiredAttitude(float maxRollDeg,
+static inline void loiterDesiredAttitude(const LoiterState* st,
+                                         float maxRollDeg,
                                          float maxPitchDeg,
+                                         float altitudeM,
+                                         bool altitudeValid,
+                                         float airspeedMph,
+                                         bool airspeedValid,
                                          float* desiredRollDeg,
                                          float* desiredPitchDeg)
 {
     float roll = LOITER_BANK_ANGLE_DEG * LOITER_BANK_DIRECTION;
     float pitch = LOITER_PITCH_ANGLE_DEG;
+
+    /* The airspeed floor outranks altitude: holding height matters less than
+     * not flying the wing to a stall, and level pitch in a bank descends,
+     * which is how the aircraft recovers the speed. */
+    const bool speedOk = airspeedValid && (airspeedMph >= LOITER_MIN_AIRSPEED_MPH);
+    const bool holdAltitude =
+        (st != 0) && st->running && st->targetAltitudeValid && altitudeValid && speedOk;
+
+    if (holdAltitude) {
+        const float errorM = st->targetAltitudeM - altitudeM;
+        pitch = LOITER_ALT_KP_DEG_PER_M * errorM;
+        if (pitch > LOITER_ALT_PITCH_LIMIT_DEG) { pitch = LOITER_ALT_PITCH_LIMIT_DEG; }
+        if (pitch < -LOITER_ALT_PITCH_LIMIT_DEG) { pitch = -LOITER_ALT_PITCH_LIMIT_DEG; }
+    }
 
     const float rollLimit = (maxRollDeg < 0.0f) ? -maxRollDeg : maxRollDeg;
     const float pitchLimit = (maxPitchDeg < 0.0f) ? -maxPitchDeg : maxPitchDeg;

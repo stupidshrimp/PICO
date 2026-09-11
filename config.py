@@ -111,8 +111,11 @@ DEFAULT_CONFIG = {
         # Stick travel (normalized, 0..1) away from where the stick sat at
         # engage time that hands control back to the pilot.
         "stick_break_norm": 0.25,
-        # Upper bound on one orbit, in seconds. 0 disables the timeout.
-        "max_duration_s": 300.0,
+        # Upper bound on one orbit, in seconds. 0 disables the timeout, which
+        # is the default now that the FC holds altitude: the orbit no longer
+        # runs out of height, so an arbitrary clock is a worse bound than the
+        # gates that track conditions actually worth stopping for.
+        "max_duration_s": 0.0,
     },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator

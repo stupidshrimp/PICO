@@ -10,7 +10,14 @@
  *      checked in isolation so a future edit cannot quietly drop a condition.
  *   3. Geometry: the commanded bank matches the configured angle and sign, and
  *      stays clamped inside the FBW envelope even if the bank constant is
- *      edited past it. Pitch is level.
+ *      edited past it.
+ *   4. Altitude hold: the target is captured at engage and does not follow the
+ *      aircraft, the sense is right (below target = nose UP -- getting this
+ *      backwards flies it into the ground), the output clamps well inside the
+ *      FBW envelope, and EVERY bad-data path -- below the airspeed floor,
+ *      stale pitot, unusable barometer at engage or in flight, no state --
+ *      falls back to level pitch, i.e. the un-held orbit. The degraded case is
+ *      never worse than not having the feature.
  *
  * Build & run:
  *   c++ -std=c++17 -I.. -O2 -o /tmp/loiter_test loiter_test.cpp && /tmp/loiter_test
@@ -109,21 +116,21 @@ static void test_ground_request_does_not_spring_after_takeoff() {
     loiterStateInit(&st);
 
     /* Operator completes the hold while still on the ground. */
-    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false, 100.0f, true),
           "a grounded request must not fly");
-    check(!loiterUpdate(&st, true, true, true, true, false), "still grounded, still refused");
+    check(!loiterUpdate(&st, true, true, true, true, false, 100.0f, true), "still grounded, still refused");
 
     /* Takeoff: the airborne latch sets while CH10 is still high. This is the
-     * exact case that would otherwise roll the model into a 20 degree orbit
-     * seconds after liftoff with no operator action. */
-    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/true),
+     * exact case that would otherwise roll the model into the orbit seconds
+     * after liftoff with no operator action. */
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/true, 100.0f, true),
           "the airborne latch setting must NOT engage a standing request");
-    check(!loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "and it must stay refused on later cycles");
 
     /* Only dropping and re-raising CH10 arms it. */
-    check(!loiterUpdate(&st, false, true, true, true, true), "release clears the request");
-    check(loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "release clears the request");
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "a fresh request while airborne must engage");
 
     std::printf("  ok\n");
@@ -134,14 +141,14 @@ static void test_latch_drops_and_requires_a_new_edge() {
 
     LoiterState st;
     loiterStateInit(&st);
-    check(!loiterUpdate(&st, false, true, true, true, true), "start released");
-    check(loiterUpdate(&st, true, true, true, true, true), "rising edge engages");
+    check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "start released");
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "rising edge engages");
 
     /* Losing the airborne latch (a low pass near the ground) drops the orbit. */
-    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false),
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false, 100.0f, true),
           "losing airborne must drop the orbit");
     /* Regaining it must NOT silently resume under the same standing request. */
-    check(!loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "regaining airborne must not resume without a new request");
 
     std::printf("  ok\n");
@@ -152,24 +159,24 @@ static void test_attitude_outage_does_not_resume_silently() {
 
     LoiterState st;
     loiterStateInit(&st);
-    loiterUpdate(&st, false, true, true, true, true);
-    check(loiterUpdate(&st, true, true, true, true, true), "orbiting");
+    loiterUpdate(&st, false, true, true, true, true, 100.0f, true);
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "orbiting");
 
     /* A dead IMU or an unconverged EKF after a watchdog boot routes control to
      * the pass-through branch. The latch must still be advanced with the real
      * value: if it is skipped, `running` stays set through the outage. */
-    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true),
+    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true, 100.0f, true),
           "an unusable attitude estimate must drop the orbit");
     check(st.transitioned, "and must flag the transition so the PIDs reset");
 
     /* Recovery under the same standing request must NOT resume. */
-    check(!loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "recovery must not resume without a fresh request edge");
     check(!st.transitioned, "and must not re-flag a transition");
 
     /* Only a CH10 cycle brings it back. */
-    check(!loiterUpdate(&st, false, true, true, true, true), "release");
-    check(loiterUpdate(&st, true, true, true, true, true), "fresh request re-engages");
+    check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "release");
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "fresh request re-engages");
 
     std::printf("  ok\n");
 }
@@ -184,13 +191,13 @@ static void test_request_during_convergence_is_refused() {
      * the FC is in limited-authority pass-through. Critically the ground
      * station CANNOT see this -- attitude telemetry keeps flowing -- so it
      * will happily raise CH10. The latch has to catch it. */
-    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true),
+    check(!loiterUpdate(&st, true, true, true, /*attitudeUsable=*/false, true, 100.0f, true),
           "a request raised during convergence must not fly");
-    check(!loiterUpdate(&st, true, true, true, false, true), "still refused");
+    check(!loiterUpdate(&st, true, true, true, false, true, 100.0f, true), "still refused");
 
     /* Convergence completes. Without observing the request during the outage
      * this would look like a first rising edge and be accepted. */
-    check(!loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "convergence completing must not accept the standing request");
 
     std::printf("  ok\n");
@@ -202,24 +209,24 @@ static void test_transition_flag_tracks_effective_state() {
     LoiterState st;
     loiterStateInit(&st);
 
-    loiterUpdate(&st, false, true, true, true, true);
+    loiterUpdate(&st, false, true, true, true, true, 100.0f, true);
     check(!st.transitioned, "no change means no reset");
 
-    loiterUpdate(&st, true, true, true, true, true);
+    loiterUpdate(&st, true, true, true, true, true, 100.0f, true);
     check(st.transitioned, "engaging must flag a transition");
 
-    loiterUpdate(&st, true, true, true, true, true);
+    loiterUpdate(&st, true, true, true, true, true, 100.0f, true);
     check(!st.transitioned, "steady orbit must not keep resetting the PIDs");
 
-    loiterUpdate(&st, true, true, /*fbwActive=*/false, true, true);
+    loiterUpdate(&st, true, true, /*fbwActive=*/false, true, true, 100.0f, true);
     check(st.transitioned, "dropping out must flag a transition");
 
     /* A request that never flies must not flag anything: resetting there would
      * dump the integrator while the pilot is hand-flying Fly-By-Wire. */
     loiterStateInit(&st);
-    loiterUpdate(&st, true, true, true, true, /*airborne=*/false);
+    loiterUpdate(&st, true, true, true, true, /*airborne=*/false, 100.0f, true);
     check(!st.transitioned, "a refused request must not touch the PIDs");
-    loiterUpdate(&st, true, true, true, true, false);
+    loiterUpdate(&st, true, true, true, true, false, 100.0f, true);
     check(!st.transitioned, "and must keep not touching them");
 
     std::printf("  ok\n");
@@ -230,29 +237,29 @@ static void test_rc_failsafe_does_not_resume_on_recovery() {
 
     LoiterState st;
     loiterStateInit(&st);
-    loiterUpdate(&st, false, true, true, true, true);
-    check(loiterUpdate(&st, true, true, true, true, true), "orbiting before the dropout");
+    loiterUpdate(&st, false, true, true, true, true, 100.0f, true);
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "orbiting before the dropout");
 
     /* Link lost. The firmware must NOT force the request off: doing so would
      * make the standing CH10 look released, and the first recovered packet
      * would then read as a fresh rising edge. The request stays high and is
      * blocked by the rcFresh gate instead. */
-    check(!loiterUpdate(&st, true, /*rcFresh=*/false, true, true, true),
+    check(!loiterUpdate(&st, true, /*rcFresh=*/false, true, true, true, 100.0f, true),
           "a stale link must stop the orbit");
     check(st.transitioned, "and must flag the transition so the PIDs reset");
-    check(!loiterUpdate(&st, true, false, true, true, true), "still stopped while stale");
+    check(!loiterUpdate(&st, true, false, true, true, true, 100.0f, true), "still stopped while stale");
 
     /* Link recovers with CH10 still high, and control mode restored. This is
      * the case that must NOT fly: the aircraft has just been through a
      * failsafe -- surfaces blended to neutral, throttle cut -- so resuming an
      * orbit on its own is precisely what the edge requirement forbids. */
-    check(!loiterUpdate(&st, true, true, true, true, true),
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "recovery must not resume the orbit without an operator gesture");
-    check(!loiterUpdate(&st, true, true, true, true, true), "and must stay dropped");
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "and must stay dropped");
 
     /* The operator cycling CH10 is the only way back. */
-    check(!loiterUpdate(&st, false, true, true, true, true), "operator releases");
-    check(loiterUpdate(&st, true, true, true, true, true), "and re-requests");
+    check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "operator releases");
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "and re-requests");
 
     std::printf("  ok\n");
 }
@@ -260,40 +267,148 @@ static void test_rc_failsafe_does_not_resume_on_recovery() {
 /* --------------------------------------------------------------------------
  * 3. Geometry
  * ------------------------------------------------------------------------ */
+static LoiterState flyingState(float targetAltM = 100.0f, bool targetValid = true) {
+    LoiterState st;
+    loiterStateInit(&st);
+    loiterUpdate(&st, false, true, true, true, true, targetAltM, targetValid);
+    loiterUpdate(&st, true, true, true, true, true, targetAltM, targetValid);
+    return st;
+}
+
 static void test_commanded_attitude() {
-    std::printf("commanded attitude (bank %.1f deg, level pitch)\n",
-                (double)LOITER_BANK_ANGLE_DEG);
+    std::printf("commanded attitude (bank %.1f deg)\n", (double)LOITER_BANK_ANGLE_DEG);
 
+    LoiterState st = flyingState();
     float roll = 999.0f, pitch = 999.0f;
-    loiterDesiredAttitude(80.0f, 80.0f, &roll, &pitch);
 
+    /* On target, with good speed: wings banked, pitch level. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
     checkNear(roll, LOITER_BANK_ANGLE_DEG * LOITER_BANK_DIRECTION, 1e-6f,
               "commanded bank must match the configured angle and sign");
-    checkNear(pitch, LOITER_PITCH_ANGLE_DEG, 1e-6f, "commanded pitch must be level");
+    checkNear(pitch, 0.0f, 1e-6f, "no altitude error means level pitch");
 
-    /* The bank must land well inside the FBW hard limit, so that limit stays a
-     * redundant backstop rather than something the orbit rides against. */
     check(std::fabs(roll) < 80.0f * 0.75f,
           "the orbit bank must sit well inside the FBW hard limit");
 
-    /* Clamping: a bank constant edited past the envelope must be limited by it
-     * rather than commanding through it. */
-    roll = pitch = 999.0f;
-    loiterDesiredAttitude(10.0f, 5.0f, &roll, &pitch);
+    /* Clamping: constants edited past the envelope must be limited by it. */
+    loiterDesiredAttitude(&st, 10.0f, 5.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
     check(std::fabs(roll) <= 10.0f + 1e-6f, "bank must clamp into the roll envelope");
-    check(std::fabs(pitch) <= 5.0f + 1e-6f, "pitch must clamp into the pitch envelope");
-    checkNear(roll, 10.0f * LOITER_BANK_DIRECTION, 1e-6f,
-              "a clamped bank must keep its sign");
+    checkNear(roll, 10.0f * LOITER_BANK_DIRECTION, 1e-6f, "a clamped bank must keep its sign");
 
-    /* A negative limit (a sign slip at the call site) must not invert the
-     * clamp into an unbounded command. */
-    roll = pitch = 999.0f;
-    loiterDesiredAttitude(-10.0f, -5.0f, &roll, &pitch);
+    /* A negative limit (a sign slip at the call site) must not invert the clamp. */
+    loiterDesiredAttitude(&st, -10.0f, -5.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
     check(std::fabs(roll) <= 10.0f + 1e-6f, "a negative roll limit must still clamp");
     check(std::fabs(pitch) <= 5.0f + 1e-6f, "a negative pitch limit must still clamp");
 
     /* Null outputs must be ignored rather than dereferenced. */
-    loiterDesiredAttitude(80.0f, 80.0f, 0, 0);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 100.0f, true, 25.0f, true, 0, 0);
+
+    std::printf("  ok\n");
+}
+
+static void test_altitude_hold_sign_and_clamp() {
+    std::printf("altitude hold (P-only, clamped, correct sense)\n");
+
+    LoiterState st = flyingState(100.0f);
+    float roll = 0.0f, pitch = 0.0f;
+
+    /* BELOW target -> positive error -> nose UP. Getting this sign backwards
+     * flies the aircraft into the ground, so pin it explicitly. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 95.0f, true, 25.0f, true, &roll, &pitch);
+    check(pitch > 0.0f, "below target must command nose up");
+    checkNear(pitch, LOITER_ALT_KP_DEG_PER_M * 5.0f, 1e-5f, "gain must be proportional");
+
+    /* ABOVE target -> nose down. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 105.0f, true, 25.0f, true, &roll, &pitch);
+    check(pitch < 0.0f, "above target must command nose down");
+
+    /* A huge error must saturate at the clamp, not command a vertical line. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, -500.0f, true, 25.0f, true, &roll, &pitch);
+    checkNear(pitch, LOITER_ALT_PITCH_LIMIT_DEG, 1e-5f, "large error must clamp nose up");
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 5000.0f, true, 25.0f, true, &roll, &pitch);
+    checkNear(pitch, -LOITER_ALT_PITCH_LIMIT_DEG, 1e-5f, "large error must clamp nose down");
+
+    /* The clamp must sit inside the FBW envelope rather than riding it. */
+    check(LOITER_ALT_PITCH_LIMIT_DEG < 80.0f * 0.5f,
+          "the altitude pitch clamp must stay well inside the FBW limit");
+
+    std::printf("  ok\n");
+}
+
+static void test_airspeed_floor_outranks_altitude() {
+    std::printf("airspeed floor (outranks altitude; degrades to the un-held orbit)\n");
+
+    LoiterState st = flyingState(100.0f);
+    float roll = 0.0f, pitch = 0.0f;
+
+    /* 50 m below target is a large nose-up demand -- exactly the situation in
+     * which a naive loop flies the wing to a stall. Below the floor it must
+     * abandon the hold and return to level, which descends and regains speed. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, true,
+                          LOITER_MIN_AIRSPEED_MPH - 1.0f, true, &roll, &pitch);
+    checkNear(pitch, 0.0f, 1e-6f, "below the airspeed floor must return to level pitch");
+    checkNear(roll, LOITER_BANK_ANGLE_DEG * LOITER_BANK_DIRECTION, 1e-6f,
+              "the orbit itself must continue -- only the hold is abandoned");
+
+    /* Exactly at the floor is still flying. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, true,
+                          LOITER_MIN_AIRSPEED_MPH, true, &roll, &pitch);
+    check(pitch > 0.0f, "at the floor the hold must still work");
+
+    /* No trustworthy airspeed at all is treated like being below the floor. */
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, true, 99.0f, false, &roll, &pitch);
+    checkNear(pitch, 0.0f, 1e-6f, "stale airspeed must not be flown on");
+
+    std::printf("  ok\n");
+}
+
+static void test_hold_degrades_without_a_usable_barometer() {
+    std::printf("altitude hold (every bad-data path falls back to level)\n");
+
+    float roll = 0.0f, pitch = 0.0f;
+
+    /* Barometer unusable AT ENGAGE: no target captured, so no hold all orbit. */
+    LoiterState noTarget = flyingState(0.0f, /*targetValid=*/false);
+    check(!noTarget.targetAltitudeValid, "an unusable baro at engage captures no target");
+    loiterDesiredAttitude(&noTarget, 80.0f, 80.0f, 50.0f, true, 25.0f, true, &roll, &pitch);
+    checkNear(pitch, 0.0f, 1e-6f, "no captured target means level pitch");
+
+    /* Barometer captured fine but failing NOW. */
+    LoiterState st = flyingState(100.0f);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, /*altitudeValid=*/false,
+                          25.0f, true, &roll, &pitch);
+    checkNear(pitch, 0.0f, 1e-6f, "a failing baro must not be held against");
+
+    /* A null state must not be dereferenced. */
+    loiterDesiredAttitude(0, 80.0f, 80.0f, 50.0f, true, 25.0f, true, &roll, &pitch);
+    checkNear(pitch, 0.0f, 1e-6f, "no state means level pitch");
+
+    std::printf("  ok\n");
+}
+
+static void test_target_is_captured_at_engage_and_cleared_on_exit() {
+    std::printf("altitude target (captured at engage, cleared on exit)\n");
+
+    LoiterState st;
+    loiterStateInit(&st);
+    check(!st.targetAltitudeValid, "no target before an orbit runs");
+
+    loiterUpdate(&st, false, true, true, true, true, 120.0f, true);
+    loiterUpdate(&st, true, true, true, true, true, 120.0f, true);
+    check(st.running, "orbit engaged");
+    checkNear(st.targetAltitudeM, 120.0f, 1e-6f, "target is the altitude at engage");
+
+    /* Drifting altitude while running must NOT move the target. */
+    loiterUpdate(&st, true, true, true, true, true, 90.0f, true);
+    checkNear(st.targetAltitudeM, 120.0f, 1e-6f, "the target must not follow the aircraft");
+
+    /* Dropping out clears it, so a later orbit cannot hold a stale height. */
+    loiterUpdate(&st, false, true, true, true, true, 90.0f, true);
+    check(!st.targetAltitudeValid, "exiting clears the captured target");
+
+    /* A fresh orbit captures wherever it now is. */
+    loiterUpdate(&st, true, true, true, true, true, 70.0f, true);
+    checkNear(st.targetAltitudeM, 70.0f, 1e-6f, "a new orbit captures a new target");
 
     std::printf("  ok\n");
 }
@@ -309,6 +424,10 @@ int main() {
     test_transition_flag_tracks_effective_state();
     test_rc_failsafe_does_not_resume_on_recovery();
     test_commanded_attitude();
+    test_altitude_hold_sign_and_clamp();
+    test_airspeed_floor_outranks_altitude();
+    test_hold_degrades_without_a_usable_barometer();
+    test_target_is_captured_at_engage_and_cleared_on_exit();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
                 g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
