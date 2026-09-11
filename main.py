@@ -156,6 +156,7 @@ from modules.loiter import (
     fc_airborne_engage_ok,
     fc_airborne_latched,
     PRESS_SOURCE_KEY,
+    attitude_gap_exceeded,
     loiter_channel_value,
 )
 from modules.board_align_trim import (
@@ -552,6 +553,11 @@ class MainWindow(QMainWindow):
         # here is the operator interface -- the engage gesture, the conditions
         # the GS can see, and handing control back.
         self.loiter_cfg = self.config.setdefault("loiter", {})
+        # Set by the attitude callback when the gap between two attitude
+        # packets exceeded LOITER_ATTITUDE_STALE_S, i.e. long enough for the FC
+        # to have dropped the orbit. Cleared once loiter is no longer engaged,
+        # so it forces exactly one handover and never blocks a later hold.
+        self._loiter_attitude_gap_seen = False
         self.loiter = LoiterController(
             hold_seconds=self._safe_float(
                 self.loiter_cfg.get("hold_seconds"), LOITER_HOLD_SECONDS
@@ -3815,6 +3821,18 @@ class MainWindow(QMainWindow):
         self._update_sortie_button_availability()
         now = self.last_telemetry_time
         if packet_type == "attitude":
+            # Latch a threshold-crossing GAP here rather than leaving loiter to
+            # compare the current age at poll time. _poll_loiter runs on the
+            # 14 ms label timer while the FC decides at its 8 ms control rate,
+            # so an outage only slightly past LOITER_ATTITUDE_STALE_S can trip
+            # the FC and then resume between two polls -- both polls see a fresh
+            # age, CH10 stays high, and the request is stranded by the
+            # rising-edge rule even though the two thresholds are equal. This
+            # callback observes EVERY packet, so the gap cannot be missed.
+            if attitude_gap_exceeded(
+                self.last_attitude_packet_time, now, self.LOITER_ATTITUDE_STALE_S
+            ):
+                self._loiter_attitude_gap_seen = True
             self.last_attitude_packet_time = now
             if not self.attitude_connected:
                 if self.attitude_first_received_time is None:
@@ -4332,6 +4350,11 @@ class MainWindow(QMainWindow):
             getattr(self, "attitude_connected", False)
             and last_attitude is not None
             and (now - last_attitude) <= self.LOITER_ATTITUDE_STALE_S
+            # A gap that already came and went counts too: see the latch in the
+            # attitude callback. Sampling the current age alone cannot see an
+            # outage that recovered between two polls, and the FC has dropped
+            # the orbit by then.
+            and not getattr(self, "_loiter_attitude_gap_seen", False)
         )
 
         # "The handler object exists" is NOT enough. get_raw_values() returns
@@ -4451,6 +4474,12 @@ class MainWindow(QMainWindow):
         self._handle_loiter_event(
             self.loiter.poll(time.monotonic(), self._loiter_gates())
         )
+        # The latch exists only to force the handover the poll above just did.
+        # Clearing it whenever loiter is not engaged keeps a single dropout
+        # from refusing every future hold, while a gap DURING an orbit is still
+        # consumed by the poll before it clears.
+        if not self.loiter.engaged:
+            self._loiter_attitude_gap_seen = False
 
     def _handle_loiter_event(self, event) -> None:
         """Annunciate a loiter transition and refresh the mode indicator."""

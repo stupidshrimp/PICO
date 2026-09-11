@@ -279,6 +279,30 @@ def fc_airborne_latched(
     return fc_airborne_engage_ok(gs_airborne, airspeed_mph, height_agl_ft)
 
 
+def attitude_gap_exceeded(
+    previous_packet_time: float | None,
+    now: float,
+    threshold_s: float,
+) -> bool:
+    """True when two attitude packets are far enough apart to have tripped the FC.
+
+    Call this on EVERY attitude packet, not on a UI poll. The ground station
+    polls loiter on a 14 ms timer while the FC decides at its 8 ms control
+    rate, and a resumed packet immediately refreshes the arrival timestamp --
+    so comparing the *current* age at poll time cannot see an outage that
+    started and ended between two polls. The FC has already dropped the orbit
+    by then, and because the rising-edge rule will not restart it under a
+    standing CH10, the request is stranded with nothing announcing it.
+
+    Measuring the gap between consecutive arrivals instead makes the detection
+    independent of when the ground station happens to look.
+    """
+
+    if previous_packet_time is None:
+        return False
+    return (now - previous_packet_time) > threshold_s
+
+
 def loiter_channel_value(engaged: bool) -> int:
     """Return the CH10/AUX6 value for the current loiter state.
 

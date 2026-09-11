@@ -37,6 +37,7 @@ from modules.loiter import (
     PRESS_SOURCE_KEY,
     LoiterController,
     LoiterGates,
+    attitude_gap_exceeded,
     FC_AIRBORNE_ENGAGE_AIRSPEED_MPH,
     FC_AIRBORNE_ENGAGE_HEIGHT_FT,
     fc_airborne_engage_ok,
@@ -640,6 +641,61 @@ def _firmware_define(name):
     )
     assert match is not None, f"{name} not found in {_MAIN_INO.name}"
     return float(match.group(1))
+
+
+def test_attitude_gap_is_detected_regardless_of_when_the_gs_polls():
+    """An outage that recovers between two polls must still be caught.
+
+    This is the race that equal thresholds alone do not close. The FC decides
+    at its 8 ms control rate; the ground station polls loiter on a 14 ms timer
+    and a resumed packet immediately refreshes the arrival timestamp. So an
+    outage only slightly longer than the threshold can trip the FC and then
+    recover before the next poll, leaving every poll to observe a fresh age.
+
+    The simulation below is the concrete failure: a 210 ms gap, with polls on a
+    14 ms grid. Sampling the current age never sees it; the inter-arrival gap
+    always does.
+    """
+
+    threshold = 0.2
+    poll_period = 0.014
+
+    # Attitude packets arrive at ~125 Hz, stop, then resume 210 ms later --
+    # long enough for the FC (200 ms) to have dropped the orbit.
+    outage_start = 1.000
+    outage_end = outage_start + 0.210
+    arrivals = [outage_start - 0.008, outage_start, outage_end]
+
+    # What the OLD code did: compare the current age at each poll tick.
+    stale_seen_by_polling = False
+    poll_time = outage_start
+    while poll_time <= outage_end + poll_period:
+        last_arrival = max((a for a in arrivals if a <= poll_time), default=None)
+        if last_arrival is not None and (poll_time - last_arrival) > threshold:
+            stale_seen_by_polling = True
+        poll_time += poll_period
+    assert not stale_seen_by_polling, (
+        "this test is meant to reproduce the race where polling misses the "
+        "outage; if polling now catches it the scenario needs rebuilding"
+    )
+
+    # What the gap latch does: measure between consecutive arrivals.
+    gaps = [
+        attitude_gap_exceeded(previous, current, threshold)
+        for previous, current in zip(arrivals, arrivals[1:])
+    ]
+    assert any(gaps), "the 210 ms gap must be detected at the packet callback"
+
+
+def test_attitude_gap_ignores_normal_arrival_jitter():
+    """Ordinary 125 Hz arrivals, and the first packet, must not trip it."""
+
+    assert not attitude_gap_exceeded(None, 5.0, 0.2), (
+        "the first attitude packet has no predecessor and is not a gap"
+    )
+    assert not attitude_gap_exceeded(1.000, 1.008, 0.2), "8 ms is the normal period"
+    assert not attitude_gap_exceeded(1.000, 1.199, 0.2), "just inside the window"
+    assert attitude_gap_exceeded(1.000, 1.201, 0.2), "just outside must trip"
 
 
 _MAIN_PY = pathlib.Path(__file__).resolve().parents[1] / "main.py"
