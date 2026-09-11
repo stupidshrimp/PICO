@@ -29,9 +29,16 @@ Disengagement is deliberately easy and happens on any of:
 * packet transmission being terminated,
 * a bounded maximum duration elapsing.
 
-Engaging additionally requires the ground station to believe the aircraft is
-airborne, so a hold made on the ground is refused at the gesture rather than
-quietly arming something the FC would later fly.
+Engaging additionally requires BOTH airborne detectors to agree, so a hold made
+on the ground -- or in the window where the GS has latched airborne and the FC
+has not -- is refused at the gesture rather than quietly arming something the
+firmware will reject and then never retry.
+
+Note what "engaged" means here: the ground station has accepted the gesture and
+is REQUESTING the orbit on CH10.  It is not a statement that the aircraft is
+orbiting.  Nothing in the downlink reports the FC's nav state, so the ground
+station cannot know that, and callers must not present it as though it does --
+the confirmation is watching the aircraft turn.
 
 The FC enforces its own gates independently and continuously -- RC freshness,
 Fly-By-Wire, a converged attitude estimate, and the airborne latch -- so
@@ -71,6 +78,19 @@ LOITER_MIN_HOLD_SECONDS = 0.5
 # quarter of centre.
 LOITER_MIN_STICK_BREAK_NORM = 0.02
 LOITER_MAX_STICK_BREAK_NORM = 0.75
+
+# The FC's own airborne-latch airspeed, mirrored here so the ground station can
+# refuse to accept a request the firmware would reject.  Authority is
+# AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0 m/s) in flight_controller/Main.ino; the test
+# suite pins the conversion.
+#
+# The two airborne detectors are independent and use different thresholds, and
+# the GS one can be the LAXER of the pair: with the default warning config it
+# latches at 12 mph while the FC waits for 17.9. A hold in that window raises
+# CH10, the FC refuses it as grounded, and -- because a refused request needs a
+# fresh rising edge -- it stays refused even after the FC does latch airborne.
+# The orbit then never flies while the ground station believes it is flying.
+FC_AIRBORNE_ENGAGE_AIRSPEED_MPH = 17.9
 
 # Which input delivered a press.  Releases are matched against it so an
 # unmatched edge from one control cannot consume the other's press.
@@ -157,6 +177,29 @@ class LoiterEvent:
 
     kind: str
     reason: Optional[str] = None
+
+
+def fc_would_consider_airborne(
+    gs_airborne: bool, airspeed_mph: Optional[float]
+) -> bool:
+    """True when BOTH airborne detectors would agree the aircraft is flying.
+
+    The ground station must never accept a loiter request the flight controller
+    would reject, because the FC's rising-edge rule means a rejected request is
+    not retried -- it would sit refused while the operator was told the orbit
+    was running.  Requiring the stricter of the two thresholds closes that.
+
+    A missing airspeed reading is treated as "not airborne": the GS cannot
+    establish the FC's condition without it, and refusing is the safe answer.
+    """
+
+    if not gs_airborne or airspeed_mph is None:
+        return False
+    try:
+        speed = float(airspeed_mph)
+    except (TypeError, ValueError):
+        return False
+    return speed >= FC_AIRBORNE_ENGAGE_AIRSPEED_MPH
 
 
 def loiter_channel_value(engaged: bool) -> int:

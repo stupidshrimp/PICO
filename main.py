@@ -153,6 +153,7 @@ from modules.loiter import (
     LoiterController,
     LoiterGates,
     PRESS_SOURCE_JOYSTICK,
+    fc_would_consider_airborne,
     PRESS_SOURCE_KEY,
     loiter_channel_value,
 )
@@ -4230,9 +4231,14 @@ class MainWindow(QMainWindow):
             # loiter controller exists.
             loiter = getattr(self, "loiter", None)
             if loiter is not None and loiter.engaged:
-                # Loiter is flying the aircraft, so name it rather than the
-                # Fly-By-Wire mode it rides on.
-                self.ui.controlModeLabel.setText("Loiter")
+                # "Requested", not "Loiter": the GS is driving CH10 high, but
+                # nothing in the downlink reports the FC's nav state, so it
+                # cannot know the orbit is actually flying. Claiming otherwise
+                # would leave the operator believing the aircraft was flying
+                # itself while it sat in ordinary Fly-By-Wire -- which is
+                # exactly what happens if any FC gate refuses the request.
+                # Confirmation is watching the aircraft turn.
+                self.ui.controlModeLabel.setText("Loiter req")
                 self.ui.controlModeLabel.setStyleSheet("color: rgb(0, 170, 255);")
                 return
             color = "rgb(0, 255, 0)" if self.control_mode == "Manual" else "rgb(255, 165, 0)"
@@ -4333,7 +4339,16 @@ class MainWindow(QMainWindow):
             transmitting=transmitting,
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
-            airborne=self._is_airborne(),
+            # BOTH detectors must agree. The GS one can be the laxer of the
+            # pair (12 mph with the default warning config against the FC's
+            # 17.9), and a request the FC refuses is not retried -- its
+            # rising-edge rule means it stays refused even once the FC does
+            # latch airborne, leaving the orbit unflown while the operator
+            # was told otherwise.
+            airborne=fc_would_consider_airborne(
+                self._is_airborne(),
+                self._safe_float(self.telemetry_state.get("airspeed_mph")),
+            ),
             # Physical stick position, not the sensitivity-scaled command:
             # see _capture_stick_state. getattr throughout because the loiter
             # controller is built earlier in __init__ than these caches, so
@@ -4385,7 +4400,7 @@ class MainWindow(QMainWindow):
             return
 
         if event.kind == EVENT_ENGAGED:
-            logging.info("Loiter engaged: fixed-bank orbit")
+            logging.info("Loiter requested on CH10 (FC gates decide whether it flies)")
             self.play_sound(self.LOITER_SOUND_ENGAGED)
         elif event.kind == EVENT_REFUSED:
             logging.info("Loiter refused: %s", event.reason)

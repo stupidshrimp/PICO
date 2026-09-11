@@ -37,6 +37,8 @@ from modules.loiter import (
     PRESS_SOURCE_KEY,
     LoiterController,
     LoiterGates,
+    FC_AIRBORNE_ENGAGE_AIRSPEED_MPH,
+    fc_would_consider_airborne,
     loiter_channel_value,
     stick_break_exceeded,
 )
@@ -604,3 +606,57 @@ def test_abort_leaves_the_controller_reusable():
 
     c.press(10.0)
     assert c.poll(12.0, _ready_gates()).kind == EVENT_ENGAGED
+
+
+# ---------------------------------------------------------------------------
+# Airborne agreement between the two detectors
+# ---------------------------------------------------------------------------
+
+# FC-side contract value (flight_controller/Main.ino AIRBORNE_ENGAGE_AIRSPEED_MPS).
+FC_AIRBORNE_ENGAGE_MPS = 8.0
+
+
+def test_mirrored_airspeed_matches_the_firmware_constant():
+    """The mirror must track AIRBORNE_ENGAGE_AIRSPEED_MPS, not drift from it."""
+
+    assert abs(FC_AIRBORNE_ENGAGE_AIRSPEED_MPH - FC_AIRBORNE_ENGAGE_MPS * 2.23694) < 0.05
+
+
+def test_gs_cannot_accept_below_the_fc_airborne_threshold():
+    """The GS airborne detector can be the laxer of the two.
+
+    With the default warning config the GS latches airborne at 12 mph
+    (stall_airspeed 10 x takeoff multiplier 1.2) while the FC waits for 8 m/s
+    (17.9 mph). A hold in that window raises CH10, the FC refuses it as
+    grounded, and its rising-edge rule means it stays refused even once the FC
+    does latch airborne -- so the orbit never flies while the operator has been
+    told it is. Requiring the stricter threshold closes the window.
+    """
+
+    assert fc_would_consider_airborne(True, 12.0) is False, "the GS-only window must refuse"
+    assert fc_would_consider_airborne(True, FC_AIRBORNE_ENGAGE_AIRSPEED_MPH) is True
+    assert fc_would_consider_airborne(True, 30.0) is True
+
+
+def test_gs_grounded_always_refuses_however_fast():
+    assert fc_would_consider_airborne(False, 50.0) is False
+
+
+def test_missing_or_bad_airspeed_refuses():
+    """Without airspeed the GS cannot establish the FC's condition."""
+
+    assert fc_would_consider_airborne(True, None) is False
+    assert fc_would_consider_airborne(True, "fast") is False
+
+
+def test_engage_is_refused_inside_the_disagreement_window():
+    """End to end: the controller must refuse, not engage-and-never-fly."""
+
+    c = LoiterController()
+    gates = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        transmitting=True,
+        airborne=fc_would_consider_airborne(True, 12.0),
+    )
+    assert _engage(c, gates).reason == REASON_GROUNDED
+    assert not c.engaged
