@@ -134,6 +134,11 @@ from modules.compass_cal import (
     compass_cal_start_blockers,
     throttle_mode_channel_value,
 )
+from modules.auto_throttle import (
+    THROTTLE_MODE_CHANGE_GUARD_S,
+    clamp_target_airspeed,
+    throttle_channel_value,
+)
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
     BOARD_ALIGN_ROLL_CHANNEL_INDEX,
@@ -245,6 +250,12 @@ class MainWindow(QMainWindow):
         self.throttle_mode = "Manual"
         self.throttle_target_airspeed_mph = 20.0
         self.throttle_mode_channel = 6  # Channel 7/AUX3 (0-based index), CH5 is reserved.
+        # Monotonic instant of the last throttle-mode change, or None. CH3 means
+        # something different in each mode and CH7/AUX3 (which selects between
+        # them) reaches the FC later over ELRS, so CH3 is held at minimum for
+        # THROTTLE_MODE_CHANGE_GUARD_S after a change -- see
+        # modules/auto_throttle.py.
+        self._throttle_mode_change_monotonic = None
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
         # CH7/AUX3 also carries the on-ground compass-calibration request as a
         # distinct center-band value while this flag is set (see
@@ -1976,6 +1987,9 @@ class MainWindow(QMainWindow):
         self._update_airborne_state(now)
         # Check for any telemetry-based warnings
         self.check_warnings(now)
+        # Re-evaluated every tick so the Auto Throttle "NO AIRSPEED" warning
+        # appears and clears with pitot telemetry, not only on a mode change.
+        self.update_throttle_mode_label()
 
         # ------------------------------------------------------------------
         # Joystick values update the label texts
@@ -2040,7 +2054,7 @@ class MainWindow(QMainWindow):
 
     def cut_throttle(self) -> None:
         """Immediately drop the throttle to zero and return to manual throttle."""
-        self.throttle_mode = "Manual"
+        self._set_throttle_mode("Manual")
         self.target_throttle_percent = 0
         self.throttle_percent = 0
         self.update_throttle_mode_label()
@@ -2108,13 +2122,36 @@ class MainWindow(QMainWindow):
     def _clamp_auto_throttle_speed(self, speed_mph: float) -> float:
         """Clamp an auto-throttle speed setpoint to the CH3 converter range."""
 
-        try:
-            speed = float(speed_mph)
-        except (TypeError, ValueError):
-            speed = 20.0
-        if not math.isfinite(speed):
-            speed = 20.0
-        return max(0.0, min(self.auto_throttle_speed_channel_max_mph, speed))
+        return clamp_target_airspeed(
+            speed_mph, self.auto_throttle_speed_channel_max_mph
+        )
+
+    def _set_throttle_mode(self, mode: str) -> None:
+        """Change the throttle mode and open the CH3 mode-change guard window.
+
+        Every throttle-mode change must go through here: CH3 switches meaning
+        with the mode, and the guard is what stops the FC from applying the old
+        converter to the new value while it waits for CH7/AUX3 to catch up (see
+        modules/auto_throttle.py).
+        """
+        if mode == self.throttle_mode:
+            return
+        self.throttle_mode = mode
+        self._throttle_mode_change_monotonic = time.monotonic()
+
+    def _seconds_since_throttle_mode_change(self) -> float | None:
+        """Monotonic age of the last throttle-mode change, or None if never."""
+
+        changed_at = getattr(self, "_throttle_mode_change_monotonic", None)
+        if changed_at is None:
+            return None
+        return time.monotonic() - changed_at
+
+    def throttle_mode_change_guard_active(self) -> bool:
+        """Whether CH3 is currently masked to minimum by the mode-change guard."""
+
+        elapsed = self._seconds_since_throttle_mode_change()
+        return elapsed is not None and elapsed < THROTTLE_MODE_CHANGE_GUARD_S
 
     def set_auto_throttle_target_speed(self, speed_mph: float) -> None:
         """Persist the configured target speed sent on CH3 in Auto Throttle."""
@@ -4023,28 +4060,24 @@ class MainWindow(QMainWindow):
         # CH3 carries manual throttle percent in Manual mode. In Auto Throttle
         # mode it carries the configured target airspeed from the configuration
         # page; the FC applies the same converter in reverse before running its
-        # local throttle PID.
-        throttle_min = CRSF_CHANNEL_MIN
-        throttle_max = CRSF_CHANNEL_MAX
-        throttle_span = throttle_max - throttle_min
-        if self.throttle_mode == "Auto Throttle":
-            channel_fraction = self._clamp_auto_throttle_speed(
-                self.throttle_target_airspeed_mph
-            ) / self.auto_throttle_speed_channel_max_mph
-        else:
-            channel_fraction = max(
-                0.0, min(100.0, float(getattr(self, "throttle_percent", 0)))
-            ) / 100.0
-        channels[2] = int(channel_fraction * throttle_span + throttle_min)
-        if self.compass_cal_active:
-            # Defense-in-depth while a compass calibration is requested: the
-            # FC cuts throttle once its run starts, but between the request
-            # going out and the FC entering the run (1 s trigger hold plus
-            # ground gates) CH3 is still live manual throttle. Hold it at
-            # minimum so a bumped throttle cannot spin the motor while the
-            # operator is handling the aircraft; this also satisfies the FC's
-            # throttle-stick-at-minimum entry gate.
-            channels[2] = throttle_min
+        # local throttle PID. Because the two meanings share the same channel
+        # values and CH7/AUX3 (which selects between them) arrives later than CH3
+        # over ELRS, modules/auto_throttle.py holds CH3 at minimum for a guard
+        # window across every mode change -- minimum is safe under either
+        # converter. It also holds minimum while a compass calibration is
+        # requested: the FC cuts throttle once its run starts, but between the
+        # request going out and the FC entering the run (1 s trigger hold plus
+        # ground gates) CH3 is still live manual throttle, so a bumped throttle
+        # could otherwise spin the motor while the operator is handling the
+        # aircraft. Minimum also satisfies the FC's throttle-stick entry gate.
+        channels[2] = throttle_channel_value(
+            throttle_mode=self.throttle_mode,
+            throttle_percent=getattr(self, "throttle_percent", 0),
+            target_airspeed_mph=self.throttle_target_airspeed_mph,
+            speed_channel_max_mph=self.auto_throttle_speed_channel_max_mph,
+            compass_cal_active=self.compass_cal_active,
+            seconds_since_mode_change=self._seconds_since_throttle_mode_change(),
+        )
 
         # Map yaw input to channel 4 (index 3).
         channels[3] = self._map_axis_to_crsf(getattr(self, "yaw_value", 0.0))
@@ -4125,22 +4158,53 @@ class MainWindow(QMainWindow):
             return
         event.ignore()
 
+    def auto_throttle_airspeed_live(self) -> bool:
+        """Whether fresh pitot airspeed is reaching the GS from the FC.
+
+        The FC's throttle PID only closes the loop while its own airspeed input
+        is fresh; otherwise it ramps the command down to idle at
+        ``AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S`` and keeps holding the target
+        it can no longer chase. That used to be completely silent here, so a dead
+        or disconnected pitot looked exactly like "auto throttle does nothing".
+        The FC zeroes the telemetered airspeed once it declares the sensor down,
+        so no fresh airspeed value at the GS is the visible side of the same
+        condition.
+        """
+
+        timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        return self._airspeed_value_fresh(time.monotonic(), timeout)
+
     def update_throttle_mode_label(self):
         """Update the throttle mode indicator text and color."""
         if hasattr(self.ui, "throttleModeLabel"):
             is_manual = self.throttle_mode == "Manual"
-            color = "rgb(0, 255, 0)" if is_manual else "rgb(255, 165, 0)"
-            label = (
-                self.throttle_mode
-                if is_manual
-                else f"Auto {self.throttle_target_airspeed_mph:.0f} mph"
-            )
-            self.ui.throttleModeLabel.setText(label)
-            self.ui.throttleModeLabel.setStyleSheet(f"color: {color};")
+            if is_manual:
+                label = self.throttle_mode
+                color = "rgb(0, 255, 0)"
+            else:
+                label = f"Auto {self.throttle_target_airspeed_mph:.0f} mph"
+                color = "rgb(255, 165, 0)"
+                # Only warn once telemetry has actually been seen: before the
+                # first frame of a session there is nothing to be stale yet.
+                # getattr because __init__ paints this indicator before the
+                # telemetry attributes exist.
+                if (
+                    getattr(self, "last_airspeed_packet_time", None) is not None
+                    and not self.auto_throttle_airspeed_live()
+                ):
+                    label = f"{label} - NO AIRSPEED"
+                    color = "rgb(255, 60, 60)"
+            # The 70 Hz label timer re-evaluates this so the NO AIRSPEED warning
+            # tracks telemetry, but setStyleSheet re-parses the sheet on every
+            # call, so only touch the widget when something actually changed.
+            if getattr(self, "_throttle_mode_label_shown", None) != (label, color):
+                self._throttle_mode_label_shown = (label, color)
+                self.ui.throttleModeLabel.setText(label)
+                self.ui.throttleModeLabel.setStyleSheet(f"color: {color};")
 
     def toggle_throttle_mode(self):
         """Toggle between Manual and Auto Throttle modes."""
-        self.throttle_mode = (
+        self._set_throttle_mode(
             "Auto Throttle" if self.throttle_mode == "Manual" else "Manual"
         )
         self.update_throttle_mode_label()
