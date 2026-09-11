@@ -40,6 +40,7 @@
 #include "ms4525d0.h" 
 #include "m8n.h"
 #include "control_mode.h"
+#include "auto_throttle.h"
 #include "mag_cal_fit.h"
 #include "mag_cal_flash.h"
 #include <CRSFforArduino.hpp>
@@ -1154,23 +1155,16 @@ const float FBW_PITCH_KP = 6.0f;
 const float FBW_PITCH_KI = 0.30f;
 const float FBW_PITCH_KD = 1.1f;
 
-// Airspeed-hold throttle controller. The controller output is interpreted as
-// percent-per-second and integrated into autoThrottlePercent at the control-loop
-// rate (a velocity / incremental form). Because the output is integrated, the
-// proportional term ALREADY supplies the integral action that drives steady-state
-// airspeed error to zero: each cycle it adds Kp*error percent-per-second to the
-// standing throttle. A non-zero Ki here would integrate the error a SECOND time
-// (a double integrator on throttle), adding phase lag that invites overshoot and
-// limit-cycling around the target airspeed, so Ki is held at 0. After
-// integration the derivative term behaves like a proportional (rate-damping)
-// term on airspeed. (The PID's internal integrator is skipped entirely while
-// Ki == 0, so AUTO_THROTTLE_INTEGRAL_LIMIT is inert for throttle but stays
-// wired for the shared controller.)
+// Airspeed-hold throttle controller (auto_throttle.h). The controller output is
+// percent-per-second, integrated into the commanded throttle percent at the
+// control-loop rate (a velocity / incremental form), so the proportional term
+// ALREADY supplies the integral action that drives steady-state airspeed error to
+// zero and there is deliberately no Ki -- see auto_throttle.h for the full
+// rationale, the derivative's sample-rate handling, and the command-retention
+// policy the failsafe path below depends on.
 const float AUTO_THROTTLE_KP = 0.8f;
-const float AUTO_THROTTLE_KI = 0.0f;
 const float AUTO_THROTTLE_KD = 0.15f;
 const float AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S = 100.0f;
-const float AUTO_THROTTLE_INTEGRAL_LIMIT = 100.0f;
 const float AUTO_THROTTLE_ERROR_DEADBAND_MPH = 0.2f;
 // Low-pass cutoff for the airspeed-rate derivative term. Airspeed changes
 // slowly relative to the control loop, so a low cutoff rejects pitot noise
@@ -1274,18 +1268,26 @@ PIDController pitchPid(FBW_PITCH_KP, FBW_PITCH_KI, FBW_PITCH_KD,
                        -FBW_PID_INTEGRAL_LIMIT, FBW_PID_INTEGRAL_LIMIT,
                        FBW_PID_ERROR_DEADBAND_DEG, FBW_PID_DERIVATIVE_CUTOFF_HZ);
 
-PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
-                          -AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
-                          AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,
-                          -AUTO_THROTTLE_INTEGRAL_LIMIT,
-                          AUTO_THROTTLE_INTEGRAL_LIMIT,
-                          AUTO_THROTTLE_ERROR_DEADBAND_MPH,
-                          AUTO_THROTTLE_DERIVATIVE_CUTOFF_HZ);
+// Positional aggregate init: the order below must match AutoThrottleConfig in
+// auto_throttle.h field for field, so each entry names the field it fills.
+const AutoThrottleConfig AUTO_THROTTLE_CONFIG = {
+  AUTO_THROTTLE_KP,                          // kp
+  AUTO_THROTTLE_KD,                          // kd
+  AUTO_THROTTLE_OUTPUT_LIMIT_PERCENT_PER_S,  // outputLimitPercentPerS
+  AUTO_THROTTLE_ERROR_DEADBAND_MPH,          // errorDeadbandMph
+  AUTO_THROTTLE_DERIVATIVE_CUTOFF_HZ,        // derivativeCutoffHz
+  AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S    // staleDecayPercentPerS
+};
 
-float autoThrottlePercent = 0.0f;
+AutoThrottleController autoThrottle;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
 uint32_t lastAirspeedUpdateUs = 0;
 bool latestAirspeedValid = false;
+// lastAirspeedUpdateUs as the auto-throttle loop last consumed it. The loop
+// differentiates airspeed against the pitot's own ~60 Hz sample interval rather
+// than the 125 Hz control period (see auto_throttle.h), so it needs to know which
+// control cycles carry a NEW reading and how long that reading took to arrive.
+uint32_t autoThrottleAirspeedStampUs = 0;
 
 // Low-passed pitot airspeed derivative (m/s^2) for the longitudinal kinematic
 // feed-forward (see AIRSPEED_RATE_* above). Updated per valid airspeed sample
@@ -1496,9 +1498,14 @@ void setControlMode(ControlMode newMode) {
 void setThrottleMode(ThrottleMode newMode) {
   if (throttleMode != newMode) {
     throttleMode = newMode;
-    throttlePid.reset();
+    // Never differentiate airspeed across a mode change. The commanded percent
+    // is kept on the way IN (bumpless transfer from whatever the manual branch
+    // was already commanding) and dropped on the way OUT, so reverting to
+    // manual throttle cannot leave a standing auto-throttle power setting.
     if (newMode == THROTTLE_MODE_MANUAL) {
-      autoThrottlePercent = 0.0f;
+      autoThrottle.resetCommand();
+    } else {
+      autoThrottle.resetHistory();
     }
   }
 }
@@ -3420,7 +3427,12 @@ void maybePrintControlDebugStats() {
   Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
   Serial.print(" throttle_mode_ch="); Serial.print(latestRcChannels.value[6]);
   Serial.print(" throttle_target_mph="); Serial.print(latestAutoThrottleTargetMph, 1);
-  Serial.print(" auto_throttle_pct="); Serial.println(autoThrottlePercent, 1);
+  // airspeed_fresh is what decides whether the throttle loop closes or decays:
+  // AUTO with airspeed_fresh=0 ramps auto_throttle_pct down to idle, which on the
+  // bench looks identical to "auto throttle does nothing".
+  Serial.print(" airspeed_fresh="); Serial.print(airspeedInputFresh(nowUs) ? 1 : 0);
+  Serial.print(" airspeed_mph="); Serial.print(latestAirspeedMph, 1);
+  Serial.print(" auto_throttle_pct="); Serial.println(autoThrottle.percent, 1);
 
   lastCrsfDiagnostics = crsf.getDiagnostics();
   resetControlDebugCounters();
@@ -5418,12 +5430,35 @@ void loop() {
       if (!rcFailsafeActive) {
         rollPid.reset();
         pitchPid.reset();
-        throttlePid.reset();
+        // Forget the airspeed sample history so the loop cannot differentiate
+        // across the gap, but KEEP the commanded percent -- see below.
+        autoThrottle.resetHistory();
       }
-      autoThrottlePercent = 0.0f;
       rcFailsafeActive = true;
       setControlMode(CONTROL_MODE_MANUAL);
-      setThrottleMode(THROTTLE_MODE_MANUAL);
+      // Ride out a SHORT gap with the commanded throttle mode and the
+      // auto-throttle trim intact. Throttle is hard-cut for as long as the link
+      // is stale (see the throttle branch below), so holding them commands
+      // nothing -- but dropping them did two damaging things on every brief
+      // dropout, and brief dropouts are normal on an ELRS link at range:
+      //   * the commanded percent IS the loop's entire trim state (the velocity
+      //     form has no separate integrator), so zeroing it cost a full re-ramp
+      //     from idle at Kp*error percent-per-second; and
+      //   * reverting to THROTTLE_MODE_MANUAL meant auto throttle could only
+      //     re-engage once a fresh CH7/AUX3 arrived -- and ELRS sends the AUX
+      //     channels round-robin, roughly one per RF packet, while CH1-CH4 go out
+      //     in every packet. So CH3 was read as a manual throttle percent for
+      //     several packets after every dropout even though it was already
+      //     carrying the airspeed SETPOINT (a 20 mph target reads as 20%
+      //     throttle).
+      // Repeated often enough the two together pin the motor at a low,
+      // airspeed-independent speed that never climbs toward the target.
+      // Past the servo-hold window the link is genuinely lost rather than
+      // hiccuping, so the aircraft must not be able to resume standing power.
+      if (!rcServoHold) {
+        setThrottleMode(THROTTLE_MODE_MANUAL);
+        autoThrottle.resetCommand();
+      }
     } else {
       rcFailsafeActive = false;
       rcServoHoldBlendActive = false;
@@ -5540,25 +5575,39 @@ void loop() {
 
     if (!rcFresh || magCalState != MAG_CAL_IDLE) {
       // Throttle stays cut for the whole magnetometer calibration (the
-      // operator is handling the aircraft), not just on a stale link.
+      // operator is handling the aircraft), not just on a stale link. The
+      // auto-throttle trim is deliberately left alone here: the failsafe block
+      // above owns whether a stale link keeps or drops it, and this cut means
+      // nothing it holds can reach the ESC either way.
       throttleCommandUs = THROTTLE_CUT_US;
     } else if (throttleMode == THROTTLE_MODE_AUTO) {
       latestAutoThrottleTargetMph = mapRcToAutoThrottleTargetMph(rcThrottleRaw);
       if (!airspeedInputFresh(servoUpdateUs)) {
-        throttlePid.reset();
-        autoThrottlePercent = max(
-            0.0f,
-            autoThrottlePercent - (AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S * controlDt));
+        autoThrottle.updateStale(controlDt, AUTO_THROTTLE_CONFIG);
       } else {
-        float throttleAdjustment = throttlePid.update(
-            latestAutoThrottleTargetMph, latestAirspeedMph, controlDt) * controlDt;
-        autoThrottlePercent = constrain(autoThrottlePercent + throttleAdjustment, 0.0f, 100.0f);
+        // Differentiate against the pitot's own sample interval rather than the
+        // control period: only the cycles on which lastAirspeedUpdateUs advanced
+        // carry a new reading (see auto_throttle.h).
+        const bool newAirspeedSample =
+            lastAirspeedUpdateUs != autoThrottleAirspeedStampUs;
+        const float airspeedSampleDt =
+            (autoThrottleAirspeedStampUs == 0)
+                ? 0.0f
+                : static_cast<float>(lastAirspeedUpdateUs - autoThrottleAirspeedStampUs) *
+                      1.0e-6f;
+        autoThrottle.update(latestAutoThrottleTargetMph, latestAirspeedMph,
+                            newAirspeedSample, airspeedSampleDt, controlDt,
+                            AUTO_THROTTLE_CONFIG);
       }
-      throttleCommandUs = mapPercentToThrottleUs(autoThrottlePercent);
+      autoThrottleAirspeedStampUs = lastAirspeedUpdateUs;
+      throttleCommandUs = mapPercentToThrottleUs(autoThrottle.percent);
     } else {
-      throttlePid.reset();
-      autoThrottlePercent = mapRcToPercent(rcThrottleRaw);
-      throttleCommandUs = mapPercentToThrottleUs(autoThrottlePercent);
+      // Manual pass-through. This also seeds the bumpless transfer, so engaging
+      // auto throttle picks up from the throttle already being commanded.
+      autoThrottle.setCommand(mapRcToPercent(rcThrottleRaw));
+      autoThrottle.resetHistory();
+      autoThrottleAirspeedStampUs = lastAirspeedUpdateUs;
+      throttleCommandUs = mapPercentToThrottleUs(autoThrottle.percent);
     }
 
     if (shouldUpdateServo(rollCommandUs, lastRollCommandUs, lastRollWriteUs, servoUpdateUs)) {
