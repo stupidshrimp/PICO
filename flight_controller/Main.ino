@@ -5569,13 +5569,32 @@ void loop() {
     const bool loiterAltitudeValid = barometerInputFresh(servoUpdateUs);
     const bool loiterAirspeedValid = airspeedInputFresh(servoUpdateUs);
 
+    // aircraftAirborne is NOT trustworthy on its own here. On a normal boot the
+    // latch clears only on height, and height comes from sensorAltitudeCm --
+    // which a failed barometer leaves frozen (see barometerInputFresh). The
+    // latch would then stay set forever: updateAirborneState keeps comparing a
+    // stale altitude against the ground reference, never sees the disengage
+    // height, and never detects the landing. Loiter would go on commanding its
+    // bank after touchdown, on the runway.
+    //
+    // Without a trustworthy altitude the FC cannot tell flight from a rollout,
+    // so it must not keep an autonomous mode running: drop the orbit and hand
+    // the aircraft back. That also costs nothing real, because the same failure
+    // has already disabled altitude hold.
+    //
+    // On a watchdog-recovery boot the latch is driven by airspeed instead and
+    // does not have this failure mode, but loiter is refused there too rather
+    // than special-casing a path that already means the aircraft reset in
+    // flight.
+    const bool loiterAirborneTrustworthy = aircraftAirborne && loiterAltitudeValid;
+
     const bool loiterActive = loiterUpdate(
         &loiterState,
         navMode == NAV_MODE_LOITER,
         rcFresh,
         controlMode == CONTROL_MODE_FLY_BY_WIRE,
         loiterAttitudeUsable,
-        aircraftAirborne,
+        loiterAirborneTrustworthy,
         loiterAltitudeM,
         loiterAltitudeValid);
     if (loiterState.transitioned) {

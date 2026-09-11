@@ -203,6 +203,33 @@ static void test_request_during_convergence_is_refused() {
     std::printf("  ok\n");
 }
 
+static void test_a_frozen_altitude_sensor_must_end_the_orbit() {
+    std::printf("airborne gate (a frozen barometer hides the landing)\n");
+
+    /* The firmware's airborne latch clears on HEIGHT alone, and height comes
+     * from a barometer reading that a failed sensor leaves frozen. The latch
+     * then stays set forever, the landing is never detected, and the orbit
+     * would go on commanding its bank after touchdown. The caller folds
+     * barometer freshness into the airborne argument so that cannot happen;
+     * this pins the behaviour the caller depends on. */
+    LoiterState st;
+    loiterStateInit(&st);
+    loiterUpdate(&st, false, true, true, true, true, 100.0f, true);
+    check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "orbiting");
+
+    /* Barometer freezes: the caller passes airborne=false rather than the raw
+     * latch, so the orbit ends and the pilot gets the aircraft back. */
+    check(!loiterUpdate(&st, true, true, true, true, /*airborne=*/false, 100.0f, false),
+          "an untrustworthy airborne latch must end the orbit");
+    check(st.transitioned, "and must flag the transition so the PIDs reset");
+
+    /* And it must not resume when the sensor recovers, without a fresh edge. */
+    check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
+          "recovery must not resume without a new request");
+
+    std::printf("  ok\n");
+}
+
 static void test_transition_flag_tracks_effective_state() {
     std::printf("transition flag (PID resets follow the effective state)\n");
 
@@ -420,6 +447,7 @@ int main() {
     test_ground_request_does_not_spring_after_takeoff();
     test_latch_drops_and_requires_a_new_edge();
     test_attitude_outage_does_not_resume_silently();
+    test_a_frozen_altitude_sensor_must_end_the_orbit();
     test_request_during_convergence_is_refused();
     test_transition_flag_tracks_effective_state();
     test_rc_failsafe_does_not_resume_on_recovery();
