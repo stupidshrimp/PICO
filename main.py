@@ -4347,9 +4347,28 @@ class MainWindow(QMainWindow):
         # threshold every cycle matters just as much: the firmware keeps the
         # flag through a slow-down, so a continuous comparison would drop a
         # running orbit the FC was perfectly happy to keep flying.
+        # Both flight metrics must be FRESH, not merely cached. When GPS
+        # telemetry stops while attitude and the uplink stay live,
+        # _update_airborne_state deliberately freezes airborne_state and the
+        # cached speed/altitude rather than guessing -- so if the aircraft
+        # lands during that outage the GS goes on reporting the last airborne
+        # values it saw. Authorising a request on those would raise CH10 for an
+        # FC that has already cleared its own latch, and its rising-edge rule
+        # never retries. Treat stale as unavailable; fc_airborne_engage_ok
+        # already refuses on a missing reading. Same helpers, same timeout the
+        # airborne detector and auto-trim already use.
+        gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        metrics_fresh = self._is_packet_fresh("gps", gps_timeout) and (
+            self._airspeed_value_fresh(now, gps_timeout)
+        )
+
         gs_airborne = self._is_airborne()
-        airspeed_mph = self._safe_float(self.telemetry_state.get("airspeed_mph"))
-        height_agl_ft = self._current_altitude_agl_ft()
+        airspeed_mph = (
+            self._safe_float(self.telemetry_state.get("airspeed_mph"))
+            if metrics_fresh
+            else None
+        )
+        height_agl_ft = self._current_altitude_agl_ft() if metrics_fresh else None
         self._fc_airborne_latched = fc_airborne_latched(
             getattr(self, "_fc_airborne_latched", False),
             gs_airborne,

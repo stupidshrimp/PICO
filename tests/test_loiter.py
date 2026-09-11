@@ -846,3 +846,22 @@ def test_a_low_pass_does_not_drop_a_running_orbit():
     assert latched is True
     # Descending through the FC engage height must not clear the GS latch.
     assert fc_airborne_latched(latched, True, 30.0, 1.0) is True
+
+
+def test_stale_flight_metrics_refuse_like_missing_ones():
+    """Cached-but-stale telemetry must not authorise a request.
+
+    When GPS stops while attitude and the uplink stay live, the GS freezes its
+    airborne state and the cached speed/altitude rather than guessing. If the
+    aircraft lands during that outage those cached values still read airborne,
+    and a request raised on them would be rejected by the FC and never retried.
+    The caller passes None for stale readings, which must refuse exactly as a
+    missing reading does.
+    """
+
+    # Fresh and flying: allowed.
+    assert fc_airborne_engage_ok(True, 30.0, 100.0) is True
+    # The same values, but stale, arrive as None from the caller.
+    assert fc_airborne_engage_ok(True, None, None) is False
+    assert fc_airborne_engage_ok(True, 30.0, None) is False
+    assert fc_airborne_engage_ok(True, None, 100.0) is False

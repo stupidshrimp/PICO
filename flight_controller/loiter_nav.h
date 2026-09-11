@@ -117,8 +117,19 @@ static inline bool loiterRequestedFromChannel(uint16_t channelValue)
  *   attitudeUsable  - the attitude estimate is fresh AND converged. Banking on
  *                     a frozen or still-settling estimate would hold whatever
  *                     error the filter last believed.
- *   airborne        - the latched airborne state. A commanded bank during a
- *                     ground roll is a dropped wingtip.
+ *   airborne        - the latched airborne state AND the caller's confidence
+ *                     that the latch still means anything. A commanded bank
+ *                     during a ground roll is a dropped wingtip, so this must
+ *                     never be the raw flag.
+ *
+ *                     The firmware's latch clears on HEIGHT, and height comes
+ *                     from a barometer reading that a failed sensor leaves
+ *                     frozen -- which pins the latch set and hides the landing
+ *                     completely, leaving an orbit commanding its bank on the
+ *                     runway. Callers must therefore fold in the freshness of
+ *                     EVERY sensor their own latch depends on to clear, not
+ *                     just the ones it depends on to set. Main.ino passes
+ *                     `aircraftAirborne && barometerInputFresh(...)`.
  */
 static inline bool loiterMayEngage(bool requested,
                                    bool rcFresh,
