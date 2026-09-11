@@ -1048,6 +1048,19 @@ const size_t LOITER_MODE_CHANNEL_INDEX = 9;
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
 const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
 const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 100000UL;
+// How stale a barometric altitude may be before consumers must stop trusting
+// it. barometerHealthy only reports an initialisation failure and is never
+// cleared at runtime, and a failed readAdc() returns the state machine to IDLE
+// without touching sensorAltitudeCm -- so a sensor that stops answering leaves
+// the last altitude cached forever, looking perfectly healthy. Anything closing
+// a loop on altitude has to check freshness explicitly.
+//
+// Pressure samples land at the ~60 Hz BAROMETER_PERIOD_US cadence, interrupted
+// every BAROMETER_TEMPERATURE_PERIOD_US (500 ms) by a temperature conversion
+// that skips a pressure read or two. This timeout clears that normal gap by an
+// order of magnitude while still catching a freeze long before a clamped pitch
+// command could do anything.
+const uint32_t BAROMETER_FAILSAFE_TIMEOUT_US = 250000UL;
 const float AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S = 50.0f;
 
 const uint16_t SERVO_MIN_US = 1000;
@@ -1296,6 +1309,8 @@ PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
 float autoThrottlePercent = 0.0f;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
 uint32_t lastAirspeedUpdateUs = 0;
+// micros() of the last barometer reading that actually produced an altitude.
+uint32_t lastBarometerUpdateUs = 0;
 bool latestAirspeedValid = false;
 
 // Low-passed pitot airspeed derivative (m/s^2) for the longitudinal kinematic
@@ -1461,6 +1476,20 @@ bool airspeedInputFresh(uint32_t nowUs) {
   return latestAirspeedValid &&
          lastAirspeedUpdateUs != 0 &&
          (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
+}
+
+// Mirrors airspeedInputFresh for the barometer. barometerHealthy alone is not
+// enough: it only reports an initialisation failure, so a sensor that stops
+// answering mid-flight keeps it true while sensorAltitudeCm silently holds its
+// last value. See BAROMETER_FAILSAFE_TIMEOUT_US.
+bool barometerInputFresh(uint32_t nowUs) {
+  // lastBarometerUpdateUs is stamped only where a reading produced a finite
+  // ALTITUDE, so a non-zero value already proves a real sample got through --
+  // a strictly stronger statement than latestAmbientPressurePa > 0, which is
+  // also declared further down this file and so cannot be read from here.
+  return barometerHealthy &&
+         lastBarometerUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastBarometerUpdateUs) <= BAROMETER_FAILSAFE_TIMEOUT_US;
 }
 
 // True while the EKF attitude estimate is live (see lastAttitudeUpdateUs).
@@ -1962,6 +1991,10 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
+  // Stamp only here, where a reading actually produced an altitude: both early
+  // returns above leave the previous timestamp in place so a run of rejected
+  // samples ages out rather than passing as fresh.
+  lastBarometerUpdateUs = micros();
   if (!groundAltitudeCaptured && !watchdogRecoveryBoot) {
     // First valid reading happens on the ground during startup; use it as the
     // height reference for airborne detection. Baro drift over a flight is small
@@ -2138,6 +2171,7 @@ void resetPeriodicTimers() {
   barometerReadState = BAROMETER_IDLE;
   barometerTemperatureValid = false;
   lastBarometerTemperatureUs = 0;
+  lastBarometerUpdateUs = 0;
   lastControlUpdateUs = micros();
   controlDebugPrintTimer = 0;
   resetControlDebugCounters();
@@ -5532,7 +5566,7 @@ void loop() {
     // the cache has produced at least one real reading rather than its zero
     // default, which would otherwise read as "sea level" and command a dive.
     const float loiterAltitudeM = sensorAltitudeCm * 0.01f;
-    const bool loiterAltitudeValid = barometerHealthy && (latestAmbientPressurePa > 0.0f);
+    const bool loiterAltitudeValid = barometerInputFresh(servoUpdateUs);
     const bool loiterAirspeedValid = airspeedInputFresh(servoUpdateUs);
 
     const bool loiterActive = loiterUpdate(
