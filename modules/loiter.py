@@ -79,10 +79,13 @@ LOITER_MIN_HOLD_SECONDS = 0.5
 LOITER_MIN_STICK_BREAK_NORM = 0.02
 LOITER_MAX_STICK_BREAK_NORM = 0.75
 
-# The FC's own airborne-latch airspeed, mirrored here so the ground station can
-# refuse to accept a request the firmware would reject.  Authority is
-# AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0 m/s) in flight_controller/Main.ino; the test
-# suite pins the conversion.
+# The FC's own airborne-latch ENGAGE airspeed, mirrored here so the ground
+# station can refuse to accept a request the firmware would reject.  Authority
+# is AIRBORNE_ENGAGE_AIRSPEED_MPS (8.0 m/s) in flight_controller/Main.ino; the
+# test suite reads that macro out of the firmware so the mirror cannot drift.
+#
+# ENGAGE is the operative word: the firmware latches, and only the disengage
+# HEIGHT clears the flag afterwards.  See fc_airborne_latched().
 #
 # The two airborne detectors are independent and use different thresholds, and
 # the GS one can be the LAXER of the pair: with the default warning config it
@@ -179,21 +182,34 @@ class LoiterEvent:
     reason: Optional[str] = None
 
 
-def fc_would_consider_airborne(
-    gs_airborne: bool, airspeed_mph: Optional[float]
+def fc_airborne_latched(
+    previous: bool, gs_airborne: bool, airspeed_mph: Optional[float]
 ) -> bool:
-    """True when BOTH airborne detectors would agree the aircraft is flying.
+    """Mirror the FC's LATCHED airborne state, not its engage threshold.
 
-    The ground station must never accept a loiter request the flight controller
-    would reject, because the FC's rising-edge rule means a rejected request is
-    not retried -- it would sit refused while the operator was told the orbit
-    was running.  Requiring the stricter of the two thresholds closes that.
+    The firmware latches: airspeed is checked only to SET the flag, and once
+    set only falling below the disengage HEIGHT clears it (see
+    ``updateAirborneState`` in Main.ino).  Applying the engage threshold
+    continuously would be a different condition entirely -- an airborne
+    aircraft that slowed below it would have a pending request refused and a
+    running orbit dropped, neither of which the FC would do.  The firmware
+    deliberately keeps orbiting below its airspeed floor and only abandons
+    altitude hold.
 
-    A missing airspeed reading is treated as "not airborne": the GS cannot
-    establish the FC's condition without it, and refusing is the safe answer.
+    ``gs_airborne`` stands in for the FC's height-based disengage, since the
+    ground station cannot see the FC's ground reference; whichever detector
+    calls "grounded" first wins, which is the safe direction.
+
+    A missing airspeed reading cannot SET the latch -- the GS has no way to
+    establish the FC's engage condition without one -- but never clears a latch
+    already set, for the same reason a momentary slow-down does not.
     """
 
-    if not gs_airborne or airspeed_mph is None:
+    if not gs_airborne:
+        return False
+    if previous:
+        return True
+    if airspeed_mph is None:
         return False
     try:
         speed = float(airspeed_mph)

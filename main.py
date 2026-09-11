@@ -153,7 +153,7 @@ from modules.loiter import (
     LoiterController,
     LoiterGates,
     PRESS_SOURCE_JOYSTICK,
-    fc_would_consider_airborne,
+    fc_airborne_latched,
     PRESS_SOURCE_KEY,
     loiter_channel_value,
 )
@@ -4315,6 +4315,7 @@ class MainWindow(QMainWindow):
             and last_attitude is not None
             and (now - last_attitude) <= self.LOITER_ATTITUDE_STALE_S
         )
+
         # "The handler object exists" is NOT enough. get_raw_values() returns
         # the last cached axis values when the serial stream stalls, so a
         # silently dead joystick would leave this gate true while stick
@@ -4327,6 +4328,7 @@ class MainWindow(QMainWindow):
             and last_stick_sample
             and (now - last_stick_sample) <= AUTO_TRIM_STICK_STALE_S
         )
+
         # Intent to transmit is not enough: terminating transmission stops the
         # RC frames while telemetry keeps arriving, so every other gate can
         # stay satisfied with nothing reaching the aircraft. Reuse the same
@@ -4334,21 +4336,28 @@ class MainWindow(QMainWindow):
         transmitting = bool(getattr(self, "transmission_active", False)) and (
             self._crsf_serial_link_up()
         )
+
+        # Track the FC's LATCHED airborne state. The GS detector can be the
+        # laxer of the pair (12 mph with the default warning config against the
+        # FC's 17.9), and a request the FC refuses is never retried -- its
+        # rising-edge rule keeps it refused even once the FC does latch
+        # airborne, leaving the orbit unflown while the operator was told
+        # otherwise. Mirroring the LATCH rather than re-testing the engage
+        # threshold every cycle matters just as much: the firmware keeps the
+        # flag through a slow-down, so a continuous comparison would drop a
+        # running orbit the FC was perfectly happy to keep flying.
+        self._fc_airborne_latched = fc_airborne_latched(
+            getattr(self, "_fc_airborne_latched", False),
+            self._is_airborne(),
+            self._safe_float(self.telemetry_state.get("airspeed_mph")),
+        )
+
         return LoiterGates(
             fbw_active=self.control_mode == "Fly-By-Wire",
             transmitting=transmitting,
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
-            # BOTH detectors must agree. The GS one can be the laxer of the
-            # pair (12 mph with the default warning config against the FC's
-            # 17.9), and a request the FC refuses is not retried -- its
-            # rising-edge rule means it stays refused even once the FC does
-            # latch airborne, leaving the orbit unflown while the operator
-            # was told otherwise.
-            airborne=fc_would_consider_airborne(
-                self._is_airborne(),
-                self._safe_float(self.telemetry_state.get("airspeed_mph")),
-            ),
+            airborne=self._fc_airborne_latched,
             # Physical stick position, not the sensitivity-scaled command:
             # see _capture_stick_state. getattr throughout because the loiter
             # controller is built earlier in __init__ than these caches, so

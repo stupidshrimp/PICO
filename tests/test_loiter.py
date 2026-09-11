@@ -38,7 +38,7 @@ from modules.loiter import (
     LoiterController,
     LoiterGates,
     FC_AIRBORNE_ENGAGE_AIRSPEED_MPH,
-    fc_would_consider_airborne,
+    fc_airborne_latched,
     loiter_channel_value,
     stick_break_exceeded,
 )
@@ -612,17 +612,46 @@ def test_abort_leaves_the_controller_reusable():
 # Airborne agreement between the two detectors
 # ---------------------------------------------------------------------------
 
-# FC-side contract value (flight_controller/Main.ino AIRBORNE_ENGAGE_AIRSPEED_MPS).
-FC_AIRBORNE_ENGAGE_MPS = 8.0
+_MAIN_INO = pathlib.Path(__file__).resolve().parents[1] / "flight_controller" / "Main.ino"
 
 
-def test_mirrored_airspeed_matches_the_firmware_constant():
-    """The mirror must track AIRBORNE_ENGAGE_AIRSPEED_MPS, not drift from it."""
+def _firmware_define(name):
+    """Read a numeric #define straight out of the firmware.
 
-    assert abs(FC_AIRBORNE_ENGAGE_AIRSPEED_MPH - FC_AIRBORNE_ENGAGE_MPS * 2.23694) < 0.05
+    Comparing the Python mirror against another Python literal would detect
+    nothing: editing the firmware constant would leave such a test passing
+    while the GS/FC mismatch silently reopened. This reads the real value.
+    """
+
+    import re
+
+    match = re.search(
+        r"^#define\s+" + re.escape(name) + r"\s+\(([-+0-9.eE]+)f?\)",
+        _MAIN_INO.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, f"{name} not found in {_MAIN_INO.name}"
+    return float(match.group(1))
 
 
-def test_gs_cannot_accept_below_the_fc_airborne_threshold():
+def test_mirrored_airspeed_tracks_the_real_firmware_constant():
+    """The mirror must follow AIRBORNE_ENGAGE_AIRSPEED_MPS, read from source."""
+
+    fc_mps = _firmware_define("AIRBORNE_ENGAGE_AIRSPEED_MPS")
+    assert abs(FC_AIRBORNE_ENGAGE_AIRSPEED_MPH - fc_mps * 2.23694) < 0.05, (
+        "modules/loiter.py FC_AIRBORNE_ENGAGE_AIRSPEED_MPH has drifted from "
+        f"AIRBORNE_ENGAGE_AIRSPEED_MPS ({fc_mps} m/s) in Main.ino"
+    )
+
+
+def test_the_drift_guard_would_actually_catch_a_change():
+    """Guard the guard: prove the extraction reads a real value, not a default."""
+
+    assert _firmware_define("AIRBORNE_ENGAGE_AIRSPEED_MPS") > 0.0
+    assert _firmware_define("AIRBORNE_ENGAGE_HEIGHT_M") > 0.0
+
+
+def test_gs_cannot_latch_below_the_fc_airborne_threshold():
     """The GS airborne detector can be the laxer of the two.
 
     With the default warning config the GS latches airborne at 12 mph
@@ -630,23 +659,45 @@ def test_gs_cannot_accept_below_the_fc_airborne_threshold():
     (17.9 mph). A hold in that window raises CH10, the FC refuses it as
     grounded, and its rising-edge rule means it stays refused even once the FC
     does latch airborne -- so the orbit never flies while the operator has been
-    told it is. Requiring the stricter threshold closes the window.
+    told it is.
     """
 
-    assert fc_would_consider_airborne(True, 12.0) is False, "the GS-only window must refuse"
-    assert fc_would_consider_airborne(True, FC_AIRBORNE_ENGAGE_AIRSPEED_MPH) is True
-    assert fc_would_consider_airborne(True, 30.0) is True
+    assert fc_airborne_latched(False, True, 12.0) is False, "the GS-only window must refuse"
+    assert fc_airborne_latched(False, True, FC_AIRBORNE_ENGAGE_AIRSPEED_MPH) is True
+    assert fc_airborne_latched(False, True, 30.0) is True
 
 
-def test_gs_grounded_always_refuses_however_fast():
-    assert fc_would_consider_airborne(False, 50.0) is False
+def test_the_latch_survives_a_slowdown():
+    """The firmware latches: airspeed SETS the flag and never clears it.
+
+    Only the disengage height does. Re-testing the engage threshold every
+    cycle would drop a running orbit on any slow-down -- and the FC keeps
+    orbiting below its airspeed floor by design, abandoning only altitude
+    hold. This is the regression the previous commit introduced.
+    """
+
+    latched = fc_airborne_latched(False, True, 30.0)
+    assert latched is True
+
+    # Slowing well below the engage threshold must NOT clear it.
+    assert fc_airborne_latched(latched, True, 5.0) is True
+    assert fc_airborne_latched(latched, True, 0.0) is True
+    # Nor must losing the airspeed reading entirely.
+    assert fc_airborne_latched(latched, True, None) is True
 
 
-def test_missing_or_bad_airspeed_refuses():
-    """Without airspeed the GS cannot establish the FC's condition."""
+def test_only_going_grounded_clears_the_latch():
+    latched = fc_airborne_latched(False, True, 30.0)
+    assert fc_airborne_latched(latched, False, 30.0) is False
+    # ...and once cleared it needs the engage threshold again, not just airborne.
+    assert fc_airborne_latched(False, True, 12.0) is False
 
-    assert fc_would_consider_airborne(True, None) is False
-    assert fc_would_consider_airborne(True, "fast") is False
+
+def test_missing_airspeed_cannot_set_the_latch():
+    """Without airspeed the GS cannot establish the FC's engage condition."""
+
+    assert fc_airborne_latched(False, True, None) is False
+    assert fc_airborne_latched(False, True, "fast") is False
 
 
 def test_engage_is_refused_inside_the_disagreement_window():
@@ -656,7 +707,7 @@ def test_engage_is_refused_inside_the_disagreement_window():
     gates = LoiterGates(
         fbw_active=True, attitude_fresh=True, joystick_live=True,
         transmitting=True,
-        airborne=fc_would_consider_airborne(True, 12.0),
+        airborne=fc_airborne_latched(False, True, 12.0),
     )
     assert _engage(c, gates).reason == REASON_GROUNDED
     assert not c.engaged
