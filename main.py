@@ -153,6 +153,7 @@ from modules.loiter import (
     LoiterController,
     LoiterGates,
     PRESS_SOURCE_JOYSTICK,
+    fc_airborne_engage_ok,
     fc_airborne_latched,
     PRESS_SOURCE_KEY,
     loiter_channel_value,
@@ -4346,10 +4347,10 @@ class MainWindow(QMainWindow):
         # threshold every cycle matters just as much: the firmware keeps the
         # flag through a slow-down, so a continuous comparison would drop a
         # running orbit the FC was perfectly happy to keep flying.
+        gs_airborne = self._is_airborne()
+        airspeed_mph = self._safe_float(self.telemetry_state.get("airspeed_mph"))
         self._fc_airborne_latched = fc_airborne_latched(
-            getattr(self, "_fc_airborne_latched", False),
-            self._is_airborne(),
-            self._safe_float(self.telemetry_state.get("airspeed_mph")),
+            getattr(self, "_fc_airborne_latched", False), gs_airborne, airspeed_mph
         )
 
         return LoiterGates(
@@ -4358,6 +4359,11 @@ class MainWindow(QMainWindow):
             attitude_fresh=attitude_fresh,
             joystick_live=joystick_live,
             airborne=self._fc_airborne_latched,
+            # Re-derived, never the latch: a stale latch must not authorise a
+            # new request. After a watchdog reset in flight the firmware clears
+            # its airborne flag on airspeed, which the GS cannot observe, so
+            # the latch can read true while the FC has dropped the orbit.
+            engage_airborne=fc_airborne_engage_ok(gs_airborne, airspeed_mph),
             # Physical stick position, not the sensitivity-scaled command:
             # see _capture_stick_state. getattr throughout because the loiter
             # controller is built earlier in __init__ than these caches, so

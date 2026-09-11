@@ -38,6 +38,7 @@ from modules.loiter import (
     LoiterController,
     LoiterGates,
     FC_AIRBORNE_ENGAGE_AIRSPEED_MPH,
+    fc_airborne_engage_ok,
     fc_airborne_latched,
     loiter_channel_value,
     stick_break_exceeded,
@@ -62,6 +63,7 @@ def _ready_gates(stick_roll=0.0, stick_pitch=0.0):
         attitude_fresh=True,
         joystick_live=True,
         airborne=True,
+        engage_airborne=True,
         transmitting=True,
         stick_roll=stick_roll,
         stick_pitch=stick_pitch,
@@ -212,7 +214,8 @@ def test_cancel_press_cannot_strand_a_running_orbit():
 def test_engage_is_refused_without_fly_by_wire():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True
+        fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True,
+        engage_airborne=True,
     )
     assert _engage(c, gates).reason == REASON_NOT_FBW
 
@@ -220,7 +223,8 @@ def test_engage_is_refused_without_fly_by_wire():
 def test_engage_is_refused_on_stale_attitude():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True
+        fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True,
+        engage_airborne=True,
     )
     assert _engage(c, gates).reason == REASON_ATTITUDE_STALE
 
@@ -238,7 +242,7 @@ def test_engage_is_refused_when_not_transmitting():
     c = LoiterController()
     gates = LoiterGates(
         fbw_active=True, attitude_fresh=True, joystick_live=True,
-        airborne=True, transmitting=False,
+        airborne=True, engage_airborne=True, transmitting=False,
     )
     assert _engage(c, gates).reason == REASON_NOT_TRANSMITTING
     assert not c.engaged
@@ -252,7 +256,7 @@ def test_stopping_transmission_drops_a_running_orbit():
         3.0,
         LoiterGates(
             fbw_active=True, attitude_fresh=True, joystick_live=True,
-            airborne=True, transmitting=False,
+            airborne=True, engage_airborne=True, transmitting=False,
         ),
     )
     assert event.reason == REASON_NOT_TRANSMITTING
@@ -271,7 +275,8 @@ def test_engage_is_refused_on_the_ground():
 
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=True, attitude_fresh=True, joystick_live=True, airborne=False
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        airborne=False, engage_airborne=False,
     )
     assert _engage(c, gates).reason == REASON_GROUNDED
     assert not c.engaged
@@ -284,7 +289,8 @@ def test_landing_during_an_orbit_hands_control_back():
     event = c.poll(
         3.0,
         LoiterGates(
-            fbw_active=True, attitude_fresh=True, joystick_live=True, airborne=False
+            fbw_active=True, attitude_fresh=True, joystick_live=True,
+            airborne=False, engage_airborne=False,
         ),
     )
     assert event.reason == REASON_GROUNDED
@@ -294,7 +300,8 @@ def test_landing_during_an_orbit_hands_control_back():
 def test_engage_is_refused_without_a_joystick():
     c = LoiterController()
     gates = LoiterGates(
-        fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True
+        fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True,
+        engage_airborne=True,
     )
     assert _engage(c, gates).reason == REASON_NO_JOYSTICK
 
@@ -347,7 +354,7 @@ def test_losing_fly_by_wire_disengages():
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True),
+        LoiterGates(fbw_active=False, attitude_fresh=True, joystick_live=True, airborne=True, engage_airborne=True),
     )
     assert event.reason == REASON_NOT_FBW
 
@@ -358,7 +365,7 @@ def test_stale_attitude_disengages():
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True),
+        LoiterGates(fbw_active=True, attitude_fresh=False, joystick_live=True, airborne=True, engage_airborne=True),
     )
     assert event.reason == REASON_ATTITUDE_STALE
 
@@ -376,7 +383,7 @@ def test_losing_the_joystick_disengages():
 
     event = c.poll(
         3.0,
-        LoiterGates(fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True),
+        LoiterGates(fbw_active=True, attitude_fresh=True, joystick_live=False, airborne=True, engage_airborne=True),
     )
     assert event.reason == REASON_NO_JOYSTICK
 
@@ -707,7 +714,80 @@ def test_engage_is_refused_inside_the_disagreement_window():
     gates = LoiterGates(
         fbw_active=True, attitude_fresh=True, joystick_live=True,
         transmitting=True,
-        airborne=fc_airborne_latched(False, True, 12.0),
+        airborne=True,
+        engage_airborne=fc_airborne_engage_ok(True, 12.0),
     )
     assert _engage(c, gates).reason == REASON_GROUNDED
+    assert not c.engaged
+
+
+# ---------------------------------------------------------------------------
+# Engage and hold read airborne state differently, on purpose
+# ---------------------------------------------------------------------------
+
+
+def test_a_stale_latch_cannot_authorise_a_new_request():
+    """The recovery branch the GS cannot observe.
+
+    After a watchdog reset in flight the firmware runs a different airborne
+    branch, where airspeed below AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS
+    clears the flag. The GS cannot see watchdogRecoveryBoot, so its latch can
+    read true while the FC has dropped the orbit. Accepting a NEW request on
+    that stale belief would strand it permanently -- the FC refuses it and its
+    rising-edge rule never retries. Engagement therefore re-derives the
+    condition instead of trusting the latch.
+    """
+
+    latched_but_slow = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        transmitting=True,
+        airborne=True,                                    # latch says yes...
+        engage_airborne=fc_airborne_engage_ok(True, 5.0),  # ...the FC would not
+    )
+    c = LoiterController()
+    assert _engage(c, latched_but_slow).reason == REASON_GROUNDED
+    assert not c.engaged
+
+
+def test_a_running_orbit_survives_what_would_refuse_a_new_one():
+    """The other half of the asymmetry.
+
+    A false negative on the hold path interrupts flight on a ground-station
+    guess, which is the worse error -- and the FC keeps orbiting below its own
+    airspeed floor by design. So the hold path reads the latch, and a
+    slow-down that would refuse a fresh request must not drop a running one.
+    """
+
+    c = LoiterController()
+    _engage(c, _ready_gates())
+    assert c.engaged
+
+    slowed = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        transmitting=True,
+        airborne=fc_airborne_latched(True, True, 5.0),     # latch holds
+        engage_airborne=fc_airborne_engage_ok(True, 5.0),  # would refuse anew
+        stick_roll=0.0, stick_pitch=0.0,
+    )
+    assert slowed.engage_airborne is False, "a fresh request would be refused here"
+    assert slowed.airborne is True, "but the latch holds"
+    assert c.poll(3.0, slowed) is None, "the running orbit must continue"
+    assert c.engaged
+
+
+def test_landing_still_ends_a_running_orbit():
+    """The latch does clear when the GS's own landing detector says so."""
+
+    c = LoiterController()
+    _engage(c, _ready_gates())
+
+    landed = LoiterGates(
+        fbw_active=True, attitude_fresh=True, joystick_live=True,
+        transmitting=True,
+        airborne=fc_airborne_latched(True, False, 5.0),
+        engage_airborne=False,
+        stick_roll=0.0, stick_pitch=0.0,
+    )
+    assert landed.airborne is False
+    assert c.poll(3.0, landed).reason == REASON_GROUNDED
     assert not c.engaged

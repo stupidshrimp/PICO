@@ -156,10 +156,13 @@ class LoiterGates:
     it high as a fresh edge -- making the click that restores control, rather
     than a loiter gesture, the thing that starts the orbit.
 
-    ``airborne`` is the ground station's own airborne estimate.  The FC gates on
-    its own latch regardless; checking here as well is what lets a hold made on
-    the ground be REFUSED audibly at the gesture instead of silently doing
-    nothing.
+    ``airborne`` and ``engage_airborne`` are deliberately separate, because the
+    ground station's knowledge of the FC's airborne latch is asymmetric.
+    ``engage_airborne`` is the FC's engage condition re-derived NOW and gates a
+    new request: accepting one the FC would refuse strands it permanently,
+    since a refused request is never retried.  ``airborne`` is a latched
+    estimate and only decides whether a RUNNING orbit continues, where a false
+    negative is the worse error -- it would interrupt flight on a guess.
 
     ``stick_roll``/``stick_pitch`` are normalized (-1..1) axis values, or
     ``None`` when the joystick has not produced a sample.
@@ -169,6 +172,7 @@ class LoiterGates:
     attitude_fresh: bool
     joystick_live: bool
     airborne: bool = False
+    engage_airborne: bool = False
     transmitting: bool = True
     stick_roll: Optional[float] = None
     stick_pitch: Optional[float] = None
@@ -182,40 +186,66 @@ class LoiterEvent:
     reason: Optional[str] = None
 
 
-def fc_airborne_latched(
-    previous: bool, gs_airborne: bool, airspeed_mph: Optional[float]
+def fc_airborne_engage_ok(
+    gs_airborne: bool, airspeed_mph: Optional[float]
 ) -> bool:
-    """Mirror the FC's LATCHED airborne state, not its engage threshold.
+    """The FC's airborne ENGAGE condition, evaluated fresh.
 
-    The firmware latches: airspeed is checked only to SET the flag, and once
-    set only falling below the disengage HEIGHT clears it (see
-    ``updateAirborneState`` in Main.ino).  Applying the engage threshold
-    continuously would be a different condition entirely -- an airborne
-    aircraft that slowed below it would have a pending request refused and a
-    running orbit dropped, neither of which the FC would do.  The firmware
-    deliberately keeps orbiting below its airspeed floor and only abandons
-    altitude hold.
+    Used to authorise a NEW request, never to keep an existing one running.
+    A request the FC refuses is never retried -- its rising-edge rule keeps it
+    refused even once the FC does latch airborne -- so accepting one on a stale
+    belief leaves the orbit permanently unflown while the operator is told
+    otherwise.  Re-deriving the condition rather than trusting a latch is what
+    makes that impossible.
 
-    ``gs_airborne`` stands in for the FC's height-based disengage, since the
-    ground station cannot see the FC's ground reference; whichever detector
-    calls "grounded" first wins, which is the safe direction.
-
-    A missing airspeed reading cannot SET the latch -- the GS has no way to
-    establish the FC's engage condition without one -- but never clears a latch
-    already set, for the same reason a momentary slow-down does not.
+    A missing airspeed reading refuses: the GS cannot establish the FC's
+    condition without one.
     """
 
-    if not gs_airborne:
-        return False
-    if previous:
-        return True
-    if airspeed_mph is None:
+    if not gs_airborne or airspeed_mph is None:
         return False
     try:
         speed = float(airspeed_mph)
     except (TypeError, ValueError):
         return False
     return speed >= FC_AIRBORNE_ENGAGE_AIRSPEED_MPH
+
+
+def fc_airborne_latched(
+    previous: bool, gs_airborne: bool, airspeed_mph: Optional[float]
+) -> bool:
+    """Track whether the FC probably still considers the aircraft airborne.
+
+    Used to decide whether a RUNNING orbit may continue, and deliberately NOT
+    to authorise a new one -- see fc_airborne_engage_ok.
+
+    In normal flight the firmware latches: airspeed is checked only to SET the
+    flag, and once set only falling below the disengage HEIGHT clears it (see
+    ``updateAirborneState``).  Re-testing the engage threshold every cycle would
+    be a different condition entirely: an airborne aircraft that slowed below it
+    would have its orbit dropped, which the FC would not do -- it keeps orbiting
+    below its own airspeed floor by design and abandons only altitude hold.
+    Interrupting flight on a ground-station guess is the worse error, so this
+    holds through a slow-down and clears only when the GS's own landing
+    detector says the aircraft is down.
+
+    This mirror is KNOWN TO BE IMPERFECT and cannot be made exact.  After a
+    watchdog reset in flight the firmware runs a different branch, where no
+    ground reference exists and airspeed below
+    AIRBORNE_RECOVERY_DISENGAGE_AIRSPEED_MPS (6 m/s) does clear the flag.  The
+    ground station cannot see ``watchdogRecoveryBoot`` -- nothing in the
+    downlink reports it -- so in that case this can read true while the FC has
+    dropped the orbit.  The consequence is a stale display, which is the same
+    blind spot that makes the indicator read "Loiter req" rather than "Loiter";
+    it cannot authorise anything, because engagement goes through
+    fc_airborne_engage_ok instead.
+    """
+
+    if not gs_airborne:
+        return False
+    if previous:
+        return True
+    return fc_airborne_engage_ok(gs_airborne, airspeed_mph)
 
 
 def loiter_channel_value(engaged: bool) -> int:
@@ -501,7 +531,7 @@ class LoiterController:
             return REASON_NOT_FBW
         if not gates.attitude_fresh:
             return REASON_ATTITUDE_STALE
-        if not gates.airborne:
+        if not gates.engage_airborne:
             return REASON_GROUNDED
         return None
 
