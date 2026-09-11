@@ -333,7 +333,7 @@ static void test_commanded_attitude() {
     float roll = 999.0f, pitch = 999.0f;
 
     /* On target, with good speed: wings banked, pitch level. */
-    loiterDesiredAttitude(&st, 80.0f, 80.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 100.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(roll, LOITER_BANK_ANGLE_DEG * LOITER_BANK_DIRECTION, 1e-6f,
               "commanded bank must match the configured angle and sign");
     checkNear(pitch, 0.0f, 1e-6f, "no altitude error means level pitch");
@@ -342,12 +342,12 @@ static void test_commanded_attitude() {
           "the orbit bank must sit well inside the FBW hard limit");
 
     /* Clamping: constants edited past the envelope must be limited by it. */
-    loiterDesiredAttitude(&st, 10.0f, 5.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 10.0f, 5.0f, 100.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     check(std::fabs(roll) <= 10.0f + 1e-6f, "bank must clamp into the roll envelope");
     checkNear(roll, 10.0f * LOITER_BANK_DIRECTION, 1e-6f, "a clamped bank must keep its sign");
 
     /* A negative limit (a sign slip at the call site) must not invert the clamp. */
-    loiterDesiredAttitude(&st, -10.0f, -5.0f, 100.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, -10.0f, -5.0f, 100.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     check(std::fabs(roll) <= 10.0f + 1e-6f, "a negative roll limit must still clamp");
     check(std::fabs(pitch) <= 5.0f + 1e-6f, "a negative pitch limit must still clamp");
 
@@ -365,18 +365,18 @@ static void test_altitude_hold_sign_and_clamp() {
 
     /* BELOW target -> positive error -> nose UP. Getting this sign backwards
      * flies the aircraft into the ground, so pin it explicitly. */
-    loiterDesiredAttitude(&st, 80.0f, 80.0f, 95.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 95.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     check(pitch > 0.0f, "below target must command nose up");
     checkNear(pitch, LOITER_ALT_KP_DEG_PER_M * 5.0f, 1e-5f, "gain must be proportional");
 
     /* ABOVE target -> nose down. */
-    loiterDesiredAttitude(&st, 80.0f, 80.0f, 105.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 105.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     check(pitch < 0.0f, "above target must command nose down");
 
     /* A huge error must saturate at the clamp, not command a vertical line. */
-    loiterDesiredAttitude(&st, 80.0f, 80.0f, -500.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, -500.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(pitch, LOITER_ALT_PITCH_LIMIT_DEG, 1e-5f, "large error must clamp nose up");
-    loiterDesiredAttitude(&st, 80.0f, 80.0f, 5000.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&st, 80.0f, 80.0f, 5000.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(pitch, -LOITER_ALT_PITCH_LIMIT_DEG, 1e-5f, "large error must clamp nose down");
 
     /* The clamp must sit inside the FBW envelope rather than riding it. */
@@ -421,17 +421,17 @@ static void test_hold_degrades_without_a_usable_barometer() {
     /* Barometer unusable AT ENGAGE: no target captured, so no hold all orbit. */
     LoiterState noTarget = flyingState(0.0f, /*targetValid=*/false);
     check(!noTarget.targetAltitudeValid, "an unusable baro at engage captures no target");
-    loiterDesiredAttitude(&noTarget, 80.0f, 80.0f, 50.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(&noTarget, 80.0f, 80.0f, 50.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(pitch, 0.0f, 1e-6f, "no captured target means level pitch");
 
     /* Barometer captured fine but failing NOW. */
     LoiterState st = flyingState(100.0f);
     loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, /*altitudeValid=*/false,
-                          25.0f, true, &roll, &pitch);
+                          LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(pitch, 0.0f, 1e-6f, "a failing baro must not be held against");
 
     /* A null state must not be dereferenced. */
-    loiterDesiredAttitude(0, 80.0f, 80.0f, 50.0f, true, 25.0f, true, &roll, &pitch);
+    loiterDesiredAttitude(0, 80.0f, 80.0f, 50.0f, true, LOITER_MIN_AIRSPEED_MPH + 5.0f, true, &roll, &pitch);
     checkNear(pitch, 0.0f, 1e-6f, "no state means level pitch");
 
     finish();

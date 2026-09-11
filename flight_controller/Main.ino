@@ -1046,7 +1046,10 @@ const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MOD
 const size_t LOITER_MODE_CHANNEL_INDEX = 9;
 
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
-const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
+// Raised from 20 to leave margin above both the configured 20 mph stall
+// warning and loiter's 24 mph airspeed floor (see LOITER_MIN_AIRSPEED_MPH in
+// loiter_nav.h). At 20 the floor could not sit between stall and cruise at all.
+const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 30.0f;
 const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 100000UL;
 // How stale a barometric altitude may be before consumers must stop trusting
 // it. barometerHealthy only reports an initialisation failure and is never

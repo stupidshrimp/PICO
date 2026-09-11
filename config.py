@@ -67,6 +67,12 @@ def normalise_packet_interval_ms(interval_ms: int) -> int:
     return packet_interval_ms_from_rate(packet_rate_hz_from_interval(interval_ms))
 
 
+# Auto-throttle cruise target used whenever the config is missing or invalid.
+# Must stay above warnings.stall_airspeed and above loiter's
+# LOITER_MIN_AIRSPEED_MPH (flight_controller/loiter_nav.h), so the loiter
+# airspeed floor can sit between stall and cruise.
+DEFAULT_AUTO_THROTTLE_TARGET_MPH = 30.0
+
 DEFAULT_CONFIG = {
     "joystick": {
         "port": "COM14",
@@ -93,7 +99,7 @@ DEFAULT_CONFIG = {
     "throttle": {
         # Auto-throttle target sent to the FC on CH3 when Auto Throttle is active.
         # PID gains and stale-data timeouts live in flight_controller/Main.ino.
-        "target_airspeed_mph": 20.0,
+        "target_airspeed_mph": DEFAULT_AUTO_THROTTLE_TARGET_MPH,
     },
     "fbw": {
         # Ground-station authority limits for Fly-By-Wire attitude commands.

@@ -88,13 +88,26 @@
  *     same behaviour as having no altitude hold, so the degraded case is never
  *     worse than not having the feature.
  *
- * LOITER_MIN_AIRSPEED_MPH MUST be set above the airframe's measured clean
- * stall speed before flying this. The shipped value is a placeholder chosen
- * below the auto-throttle default, not a measurement.
+ * LOITER_MIN_AIRSPEED_MPH MUST sit ABOVE the airframe's stall speed and
+ * BELOW the auto-throttle cruise target. Both halves matter: below stall the
+ * floor protects nothing, and above cruise the hold is permanently abandoned
+ * and loiter silently degrades to a descending un-held orbit.
+ *
+ * The configured stall warning is 20 mph, so the floor is 24 (1.2x) and the
+ * cruise default was raised to 30 (1.5x) to leave room for both. The previous
+ * 18 mph floor sat BELOW the configured stall with a 20 mph cruise above it --
+ * no margin anywhere, and a floor that could not protect the wing.
+ *
+ * In the 15 deg bank stall speed rises by 1/sqrt(cos 15) ~= 1.8%, to about
+ * 20.4 mph, so the floor keeps roughly 1.18x over the banked stall.
+ *
+ * 20 mph is a CONFIGURED WARNING THRESHOLD, not a measured stall speed. If a
+ * flight test measures the real number, reset all three together -- this
+ * floor, the cruise target, and warnings.stall_airspeed.
  * ------------------------------------------------------------------------- */
 #define LOITER_ALT_KP_DEG_PER_M    0.5f
 #define LOITER_ALT_PITCH_LIMIT_DEG 10.0f
-#define LOITER_MIN_AIRSPEED_MPH    18.0f
+#define LOITER_MIN_AIRSPEED_MPH    24.0f
 
 /* True when CH10 explicitly requests the orbit. */
 static inline bool loiterRequestedFromChannel(uint16_t channelValue)

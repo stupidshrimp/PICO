@@ -15,6 +15,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from config import DEFAULT_CONFIG
+
 from modules.loiter import (
     EVENT_DISENGAGED,
     EVENT_ENGAGED,
@@ -641,6 +643,80 @@ def _firmware_define(name):
     )
     assert match is not None, f"{name} not found in {_MAIN_INO.name}"
     return float(match.group(1))
+
+
+_LOITER_NAV_H = (
+    pathlib.Path(__file__).resolve().parents[1] / "flight_controller" / "loiter_nav.h"
+)
+_CONFIG_JSON = pathlib.Path(__file__).resolve().parents[1] / "config.json"
+
+
+def _header_define(path, name):
+    """Read a bare numeric ``#define NAME value`` (no surrounding parentheses)."""
+
+    import re
+
+    match = re.search(
+        r"^#define\s+" + re.escape(name) + r"\s+([-+0-9.eE]+)f?\s*$",
+        path.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, f"{name} not found in {path.name}"
+    return float(match.group(1))
+
+
+def _firmware_const_float(name):
+    """Read a ``const float NAME = value;`` out of Main.ino."""
+
+    import re
+
+    match = re.search(
+        r"^const\s+float\s+" + re.escape(name) + r"\s*=\s*([-+0-9.eE]+)f?\s*;",
+        _MAIN_INO.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, f"{name} not found in {_MAIN_INO.name}"
+    return float(match.group(1))
+
+
+def test_loiter_airspeed_floor_sits_between_stall_and_cruise():
+    """stall < floor < cruise, checked across all three files that set them.
+
+    Both halves are load-bearing and the shipped config once violated the
+    first: an 18 mph floor under a 20 mph configured stall protects nothing,
+    because the wing is already gone before the floor trips. A floor at or
+    above the cruise target is the opposite failure -- the hold is abandoned
+    permanently and loiter silently degrades to a descending un-held orbit.
+
+    Every value is read from the file that owns it, so this cannot pass on a
+    stale literal, and it covers the config actually flown rather than only
+    the built-in defaults.
+    """
+
+    import json
+
+    floor = _header_define(_LOITER_NAV_H, "LOITER_MIN_AIRSPEED_MPH")
+    cruise = _firmware_const_float("AUTO_THROTTLE_DEFAULT_TARGET_MPH")
+
+    shipped = json.loads(_CONFIG_JSON.read_text())
+    stall_values = [
+        DEFAULT_CONFIG["warnings"]["stall_airspeed"],
+        shipped.get("warnings", {}).get("stall_airspeed"),
+    ]
+    for stall in stall_values:
+        if stall is None:
+            continue
+        assert floor > float(stall), (
+            f"LOITER_MIN_AIRSPEED_MPH ({floor}) must exceed the configured "
+            f"stall airspeed ({stall}); a floor at or below stall cannot "
+            "protect the wing it exists to protect"
+        )
+
+    assert floor < cruise, (
+        f"LOITER_MIN_AIRSPEED_MPH ({floor}) must stay below the auto-throttle "
+        f"cruise target ({cruise}); otherwise the altitude hold is abandoned "
+        "on every orbit and loiter quietly becomes a descending circle"
+    )
 
 
 def test_attitude_gap_is_detected_regardless_of_when_the_gs_polls():

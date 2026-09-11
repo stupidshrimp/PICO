@@ -117,6 +117,7 @@ from pico_modules.attitude3d_osd import Attitude3DOSD
 
 from config import (
     ALLOWED_ATTITUDE_PACKET_RATES_HZ,
+    DEFAULT_AUTO_THROTTLE_TARGET_MPH,
     packet_interval_ms_from_rate,
     packet_rate_hz_from_interval,
     load_config,
@@ -306,7 +307,7 @@ class MainWindow(QMainWindow):
         # Throttle mode setup. Manual mode sends CH3 as throttle percent; auto
         # throttle sends CH3 as a desired airspeed setpoint for the FC-side PID.
         self.throttle_mode = "Manual"
-        self.throttle_target_airspeed_mph = 20.0
+        self.throttle_target_airspeed_mph = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         self.throttle_mode_channel = 6  # Channel 7/AUX3 (0-based index), CH5 is reserved.
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
         # CH7/AUX3 also carries the on-ground compass-calibration request as a
@@ -573,10 +574,14 @@ class MainWindow(QMainWindow):
         )
 
         self.throttle_cfg = self.config.setdefault("throttle", {})
-        self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
+        self.throttle_cfg.setdefault(
+            "target_airspeed_mph", DEFAULT_AUTO_THROTTLE_TARGET_MPH
+        )
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
         self.throttle_target_airspeed_mph = self._clamp_auto_throttle_speed(
-            self.throttle_cfg.get("target_airspeed_mph", 20.0)
+            self.throttle_cfg.get(
+                "target_airspeed_mph", DEFAULT_AUTO_THROTTLE_TARGET_MPH
+            )
         )
         self.throttle_cfg["target_airspeed_mph"] = self.throttle_target_airspeed_mph
         # Do not make the CH3 speed scale configurable unless the FC-side
@@ -2240,9 +2245,9 @@ class MainWindow(QMainWindow):
         try:
             speed = float(speed_mph)
         except (TypeError, ValueError):
-            speed = 20.0
+            speed = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         if not math.isfinite(speed):
-            speed = 20.0
+            speed = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         return max(0.0, min(self.auto_throttle_speed_channel_max_mph, speed))
 
     def set_auto_throttle_target_speed(self, speed_mph: float) -> None:
