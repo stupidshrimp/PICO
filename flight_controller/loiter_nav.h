@@ -226,9 +226,16 @@ static inline bool loiterUpdate(LoiterState* st,
     if (st->transitioned) {
         if (st->running) {
             /* Capture the hold target at the moment the orbit starts. An
-             * unusable barometer here simply means no altitude hold for this
-             * orbit -- pitch stays level, which is the un-held behaviour --
-             * rather than holding against a number that means nothing. */
+             * unusable barometer here means no altitude hold for this orbit --
+             * pitch stays level, which is the un-held behaviour -- rather than
+             * holding against a number that means nothing.
+             *
+             * Main.ino cannot actually reach that branch: it folds barometer
+             * freshness into `airborne` (see loiterMayEngage), so an unusable
+             * barometer fails the gate and there is no orbit to hold at all.
+             * It stays because this header is caller-agnostic -- a caller
+             * whose airborne latch does not depend on the barometer still
+             * wants the un-held orbit rather than a hold on a stale number. */
             st->targetAltitudeM = altitudeM;
             st->targetAltitudeValid = altitudeValid;
         } else {
@@ -247,6 +254,14 @@ static inline bool loiterUpdate(LoiterState* st,
  * which case it returns to level and the orbit simply descends as it would
  * without altitude hold. Every failure path degrades to the un-held orbit
  * rather than to a held one flying on bad numbers.
+ *
+ * Which of those the FIRMWARE can reach is narrower than the list. Main.ino
+ * folds barometer freshness into the `airborne` gate, so both barometer paths
+ * end the orbit outright instead of arriving here un-held; only the pitot
+ * paths -- stale airspeed, or airspeed below the floor -- degrade to level
+ * pitch in this build. Do not read the barometer branches as documentation of
+ * what this aircraft does; they exist for callers that gate `airborne` on
+ * something else.
  *
  * Both axes are clamped into the caller's FBW envelope, so editing the
  * constants above can never command past the limit the rest of the firmware

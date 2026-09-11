@@ -3503,7 +3503,16 @@ void maybePrintControlDebugStats() {
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.print(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
-  Serial.print(" nav="); Serial.print(navMode == NAV_MODE_LOITER ? "LOITER" : "OFF");
+  // Report the FLOWN state, not the request. navMode is only what CH10 asked
+  // for, and any gate in loiterUpdate() can refuse it -- so printing "LOITER"
+  // for a refused request tells the operator the orbit is flying when the
+  // aircraft is still on the sticks. That is the same claim the ground
+  // station's indicator was renamed to "Loiter req" to avoid, and the protocol
+  // contract points operators at THIS field to settle exactly that question.
+  Serial.print(" nav=");
+  Serial.print(navMode != NAV_MODE_LOITER
+                   ? "OFF"
+                   : (loiterState.running ? "LOITER" : "LOITER_REQ"));
   Serial.print(" mode_ch="); Serial.print(latestRcChannels.value[5]);
   Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
   Serial.print(" throttle_mode_ch="); Serial.print(latestRcChannels.value[6]);

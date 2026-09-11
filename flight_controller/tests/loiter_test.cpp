@@ -18,6 +18,13 @@
  *      stale pitot, unusable barometer at engage or in flight, no state --
  *      falls back to level pitch, i.e. the un-held orbit. The degraded case is
  *      never worse than not having the feature.
+ *   5. Firmware reachability: the header is caller-agnostic, but Main.ino wires
+ *      `airborne` to `aircraftAirborne && barometerInputFresh(...)` and passes
+ *      that same bool as `altitudeValid`. Under THAT wiring the barometer
+ *      degraded paths above cannot be reached at all -- a bad barometer ends
+ *      the orbit instead of flying it un-held. Pinned so the header's and the
+ *      protocol contract's claims about this build cannot silently stop being
+ *      true if the wiring changes.
  *
  * Build & run:
  *   c++ -std=c++17 -I.. -O2 -o /tmp/loiter_test loiter_test.cpp && /tmp/loiter_test
@@ -36,6 +43,23 @@ static int g_fail = 0;
 
 static void check(bool cond, const char* what) {
     if (!cond) { g_fail++; std::printf("  FAIL %s\n", what); }
+}
+
+/* Close a test group. Prints "ok" only if THIS group added no failures.
+ * Printing it unconditionally -- as every group used to -- meant a failing
+ * group reported its "FAIL ..." lines and then "ok" directly underneath, which
+ * is the one thing a verification harness must never do. */
+static int g_fail_at_group_start = 0;
+static bool groupPassed() {
+    const bool passed = (g_fail == g_fail_at_group_start);
+    g_fail_at_group_start = g_fail;
+    return passed;
+}
+static void finish() {
+    if (groupPassed()) { std::printf("  ok\n"); }
+}
+static void finishNote(const char* note) {
+    if (groupPassed()) { std::printf("  ok   %s\n", note); }
 }
 
 static void checkNear(float got, float want, float tol, const char* what) {
@@ -70,7 +94,7 @@ static void test_request_band() {
     check(!loiterRequestedFromChannel(RC_CENTRE_FOR_TEST),
           "a GS that never drives CH10 must never get an orbit");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 /* --------------------------------------------------------------------------
@@ -103,7 +127,7 @@ static void test_gate_requires_everything() {
     }
     check(engaged == 1, "exactly one of the 32 gate combinations may engage");
 
-    std::printf("  ok   1 of 32 combinations engages\n");
+    finishNote("1 of 32 combinations engages");
 }
 
 /* --------------------------------------------------------------------------
@@ -133,7 +157,7 @@ static void test_ground_request_does_not_spring_after_takeoff() {
     check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "a fresh request while airborne must engage");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_latch_drops_and_requires_a_new_edge() {
@@ -151,7 +175,7 @@ static void test_latch_drops_and_requires_a_new_edge() {
     check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "regaining airborne must not resume without a new request");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_attitude_outage_does_not_resume_silently() {
@@ -178,7 +202,7 @@ static void test_attitude_outage_does_not_resume_silently() {
     check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "release");
     check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "fresh request re-engages");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_request_during_convergence_is_refused() {
@@ -200,7 +224,7 @@ static void test_request_during_convergence_is_refused() {
     check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "convergence completing must not accept the standing request");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_a_frozen_altitude_sensor_must_end_the_orbit() {
@@ -227,7 +251,7 @@ static void test_a_frozen_altitude_sensor_must_end_the_orbit() {
     check(!loiterUpdate(&st, true, true, true, true, true, 100.0f, true),
           "recovery must not resume without a new request");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_transition_flag_tracks_effective_state() {
@@ -256,7 +280,7 @@ static void test_transition_flag_tracks_effective_state() {
     loiterUpdate(&st, true, true, true, true, false, 100.0f, true);
     check(!st.transitioned, "and must keep not touching them");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_rc_failsafe_does_not_resume_on_recovery() {
@@ -288,7 +312,7 @@ static void test_rc_failsafe_does_not_resume_on_recovery() {
     check(!loiterUpdate(&st, false, true, true, true, true, 100.0f, true), "operator releases");
     check(loiterUpdate(&st, true, true, true, true, true, 100.0f, true), "and re-requests");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 /* --------------------------------------------------------------------------
@@ -330,7 +354,7 @@ static void test_commanded_attitude() {
     /* Null outputs must be ignored rather than dereferenced. */
     loiterDesiredAttitude(&st, 80.0f, 80.0f, 100.0f, true, 25.0f, true, 0, 0);
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_altitude_hold_sign_and_clamp() {
@@ -359,7 +383,7 @@ static void test_altitude_hold_sign_and_clamp() {
     check(LOITER_ALT_PITCH_LIMIT_DEG < 80.0f * 0.5f,
           "the altitude pitch clamp must stay well inside the FBW limit");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_airspeed_floor_outranks_altitude() {
@@ -386,7 +410,7 @@ static void test_airspeed_floor_outranks_altitude() {
     loiterDesiredAttitude(&st, 80.0f, 80.0f, 50.0f, true, 99.0f, false, &roll, &pitch);
     checkNear(pitch, 0.0f, 1e-6f, "stale airspeed must not be flown on");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_hold_degrades_without_a_usable_barometer() {
@@ -410,7 +434,7 @@ static void test_hold_degrades_without_a_usable_barometer() {
     loiterDesiredAttitude(0, 80.0f, 80.0f, 50.0f, true, 25.0f, true, &roll, &pitch);
     checkNear(pitch, 0.0f, 1e-6f, "no state means level pitch");
 
-    std::printf("  ok\n");
+    finish();
 }
 
 static void test_target_is_captured_at_engage_and_cleared_on_exit() {
@@ -437,7 +461,63 @@ static void test_target_is_captured_at_engage_and_cleared_on_exit() {
     loiterUpdate(&st, true, true, true, true, true, 70.0f, true);
     checkNear(st.targetAltitudeM, 70.0f, 1e-6f, "a new orbit captures a new target");
 
-    std::printf("  ok\n");
+    finish();
+}
+
+/* Reproduces Main.ino's wiring exactly. The firmware does NOT pass the raw
+ * airborne latch and an independent altitude-validity flag: it passes
+ * `aircraftAirborne && barometerInputFresh(...)` as `airborne`, and that same
+ * freshness bool again as `altitudeValid`. The two arguments are therefore
+ * coupled in this build, which is precisely what makes the barometer branches
+ * of loiterDesiredAttitude() unreachable here. */
+static bool firmwareLoiterUpdate(LoiterState* st, bool requested, bool rcFresh,
+                                 bool fbw, bool attitudeUsable,
+                                 bool aircraftAirborne, float altitudeM,
+                                 bool barometerFresh) {
+    return loiterUpdate(st, requested, rcFresh, fbw, attitudeUsable,
+                        aircraftAirborne && barometerFresh,
+                        altitudeM, barometerFresh);
+}
+
+static void test_firmware_wiring_makes_the_baro_paths_unreachable() {
+    std::printf("firmware wiring (a bad barometer ENDS the orbit, never degrades it)\n");
+
+    for (int airborneBit = 0; airborneBit < 2; ++airborneBit) {
+        for (int baroBit = 0; baroBit < 2; ++baroBit) {
+            const bool aircraftAirborne = (airborneBit != 0);
+            const bool baroFresh = (baroBit != 0);
+
+            LoiterState st;
+            loiterStateInit(&st);
+            firmwareLoiterUpdate(&st, false, true, true, true,
+                                 aircraftAirborne, 120.0f, baroFresh);
+            const bool running = firmwareLoiterUpdate(&st, true, true, true, true,
+                                                      aircraftAirborne, 120.0f,
+                                                      baroFresh);
+            if (!baroFresh) {
+                check(!running,
+                      "a stale barometer must end the orbit, not fly it un-held");
+            }
+            /* Whenever the firmware IS orbiting it holds a captured, valid
+             * target -- so the "no target captured" fallback is unreachable
+             * too, not merely the "barometer failing now" one. */
+            if (running) {
+                check(st.targetAltitudeValid,
+                      "a running firmware orbit always has a valid target");
+            }
+        }
+    }
+
+    /* Losing the barometer mid-orbit ends it, rather than continuing level. */
+    LoiterState st;
+    loiterStateInit(&st);
+    firmwareLoiterUpdate(&st, false, true, true, true, true, 120.0f, true);
+    check(firmwareLoiterUpdate(&st, true, true, true, true, true, 120.0f, true),
+          "orbit engages with a live barometer");
+    check(!firmwareLoiterUpdate(&st, true, true, true, true, true, 120.0f, false),
+          "the orbit ends when the barometer freezes mid-flight");
+
+    finish();
 }
 
 int main() {
@@ -456,6 +536,7 @@ int main() {
     test_airspeed_floor_outranks_altitude();
     test_hold_degrades_without_a_usable_barometer();
     test_target_is_captured_at_engage_and_cleared_on_exit();
+    test_firmware_wiring_makes_the_baro_paths_unreachable();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
                 g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
