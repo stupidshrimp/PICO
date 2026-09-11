@@ -642,6 +642,67 @@ def _firmware_define(name):
     return float(match.group(1))
 
 
+_MAIN_PY = pathlib.Path(__file__).resolve().parents[1] / "main.py"
+
+
+def _firmware_constexpr(name):
+    """Read a numeric ``constexpr`` straight out of the firmware.
+
+    Same reasoning as _firmware_define, for the constants declared that way.
+    """
+
+    import re
+
+    match = re.search(
+        r"^constexpr\s+\w+\s+" + re.escape(name) + r"\s*=\s*([0-9.eE+-]+)[uUlLfF]*\s*;",
+        _MAIN_INO.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, f"{name} not found in {_MAIN_INO.name}"
+    return float(match.group(1))
+
+
+def _main_py_class_constant(name):
+    """Read a numeric class constant out of main.py without importing it.
+
+    main.py needs PySide6, which the headless test environment does not have,
+    so the value is read from source -- and reading it is the point anyway: a
+    Python literal restated here would detect no drift at all.
+    """
+
+    import re
+
+    match = re.search(
+        r"^\s+" + re.escape(name) + r"\s*=\s*([0-9.eE+-]+)\s*$",
+        _MAIN_PY.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, f"{name} not found in {_MAIN_PY.name}"
+    return float(match.group(1))
+
+
+def test_loiter_attitude_window_is_no_laxer_than_the_firmware():
+    """The GS must not stay engaged through an outage that trips the FC.
+
+    The FC drops the orbit once its attitude estimate is ATTITUDE_STALE_TIMEOUT_US
+    stale, and the rising-edge rule then refuses to restart it until CH10 cycles.
+    A laxer ground-station window leaves a band of outage lengths that drop the
+    FC's orbit while the GS holds CH10 high and never cycles it, stranding the
+    request with nothing announcing the handover.
+
+    Both sides are read from source so this cannot pass on stale literals.
+    """
+
+    fc_stale_s = _firmware_constexpr("ATTITUDE_STALE_TIMEOUT_US") * 1e-6
+    gs_stale_s = _main_py_class_constant("LOITER_ATTITUDE_STALE_S")
+    assert gs_stale_s <= fc_stale_s + 1e-9, (
+        f"main.py LOITER_ATTITUDE_STALE_S ({gs_stale_s} s) is laxer than the "
+        f"FC's ATTITUDE_STALE_TIMEOUT_US ({fc_stale_s} s): an attitude outage "
+        "between the two drops the FC's orbit while the GS keeps CH10 high, "
+        "and the rising-edge rule then strands the request"
+    )
+
+
 def test_mirrored_airspeed_tracks_the_real_firmware_constant():
     """The mirror must follow AIRBORNE_ENGAGE_AIRSPEED_MPS, read from source."""
 

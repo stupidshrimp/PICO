@@ -209,9 +209,26 @@ class MainWindow(QMainWindow):
     DEFAULT_FBW_MAX_PITCH_ANGLE_DEG = 30.0
 
     # How stale attitude telemetry may get before loiter refuses to engage or
-    # hands control back. Matches the 1.0 s window check_attitude_connection
-    # already uses to declare attitude telemetry offline.
-    LOITER_ATTITUDE_STALE_S = 1.0
+    # hands control back. This must be NO LAXER than the FC's own attitude
+    # cutoff (ATTITUDE_STALE_TIMEOUT_US, 200 ms), and is deliberately NOT the
+    # 1.0 s window check_attitude_connection uses to declare telemetry offline:
+    # that window answers "is the link up", which is a different question.
+    #
+    # The FC drops the orbit the moment its estimate goes stale, and the
+    # rising-edge rule then refuses to restart it until CH10 cycles. A laxer
+    # window here leaves a gap -- an attitude outage between 200 ms and 1 s --
+    # where the FC has already handed the stick back while the ground station
+    # keeps CH10 high and never cycles it. The orbit is then stranded until the
+    # operator happens to notice and re-holds, with nothing announcing it.
+    #
+    # Matching the FC exactly is sound rather than another approximation of FC
+    # state, because the FC stops SENDING attitude when the estimate goes stale
+    # (telemetryWriteAttitude is gated on attitudeSampleValid, which is
+    # attitudeEstimateFresh -- the same predicate the loiter gate uses). A gap
+    # in arrivals here therefore means what a gap means there. Link latency can
+    # make the ground station notice slightly late, which is harmless: the drop
+    # still happens and still re-arms the edge.
+    LOITER_ATTITUDE_STALE_S = 0.2
     # Audio cues, drawn from the existing audio/ set. Drop in dedicated loiter
     # recordings and repoint these names when they exist.
     LOITER_SOUND_ENGAGED = "beepalarm"
