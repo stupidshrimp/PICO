@@ -242,3 +242,22 @@ def test_full_deadzone_bypasses_smoothing_and_immediately_recenters():
     assert roll == 512
     assert handler.pitch == 512
     assert handler.roll == 512
+
+
+def test_physical_values_are_unaffected_by_sensitivity():
+    """Stick-break asks whether the pilot moved the stick, not how much
+    command that produces.
+
+    At 25% sensitivity a full physical deflection only reaches 0.25 of the
+    processed range, so a displacement threshold applied to the processed
+    values becomes uncrossable and the loiter takeover path dies. The
+    physical accessor must report full travel regardless.
+    """
+
+    for sensitivity in (100, 50, 25, 10):
+        handler = JoystickRawHandler.__new__(JoystickRawHandler)
+        handler.raw_roll = 1023
+        handler.raw_pitch = 1023
+        pitch, roll = handler.get_physical_values()
+        assert (pitch - 512) / 512 > 0.9, sensitivity
+        assert (roll - 512) / 512 > 0.9, sensitivity

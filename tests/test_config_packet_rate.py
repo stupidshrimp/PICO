@@ -5,6 +5,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from config import (
     DEFAULT_ATTITUDE_PACKET_RATE_HZ,
+    DEFAULT_AUTO_THROTTLE_TARGET_MPH,
     load_config,
     normalise_packet_interval_ms,
     packet_interval_ms_from_rate,
@@ -112,4 +113,8 @@ def test_load_config_ignores_malformed_known_sections(tmp_path, monkeypatch):
     assert config["joystick"]["baudrate"] == 9600
     assert config["crsf"]["port"] == "COM43"
     assert config["crsf"]["packet_interval"] == 4
-    assert config["throttle"] == {"target_airspeed_mph": 20.0}
+    # Read the default rather than restating it: this literal was 20.0 and
+    # went stale the moment the cruise target moved.
+    assert config["throttle"] == {
+        "target_airspeed_mph": DEFAULT_AUTO_THROTTLE_TARGET_MPH
+    }

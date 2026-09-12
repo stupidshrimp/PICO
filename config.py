@@ -67,6 +67,12 @@ def normalise_packet_interval_ms(interval_ms: int) -> int:
     return packet_interval_ms_from_rate(packet_rate_hz_from_interval(interval_ms))
 
 
+# Auto-throttle cruise target used whenever the config is missing or invalid.
+# Must stay above warnings.stall_airspeed and above loiter's
+# LOITER_MIN_AIRSPEED_MPH (flight_controller/loiter_nav.h), so the loiter
+# airspeed floor can sit between stall and cruise.
+DEFAULT_AUTO_THROTTLE_TARGET_MPH = 30.0
+
 DEFAULT_CONFIG = {
     "joystick": {
         "port": "COM14",
@@ -93,7 +99,7 @@ DEFAULT_CONFIG = {
     "throttle": {
         # Auto-throttle target sent to the FC on CH3 when Auto Throttle is active.
         # PID gains and stale-data timeouts live in flight_controller/Main.ino.
-        "target_airspeed_mph": 20.0,
+        "target_airspeed_mph": DEFAULT_AUTO_THROTTLE_TARGET_MPH,
     },
     "fbw": {
         # Ground-station authority limits for Fly-By-Wire attitude commands.
@@ -101,6 +107,21 @@ DEFAULT_CONFIG = {
         # safety limit; these values determine the actual commanded envelope.
         "max_roll_angle_deg": 45.0,
         "max_pitch_angle_deg": 30.0,
+    },
+    "loiter": {
+        # Ground-station half of the FC's fixed-bank orbit. Engaged by HOLDING
+        # the control-mode toggle (Ctrl+M or the joystick control-mode button)
+        # for hold_seconds, which raises CH10; the orbit geometry and its own
+        # gates live in flight_controller/loiter_nav.h.
+        "hold_seconds": 2.0,
+        # Stick travel (normalized, 0..1) away from where the stick sat at
+        # engage time that hands control back to the pilot.
+        "stick_break_norm": 0.25,
+        # Upper bound on one orbit, in seconds. 0 disables the timeout, which
+        # is the default now that the FC holds altitude: the orbit no longer
+        # runs out of height, so an arbitrary clock is a worse bound than the
+        # gates that track conditions actually worth stopping for.
+        "max_duration_s": 0.0,
     },
     "osd": {
         # Percentage weight applied to new samples for the attitude indicator

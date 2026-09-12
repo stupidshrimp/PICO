@@ -40,6 +40,7 @@
 #include "ms4525d0.h" 
 #include "m8n.h"
 #include "control_mode.h"
+#include "loiter_nav.h"
 #include "mag_cal_fit.h"
 #include "mag_cal_flash.h"
 #include <CRSFforArduino.hpp>
@@ -898,6 +899,7 @@ struct ControlDebugCounters {
   uint32_t airspeedInvalidReads;
   uint32_t imuReadFailures;
   uint32_t fbwStaleAttitudeFallbacks;
+  uint32_t loiterCycles;
   uint32_t rollServoWrites;
   uint32_t pitchServoWrites;
   uint32_t yawServoWrites;
@@ -982,6 +984,7 @@ void resetControlDebugCounters() {
   controlDebugCounters.airspeedInvalidReads = 0;
   controlDebugCounters.imuReadFailures = 0;
   controlDebugCounters.fbwStaleAttitudeFallbacks = 0;
+  controlDebugCounters.loiterCycles = 0;
   controlDebugCounters.rollServoWrites = 0;
   controlDebugCounters.pitchServoWrites = 0;
   controlDebugCounters.yawServoWrites = 0;
@@ -1018,6 +1021,9 @@ serialReceiverLayer::rcChannels_t latestRcChannels;
 
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 ThrottleMode throttleMode = THROTTLE_MODE_MANUAL;
+NavMode navMode = NAV_MODE_OFF;
+// Latched loiter state; see loiter_nav.h for why a rising edge is required.
+LoiterState loiterState = { false, false, false };
 
 const uint16_t RC_INPUT_MIN = 172;
 const uint16_t RC_INPUT_MAX = 1811;
@@ -1034,9 +1040,30 @@ const uint16_t THROTTLE_MODE_AUTO_TARGET = 1700;
 const uint16_t THROTTLE_MODE_SWITCH_DEADBAND = 150;
 const uint16_t THROTTLE_MODE_AUTO_MIN = THROTTLE_MODE_AUTO_TARGET - THROTTLE_MODE_SWITCH_DEADBAND;
 
+// Loiter is requested on CH10/AUX6: CH8/CH9 already carry the board-alignment
+// trim. The band and the orbit geometry live in loiter_nav.h so the host tests
+// compile the same constants the firmware flies.
+const size_t LOITER_MODE_CHANNEL_INDEX = 9;
+
 const float AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH = 100.0f;
-const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 20.0f;
+// Raised from 20 to leave margin above both the configured 20 mph stall
+// warning and loiter's 24 mph airspeed floor (see LOITER_MIN_AIRSPEED_MPH in
+// loiter_nav.h). At 20 the floor could not sit between stall and cruise at all.
+const float AUTO_THROTTLE_DEFAULT_TARGET_MPH = 30.0f;
 const uint32_t AIRSPEED_FAILSAFE_TIMEOUT_US = 100000UL;
+// How stale a barometric altitude may be before consumers must stop trusting
+// it. barometerHealthy only reports an initialisation failure and is never
+// cleared at runtime, and a failed readAdc() returns the state machine to IDLE
+// without touching sensorAltitudeCm -- so a sensor that stops answering leaves
+// the last altitude cached forever, looking perfectly healthy. Anything closing
+// a loop on altitude has to check freshness explicitly.
+//
+// Pressure samples land at the ~60 Hz BAROMETER_PERIOD_US cadence, interrupted
+// every BAROMETER_TEMPERATURE_PERIOD_US (500 ms) by a temperature conversion
+// that skips a pressure read or two. This timeout clears that normal gap by an
+// order of magnitude while still catching a freeze long before a clamped pitch
+// command could do anything.
+const uint32_t BAROMETER_FAILSAFE_TIMEOUT_US = 250000UL;
 const float AUTO_THROTTLE_STALE_DECAY_PERCENT_PER_S = 50.0f;
 
 const uint16_t SERVO_MIN_US = 1000;
@@ -1285,6 +1312,8 @@ PIDController throttlePid(AUTO_THROTTLE_KP, AUTO_THROTTLE_KI, AUTO_THROTTLE_KD,
 float autoThrottlePercent = 0.0f;
 float latestAutoThrottleTargetMph = AUTO_THROTTLE_DEFAULT_TARGET_MPH;
 uint32_t lastAirspeedUpdateUs = 0;
+// micros() of the last barometer reading that actually produced an altitude.
+uint32_t lastBarometerUpdateUs = 0;
 bool latestAirspeedValid = false;
 
 // Low-passed pitot airspeed derivative (m/s^2) for the longitudinal kinematic
@@ -1452,6 +1481,20 @@ bool airspeedInputFresh(uint32_t nowUs) {
          (uint32_t)(nowUs - lastAirspeedUpdateUs) <= AIRSPEED_FAILSAFE_TIMEOUT_US;
 }
 
+// Mirrors airspeedInputFresh for the barometer. barometerHealthy alone is not
+// enough: it only reports an initialisation failure, so a sensor that stops
+// answering mid-flight keeps it true while sensorAltitudeCm silently holds its
+// last value. See BAROMETER_FAILSAFE_TIMEOUT_US.
+bool barometerInputFresh(uint32_t nowUs) {
+  // lastBarometerUpdateUs is stamped only where a reading produced a finite
+  // ALTITUDE, so a non-zero value already proves a real sample got through --
+  // a strictly stronger statement than latestAmbientPressurePa > 0, which is
+  // also declared further down this file and so cannot be read from here.
+  return barometerHealthy &&
+         lastBarometerUpdateUs != 0 &&
+         (uint32_t)(nowUs - lastBarometerUpdateUs) <= BAROMETER_FAILSAFE_TIMEOUT_US;
+}
+
 // True while the EKF attitude estimate is live (see lastAttitudeUpdateUs).
 bool attitudeEstimateFresh(uint32_t nowUs) {
   return lastAttitudeUpdateUs != 0 &&
@@ -1500,6 +1543,46 @@ void setThrottleMode(ThrottleMode newMode) {
     if (newMode == THROTTLE_MODE_MANUAL) {
       autoThrottlePercent = 0.0f;
     }
+  }
+}
+
+void setNavMode(NavMode newMode) {
+  // Deliberately no PID reset here. What matters for the PIDs is the EFFECTIVE
+  // loiter state, which is not the same as the requested mode: the airborne
+  // latch can start or stop an orbit under a standing request, and a request
+  // raised on the ground never flies at all. Resetting on the request would
+  // both miss those transitions and dump the integrator while the pilot is
+  // still hand-flying Fly-By-Wire. The servo block resets on
+  // loiterState.transitioned instead.
+  navMode = newMode;
+}
+
+// Derive the loiter request from CH10/AUX6. Structured exactly like
+// updateControlMode(): only an explicit high value requests the mode, every
+// other value means off, and a stale link leaves the decision to the failsafe
+// block rather than re-deriving it from channel values that are no longer
+// being refreshed.
+//
+// This function only tracks what the ground station is ASKING for. Whether the
+// orbit may actually run is decided every control cycle by loiterMayEngage(),
+// which additionally requires Fly-By-Wire, a usable attitude estimate, and the
+// airborne latch -- so a request standing on the channel while the aircraft is
+// on the ground, or in Manual, simply does nothing.
+void updateNavMode() {
+  if (!rcInputFresh(micros())) {
+    return;
+  }
+
+  const size_t channelCount = sizeof(latestRcChannels.value) / sizeof(latestRcChannels.value[0]);
+  if (LOITER_MODE_CHANNEL_INDEX >= channelCount) {
+    setNavMode(NAV_MODE_OFF);
+    return;
+  }
+
+  if (loiterRequestedFromChannel(latestRcChannels.value[LOITER_MODE_CHANNEL_INDEX])) {
+    setNavMode(NAV_MODE_LOITER);
+  } else {
+    setNavMode(NAV_MODE_OFF);
   }
 }
 
@@ -1603,6 +1686,7 @@ void serviceCrsfLink() {
 #endif
   updateControlMode();
   updateThrottleMode();
+  updateNavMode();
 }
 
 // ----- GPS -----
@@ -1910,6 +1994,10 @@ void applyBarometerPressure(float baroPressure) {
   }
   sensorAltitudeCm = altitudeMeters * 100.0f;
   latestAltitudeFeet = altitudeMeters * 3.28084f;
+  // Stamp only here, where a reading actually produced an altitude: both early
+  // returns above leave the previous timestamp in place so a run of rejected
+  // samples ages out rather than passing as fresh.
+  lastBarometerUpdateUs = micros();
   if (!groundAltitudeCaptured && !watchdogRecoveryBoot) {
     // First valid reading happens on the ground during startup; use it as the
     // height reference for airborne detection. Baro drift over a flight is small
@@ -2086,6 +2174,7 @@ void resetPeriodicTimers() {
   barometerReadState = BAROMETER_IDLE;
   barometerTemperatureValid = false;
   lastBarometerTemperatureUs = 0;
+  lastBarometerUpdateUs = 0;
   lastControlUpdateUs = micros();
   controlDebugPrintTimer = 0;
   resetControlDebugCounters();
@@ -3381,6 +3470,7 @@ void maybePrintControlDebugStats() {
   Serial.print(" airspeed_invalid_hz="); Serial.print(controlDebugCounters.airspeedInvalidReads * scale, 1);
   Serial.print(" imu_read_fail_hz="); Serial.print(controlDebugCounters.imuReadFailures * scale, 1);
   Serial.print(" fbw_stale_att_hz="); Serial.print(controlDebugCounters.fbwStaleAttitudeFallbacks * scale, 1);
+  Serial.print(" loiter_hz="); Serial.print(controlDebugCounters.loiterCycles * scale, 1);
   Serial.print(" tlm_course="); Serial.print(latestGpsCourse, 1);
   Serial.print(" tlm_sats="); Serial.print(satsInUse);
   Serial.print(" tlm_att_valid="); Serial.print(attitudeSampleValid ? 1 : 0);
@@ -3416,6 +3506,16 @@ void maybePrintControlDebugStats() {
   Serial.print(" rc_fresh="); Serial.print(rcInputFresh(nowUs) ? 1 : 0);
   Serial.print(" rx_failsafe="); Serial.print(rcReceiverFailsafeActive ? 1 : 0);
   Serial.print(" mode="); Serial.print(controlMode == CONTROL_MODE_FLY_BY_WIRE ? "FBW" : "MANUAL");
+  // Report the FLOWN state, not the request. navMode is only what CH10 asked
+  // for, and any gate in loiterUpdate() can refuse it -- so printing "LOITER"
+  // for a refused request tells the operator the orbit is flying when the
+  // aircraft is still on the sticks. That is the same claim the ground
+  // station's indicator was renamed to "Loiter req" to avoid, and the protocol
+  // contract points operators at THIS field to settle exactly that question.
+  Serial.print(" nav=");
+  Serial.print(navMode != NAV_MODE_LOITER
+                   ? "OFF"
+                   : (loiterState.running ? "LOITER" : "LOITER_REQ"));
   Serial.print(" mode_ch="); Serial.print(latestRcChannels.value[5]);
   Serial.print(" throttle_mode="); Serial.print(throttleMode == THROTTLE_MODE_AUTO ? "AUTO" : "MANUAL");
   Serial.print(" throttle_mode_ch="); Serial.print(latestRcChannels.value[6]);
@@ -5424,6 +5524,20 @@ void loop() {
       rcFailsafeActive = true;
       setControlMode(CONTROL_MODE_MANUAL);
       setThrottleMode(THROTTLE_MODE_MANUAL);
+      // Loiter does not outlive the link, but it is stopped by the rcFresh
+      // gate in loiterUpdate() rather than from here, and navMode is
+      // deliberately LEFT ALONE. Forcing it off would make the standing CH10
+      // request look released, so the first recovered packet would read as a
+      // fresh rising edge and the aircraft would resume a 20 degree orbit on
+      // its own after a brief dropout -- with its attitude disturbed by the
+      // failsafe blend and its throttle cut, and with the pilot given no say.
+      //
+      // The edge is meant to represent an OPERATOR action; synthesising one
+      // internally defeats it. updateNavMode() already declines to re-derive
+      // the mode while RC is stale, so the request simply stays latched and
+      // blocked until a real low CH10 value is seen. Resuming automatically is
+      // right for Fly-By-Wire, which only restores what the pilot's stick
+      // means, and wrong for an autonomous mode that flies with no input.
     } else {
       rcFailsafeActive = false;
       rcServoHoldBlendActive = false;
@@ -5445,6 +5559,64 @@ void loop() {
     uint16_t rcPitchRaw = (channelCount > 1) ? latestRcChannels.value[1] : RC_INPUT_CENTER;
     uint16_t rcThrottleRaw = (channelCount > 2) ? latestRcChannels.value[2] : RC_INPUT_MIN;
     uint16_t rcYawRaw = (channelCount > 3) ? latestRcChannels.value[3] : RC_INPUT_CENTER;
+
+    // Advance the loiter latch ONCE per control cycle, before the branch chain
+    // below picks a servo mode, and with the real gate values rather than the
+    // ones a particular branch implies. Doing it inside the Fly-By-Wire branch
+    // meant the latch never observed a failing gate that routed control
+    // somewhere else: an attitude outage takes the pass-through branch above,
+    // so `running` stayed set through the outage and the orbit resumed
+    // silently on recovery with no fresh request edge and no PID reset. It
+    // also meant a request raised during the watchdog-convergence window was
+    // first seen only after convergence, and so read as a valid rising edge.
+    const bool loiterAttitudeUsable =
+        attitudeEstimateFresh(servoUpdateUs) && attitudeEstimateConvergedForFbw();
+    // Barometric altitude for the hold. Absolute (not relative to the boot
+    // ground reference) because the target is captured at engage, so a
+    // watchdog-recovery boot that never captured a ground reference can still
+    // hold the height it was circling at. latestAmbientPressurePa > 0 proves
+    // the cache has produced at least one real reading rather than its zero
+    // default, which would otherwise read as "sea level" and command a dive.
+    const float loiterAltitudeM = sensorAltitudeCm * 0.01f;
+    const bool loiterAltitudeValid = barometerInputFresh(servoUpdateUs);
+    const bool loiterAirspeedValid = airspeedInputFresh(servoUpdateUs);
+
+    // aircraftAirborne is NOT trustworthy on its own here. On a normal boot the
+    // latch clears only on height, and height comes from sensorAltitudeCm --
+    // which a failed barometer leaves frozen (see barometerInputFresh). The
+    // latch would then stay set forever: updateAirborneState keeps comparing a
+    // stale altitude against the ground reference, never sees the disengage
+    // height, and never detects the landing. Loiter would go on commanding its
+    // bank after touchdown, on the runway.
+    //
+    // Without a trustworthy altitude the FC cannot tell flight from a rollout,
+    // so it must not keep an autonomous mode running: drop the orbit and hand
+    // the aircraft back. That also costs nothing real, because the same failure
+    // has already disabled altitude hold.
+    //
+    // On a watchdog-recovery boot the latch is driven by airspeed instead and
+    // does not have this failure mode, but loiter is refused there too rather
+    // than special-casing a path that already means the aircraft reset in
+    // flight.
+    const bool loiterAirborneTrustworthy = aircraftAirborne && loiterAltitudeValid;
+
+    const bool loiterActive = loiterUpdate(
+        &loiterState,
+        navMode == NAV_MODE_LOITER,
+        rcFresh,
+        controlMode == CONTROL_MODE_FLY_BY_WIRE,
+        loiterAttitudeUsable,
+        loiterAirborneTrustworthy,
+        loiterAltitudeM,
+        loiterAltitudeValid);
+    if (loiterState.transitioned) {
+      // The setpoint source just changed in one direction or the other, so
+      // clear the integrators before they apply correction earned against the
+      // previous setpoint to the new one. Out here rather than in the FBW
+      // branch so a drop that routes control elsewhere still resets.
+      rollPid.reset();
+      pitchPid.reset();
+    }
 
     uint16_t rollCommandUs = SERVO_CENTER_US;
     uint16_t pitchCommandUs = SERVO_CENTER_US;
@@ -5516,8 +5688,21 @@ void loop() {
       const float rollCommandNorm = mapRcToNormalized(rcRollRaw);
       const float pitchCommandNorm = mapRcToNormalized(rcPitchRaw);
 
-      const float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
-      const float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
+      float desiredRoll = rollCommandNorm * FBW_MAX_ROLL_ANGLE_DEG;
+      float desiredPitch = pitchCommandNorm * FBW_MAX_PITCH_ANGLE_DEG;
+
+      // Loiter substitutes a fixed bank and level pitch for the stick. The
+      // latch was already advanced above against the real gate values, so this
+      // only consumes its result; losing any gate drops loiterActive there and
+      // hands the stick straight back on this same cycle.
+      if (loiterActive) {
+        loiterDesiredAttitude(&loiterState,
+                              FBW_MAX_ROLL_ANGLE_DEG, FBW_MAX_PITCH_ANGLE_DEG,
+                              loiterAltitudeM, loiterAltitudeValid,
+                              latestAirspeedMph, loiterAirspeedValid,
+                              &desiredRoll, &desiredPitch);
+        ++controlDebugCounters.loiterCycles;
+      }
 
       const float rollPidOutput = rollPid.update(desiredRoll, roll, controlDt);
       const float pitchPidOutput = pitchPid.update(desiredPitch, pitch, controlDt);

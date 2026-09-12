@@ -117,6 +117,7 @@ from pico_modules.attitude3d_osd import Attitude3DOSD
 
 from config import (
     ALLOWED_ATTITUDE_PACKET_RATES_HZ,
+    DEFAULT_AUTO_THROTTLE_TARGET_MPH,
     packet_interval_ms_from_rate,
     packet_rate_hz_from_interval,
     load_config,
@@ -133,6 +134,31 @@ from modules.preflight_page import PreFlightChecklistPage
 from modules.compass_cal import (
     compass_cal_start_blockers,
     throttle_mode_channel_value,
+)
+from modules.loiter import (
+    EVENT_DISENGAGED,
+    EVENT_ENGAGED,
+    EVENT_REFUSED,
+    LOITER_CHANNEL_INDEX,
+    LOITER_HOLD_SECONDS,
+    LOITER_MAX_DURATION_S,
+    LOITER_STICK_BREAK_NORM,
+    REASON_ATTITUDE_STALE,
+    REASON_GROUNDED,
+    REASON_NOT_TRANSMITTING,
+    REASON_NOT_FBW,
+    REASON_NO_JOYSTICK,
+    REASON_STICK,
+    REASON_TIMEOUT,
+    REASON_TOGGLE,
+    LoiterController,
+    LoiterGates,
+    PRESS_SOURCE_JOYSTICK,
+    fc_airborne_engage_ok,
+    fc_airborne_latched,
+    PRESS_SOURCE_KEY,
+    attitude_gap_exceeded,
+    loiter_channel_value,
 )
 from modules.board_align_trim import (
     BOARD_ALIGN_PITCH_CHANNEL_INDEX,
@@ -183,6 +209,34 @@ class MainWindow(QMainWindow):
     FBW_FC_MAX_PITCH_ANGLE_DEG = 80.0
     DEFAULT_FBW_MAX_ROLL_ANGLE_DEG = 45.0
     DEFAULT_FBW_MAX_PITCH_ANGLE_DEG = 30.0
+
+    # How stale attitude telemetry may get before loiter refuses to engage or
+    # hands control back. This must be NO LAXER than the FC's own attitude
+    # cutoff (ATTITUDE_STALE_TIMEOUT_US, 200 ms), and is deliberately NOT the
+    # 1.0 s window check_attitude_connection uses to declare telemetry offline:
+    # that window answers "is the link up", which is a different question.
+    #
+    # The FC drops the orbit the moment its estimate goes stale, and the
+    # rising-edge rule then refuses to restart it until CH10 cycles. A laxer
+    # window here leaves a gap -- an attitude outage between 200 ms and 1 s --
+    # where the FC has already handed the stick back while the ground station
+    # keeps CH10 high and never cycles it. The orbit is then stranded until the
+    # operator happens to notice and re-holds, with nothing announcing it.
+    #
+    # Matching the FC exactly is sound rather than another approximation of FC
+    # state, because the FC stops SENDING attitude when the estimate goes stale
+    # (telemetryWriteAttitude is gated on attitudeSampleValid, which is
+    # attitudeEstimateFresh -- the same predicate the loiter gate uses). A gap
+    # in arrivals here therefore means what a gap means there. Link latency can
+    # make the ground station notice slightly late, which is harmless: the drop
+    # still happens and still re-arms the edge.
+    LOITER_ATTITUDE_STALE_S = 0.2
+    # Audio cues, drawn from the existing audio/ set. Drop in dedicated loiter
+    # recordings and repoint these names when they exist.
+    LOITER_SOUND_ENGAGED = "beepalarm"
+    LOITER_SOUND_DISENGAGED = "manual"
+    LOITER_SOUND_REFUSED = "errorsound"
+    LOITER_SOUND_FAULT = "autopilotfailurewarning"
     # Keep in lockstep with AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH in
     # flight_controller/Main.ino; CH3 auto-throttle setpoints are scaled by this
     # fixed range on both the GS and FC.
@@ -236,14 +290,24 @@ class MainWindow(QMainWindow):
         self.desired_fbw_pitch = None
         self._latest_control_channels = [CRSF_CHANNEL_CENTER] * 16
         self.update_control_mode_label()
-        # Shortcut to toggle control mode
-        self.mode_shortcut = QShortcut(QKeySequence("Ctrl+M"), self)
-        self.mode_shortcut.activated.connect(self.toggle_control_mode)
+        # Control-mode toggle: Ctrl+M.  Deliberately NOT a QShortcut any more.
+        # Loiter engages on a 2 s HOLD of this same control, so a tap can only
+        # be told apart from a hold on the RELEASE edge and the handler needs
+        # both edges -- QShortcut exposes neither a release nor a way to stop
+        # auto-repeat from re-firing while the key is held.  An application
+        # event filter keeps the old "works wherever focus is" reach that
+        # QShortcut's WindowShortcut context gave us.  One visible consequence:
+        # a plain Manual/Fly-By-Wire toggle now happens when Ctrl+M is
+        # released rather than when it is pressed.
+        self._loiter_key_down = False
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Throttle mode setup. Manual mode sends CH3 as throttle percent; auto
         # throttle sends CH3 as a desired airspeed setpoint for the FC-side PID.
         self.throttle_mode = "Manual"
-        self.throttle_target_airspeed_mph = 20.0
+        self.throttle_target_airspeed_mph = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         self.throttle_mode_channel = 6  # Channel 7/AUX3 (0-based index), CH5 is reserved.
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
         # CH7/AUX3 also carries the on-ground compass-calibration request as a
@@ -297,6 +361,7 @@ class MainWindow(QMainWindow):
             "stick_yaw",
             "stick_throttle",
             "control_mode",
+            "loiter_requested",
             "fbw_setpoint_roll",
             "fbw_setpoint_pitch",
             "fbw_limit_roll",
@@ -483,11 +548,40 @@ class MainWindow(QMainWindow):
         )
         self.fbw_cfg["max_roll_angle_deg"] = self.fbw_max_roll_angle_deg
         self.fbw_cfg["max_pitch_angle_deg"] = self.fbw_max_pitch_angle_deg
+
+        # Loiter: the ground-station half of the FC's fixed-bank orbit. The
+        # orbit geometry lives in flight_controller/loiter_nav.h; everything
+        # here is the operator interface -- the engage gesture, the conditions
+        # the GS can see, and handing control back.
+        self.loiter_cfg = self.config.setdefault("loiter", {})
+        # Set by the attitude callback when the gap between two attitude
+        # packets exceeded LOITER_ATTITUDE_STALE_S, i.e. long enough for the FC
+        # to have dropped the orbit. Cleared once loiter is no longer engaged,
+        # so it forces exactly one handover and never blocks a later hold.
+        self._loiter_attitude_gap_seen = False
+        self.loiter = LoiterController(
+            hold_seconds=self._safe_float(
+                self.loiter_cfg.get("hold_seconds"), LOITER_HOLD_SECONDS
+            ),
+            stick_break_norm=self._safe_float(
+                self.loiter_cfg.get("stick_break_norm"), LOITER_STICK_BREAK_NORM
+            ),
+            # 0 deliberately disables the timeout, so this must not fall back
+            # to the default on a falsy value -- only on a missing/invalid one.
+            max_duration_s=self._safe_float(
+                self.loiter_cfg.get("max_duration_s"), LOITER_MAX_DURATION_S
+            ),
+        )
+
         self.throttle_cfg = self.config.setdefault("throttle", {})
-        self.throttle_cfg.setdefault("target_airspeed_mph", 20.0)
+        self.throttle_cfg.setdefault(
+            "target_airspeed_mph", DEFAULT_AUTO_THROTTLE_TARGET_MPH
+        )
         self.auto_throttle_speed_channel_max_mph = self.AUTO_THROTTLE_SPEED_CHANNEL_MAX_MPH
         self.throttle_target_airspeed_mph = self._clamp_auto_throttle_speed(
-            self.throttle_cfg.get("target_airspeed_mph", 20.0)
+            self.throttle_cfg.get(
+                "target_airspeed_mph", DEFAULT_AUTO_THROTTLE_TARGET_MPH
+            )
         )
         self.throttle_cfg["target_airspeed_mph"] = self.throttle_target_airspeed_mph
         # Do not make the CH3 speed scale configurable unless the FC-side
@@ -765,6 +859,9 @@ class MainWindow(QMainWindow):
         self._stick_angle_scale = 90.0
         self._last_stick_pitch_norm: Optional[float] = None
         self._last_stick_roll_norm: Optional[float] = None
+        # Pre-processing counterparts, used only by the loiter stick-break.
+        self._last_stick_pitch_phys_norm: Optional[float] = None
+        self._last_stick_roll_phys_norm: Optional[float] = None
         self._stick_last_update = 0.0
         # Monotonic time the joystick last yielded a FRESH axis sample (sourced
         # from the handler's last_sample_monotonic). _stick_last_update advances
@@ -1851,6 +1948,13 @@ class MainWindow(QMainWindow):
         # These let post-flight analysis grade Fly-By-Wire tracking directly;
         # in Manual mode the setpoints record blank.
         self.telemetry_state["control_mode"] = self.control_mode
+        # Records when the ground station was REQUESTING the orbit, which is
+        # not the same as the FC flying one: the firmware gates loiter on the
+        # airborne latch and a converged attitude estimate, and reports neither
+        # decision back down. A post-flight pass can separate a requested orbit
+        # from hand-flown Fly-By-Wire, but "requested and refused" looks the
+        # same here as "requested and flown".
+        self.telemetry_state["loiter_requested"] = 1 if self.loiter.engaged else 0
         self.telemetry_state["fbw_setpoint_roll"] = self.desired_fbw_roll
         self.telemetry_state["fbw_setpoint_pitch"] = self.desired_fbw_pitch
         self.telemetry_state["fbw_limit_roll"] = self.fbw_max_roll_angle_deg
@@ -1908,6 +2012,25 @@ class MainWindow(QMainWindow):
         # returns the cached roll/pitch when the serial stream stalls, so a
         # not-None reading alone does not prove live input; the handler advances
         # last_sample_monotonic only when a new sample is actually consumed.
+        # Physical (pre-deadzone, pre-sensitivity, pre-smoothing) stick
+        # position, cached separately for the loiter stick-break. That check
+        # asks whether the PILOT moved the stick, which must not depend on a
+        # command-shaping preference: at 25% sensitivity a full deflection only
+        # reaches 0.25 of the processed range, so a threshold applied to the
+        # processed values becomes uncrossable and the takeover path dies.
+        if self.joystick is not None and hasattr(self.joystick, "get_physical_values"):
+            try:
+                phys_pitch, phys_roll = self.joystick.get_physical_values()
+            except Exception:  # noqa: BLE001 - fall back to the processed cache
+                phys_pitch = phys_roll = None
+            if phys_pitch is not None and phys_roll is not None:
+                self._last_stick_pitch_phys_norm = max(
+                    -1.0, min(1.0, (phys_pitch - 512) / 512)
+                )
+                self._last_stick_roll_phys_norm = max(
+                    -1.0, min(1.0, (phys_roll - 512) / 512)
+                )
+
         sample_time = getattr(self.joystick, "last_sample_monotonic", None)
         if sample_time is not None:
             self._last_stick_sample_time = sample_time
@@ -1941,6 +2064,13 @@ class MainWindow(QMainWindow):
                     "Failed to close joystick after worker error", exc_info=True
                 )
             self.joystick = None
+            # Abort rather than cancel_press: that is deliberately a no-op once
+            # the hold has matured, so an ENGAGED orbit would survive losing the
+            # very device the pilot takes over with. Clearing the sample
+            # timestamp keeps joystick_live honest until a replacement actually
+            # produces one, instead of coasting on the dead handler's.
+            self._last_stick_sample_time = 0.0
+            self._abort_loiter(REASON_NO_JOYSTICK)
             self.update_connection_status(self.control_status, False)
             self._update_flight_controls_indicator()
             # Losing the joystick removes roll/pitch authority (those channels
@@ -1990,6 +2120,10 @@ class MainWindow(QMainWindow):
             self.debug_page.log_packet("joystick", (joy_pitch, joy_roll))
 
         self._handle_joystick_button_events()
+        # Ordered after the button edges so a press registered this cycle can
+        # mature into an engage on the very next poll, and after the stick
+        # capture above so the gates see this cycle's axis values.
+        self._poll_loiter()
         self._update_desired_fbw_attitude_from_stick(joy_pitch, joy_roll)
 
         if norm_pitch is None or norm_roll is None:
@@ -2111,9 +2245,9 @@ class MainWindow(QMainWindow):
         try:
             speed = float(speed_mph)
         except (TypeError, ValueError):
-            speed = 20.0
+            speed = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         if not math.isfinite(speed):
-            speed = 20.0
+            speed = DEFAULT_AUTO_THROTTLE_TARGET_MPH
         return max(0.0, min(self.auto_throttle_speed_channel_max_mph, speed))
 
     def set_auto_throttle_target_speed(self, speed_mph: float) -> None:
@@ -2519,8 +2653,13 @@ class MainWindow(QMainWindow):
             return
 
         for button, pressed in joystick.consume_button_events():
-            if button == self.JOYSTICK_CONTROL_MODE_BUTTON and pressed:
-                self.toggle_control_mode()
+            if button == self.JOYSTICK_CONTROL_MODE_BUTTON:
+                # Both edges: a tap toggles Manual/Fly-By-Wire on release, a
+                # 2 s hold engages loiter. Mirrors the Ctrl+M path exactly.
+                if pressed:
+                    self._loiter_press(PRESS_SOURCE_JOYSTICK)
+                else:
+                    self._loiter_release(PRESS_SOURCE_JOYSTICK)
             elif button == self.JOYSTICK_THROTTLE_MODE_BUTTON and pressed:
                 self.toggle_throttle_mode()
             elif button == self.JOYSTICK_YAW_LEFT_BUTTON:
@@ -3687,6 +3826,18 @@ class MainWindow(QMainWindow):
         self._update_sortie_button_availability()
         now = self.last_telemetry_time
         if packet_type == "attitude":
+            # Latch a threshold-crossing GAP here rather than leaving loiter to
+            # compare the current age at poll time. _poll_loiter runs on the
+            # 14 ms label timer while the FC decides at its 8 ms control rate,
+            # so an outage only slightly past LOITER_ATTITUDE_STALE_S can trip
+            # the FC and then resume between two polls -- both polls see a fresh
+            # age, CH10 stays high, and the request is stranded by the
+            # rising-edge rule even though the two thresholds are equal. This
+            # callback observes EVERY packet, so the gap cannot be missed.
+            if attitude_gap_exceeded(
+                self.last_attitude_packet_time, now, self.LOITER_ATTITUDE_STALE_S
+            ):
+                self._loiter_attitude_gap_seen = True
             self.last_attitude_packet_time = now
             if not self.attitude_connected:
                 if self.attitude_first_received_time is None:
@@ -3949,8 +4100,19 @@ class MainWindow(QMainWindow):
         """Cache and publish the desired FBW attitude cue for the OSD."""
 
         self._latest_control_channels = list(channels[:16])
+        # The cue means "the attitude the ground station is commanding". During
+        # loiter the GS commands nothing -- the FC picks the bank and does not
+        # report its setpoint back -- so the honest cue is no cue at all.
+        # Deciding that here rather than at each call site matters: the
+        # transmit path and the stick path both publish this, and if they
+        # disagree the marker flickers between them at the beat frequency of
+        # their two timers.
+        loiter = getattr(self, "loiter", None)
+        loiter_engaged = loiter is not None and loiter.engaged
         show_desired = (
-            self.control_mode == "Fly-By-Wire" if enabled is None else enabled
+            (self.control_mode == "Fly-By-Wire" and not loiter_engaged)
+            if enabled is None
+            else enabled
         )
         if show_desired:
             self.desired_fbw_roll, self.desired_fbw_pitch = (
@@ -3971,6 +4133,13 @@ class MainWindow(QMainWindow):
         self, joy_pitch: Optional[float], joy_roll: Optional[float]
     ) -> None:
         """Refresh the OSD cue from the same joystick-to-CRSF mapping as TX."""
+
+        if self.loiter.engaged:
+            # _update_desired_fbw_attitude already hides the cue while the
+            # orbit is flying; recomputing it from stick position here would
+            # publish the pilot's idle hand as a commanded attitude and fight
+            # that decision every transmit cycle.
+            return
 
         if self.control_mode != "Fly-By-Wire":
             self._update_desired_fbw_attitude(
@@ -4072,6 +4241,10 @@ class MainWindow(QMainWindow):
 
         if self.control_mode == "Fly-By-Wire":
             self._apply_fbw_command_limits(channels)
+        # Loiter is a request on CH10, not an attitude: unlike the FBW limits
+        # above it never rewrites roll/pitch, so ordering against them does not
+        # matter.
+        self._apply_loiter_to_channels(channels)
         self._update_desired_fbw_attitude(channels)
         return channels
 
@@ -4095,6 +4268,20 @@ class MainWindow(QMainWindow):
     def update_control_mode_label(self):
         """Update the control mode indicator text and color."""
         if hasattr(self.ui, "controlModeLabel"):
+            # The guard matters: this runs once during __init__ before the
+            # loiter controller exists.
+            loiter = getattr(self, "loiter", None)
+            if loiter is not None and loiter.engaged:
+                # "Requested", not "Loiter": the GS is driving CH10 high, but
+                # nothing in the downlink reports the FC's nav state, so it
+                # cannot know the orbit is actually flying. Claiming otherwise
+                # would leave the operator believing the aircraft was flying
+                # itself while it sat in ordinary Fly-By-Wire -- which is
+                # exactly what happens if any FC gate refuses the request.
+                # Confirmation is watching the aircraft turn.
+                self.ui.controlModeLabel.setText("Loiter req")
+                self.ui.controlModeLabel.setStyleSheet("color: rgb(0, 170, 255);")
+                return
             color = "rgb(0, 255, 0)" if self.control_mode == "Manual" else "rgb(255, 165, 0)"
             self.ui.controlModeLabel.setText(self.control_mode)
             self.ui.controlModeLabel.setStyleSheet(f"color: {color};")
@@ -4108,6 +4295,236 @@ class MainWindow(QMainWindow):
         )
         sound_name = "fbw" if self.control_mode == "Fly-By-Wire" else "manual"
         self.play_sound(sound_name)
+
+    # ------------------------------------------------------------------
+    # Loiter (fixed-bank orbit; see modules/loiter.py)
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt override naming
+        """Route Ctrl+M key edges to the loiter hold handler.
+
+        Both edges are needed to tell a tap (ordinary Manual/Fly-By-Wire
+        toggle) from a 2 s hold (engage loiter), which is why this replaced the
+        old QShortcut. The release is matched on the key alone rather than on
+        Ctrl+M: releasing Control before M would otherwise drop the modifier
+        from the release event and strand the hold with no way out.
+        """
+
+        event_type = event.type()
+        if event_type == QEvent.KeyPress:
+            if (
+                event.key() == Qt.Key_M
+                and event.modifiers() & Qt.ControlModifier
+                and not event.isAutoRepeat()
+                and not self._loiter_key_down
+                # The filter sits on the application, so without this it would
+                # also fire from dialogs and text fields. QShortcut's default
+                # WindowShortcut context scoped the old binding to this window
+                # and this keeps that behaviour.
+                and self.isActiveWindow()
+            ):
+                self._loiter_key_down = True
+                self._loiter_press()
+                return True
+        elif event_type == QEvent.KeyRelease:
+            if (
+                event.key() == Qt.Key_M
+                and self._loiter_key_down
+                and not event.isAutoRepeat()
+            ):
+                self._loiter_key_down = False
+                self._loiter_release()
+                return True
+        elif event_type == QEvent.WindowDeactivate and self._loiter_key_down:
+            # Focus left mid-hold, so the matching release will never arrive.
+            # Abandon the press instead of letting the hold mature into an
+            # engage the operator did not ask for.
+            self._loiter_key_down = False
+            self.loiter.cancel_press()
+        return super().eventFilter(obj, event)
+
+    def _loiter_gates(self) -> LoiterGates:
+        """Snapshot every condition the loiter state machine depends on."""
+
+        now = time.monotonic()
+        last_attitude = getattr(self, "last_attitude_packet_time", None)
+        # Attitude freshness stands in for "the FC's attitude loop is closed".
+        # The GS cannot see the FC's limited-authority pass-through directly
+        # (nothing in the downlink reports it), but the stale-attitude cause of
+        # that fallback does stop attitude frames, so this catches it.
+        attitude_fresh = bool(
+            getattr(self, "attitude_connected", False)
+            and last_attitude is not None
+            and (now - last_attitude) <= self.LOITER_ATTITUDE_STALE_S
+            # A gap that already came and went counts too: see the latch in the
+            # attitude callback. Sampling the current age alone cannot see an
+            # outage that recovered between two polls, and the FC has dropped
+            # the orbit by then.
+            and not getattr(self, "_loiter_attitude_gap_seen", False)
+        )
+
+        # "The handler object exists" is NOT enough. get_raw_values() returns
+        # the last cached axis values when the serial stream stalls, so a
+        # silently dead joystick would leave this gate true while stick
+        # movement and button releases stopped being observable -- disabling
+        # the pilot's primary way out of the orbit. Use the same freshness
+        # signal auto-trim already relies on.
+        last_stick_sample = getattr(self, "_last_stick_sample_time", 0.0)
+        joystick_live = bool(
+            getattr(self, "joystick", None) is not None
+            and last_stick_sample
+            and (now - last_stick_sample) <= AUTO_TRIM_STICK_STALE_S
+        )
+
+        # Intent to transmit is not enough: terminating transmission stops the
+        # RC frames while telemetry keeps arriving, so every other gate can
+        # stay satisfied with nothing reaching the aircraft. Reuse the same
+        # "really transmitting" test the TX indicator uses.
+        transmitting = bool(getattr(self, "transmission_active", False)) and (
+            self._crsf_serial_link_up()
+        )
+
+        # Track the FC's LATCHED airborne state. The GS detector can be the
+        # laxer of the pair (12 mph with the default warning config against the
+        # FC's 17.9), and a request the FC refuses is never retried -- its
+        # rising-edge rule keeps it refused even once the FC does latch
+        # airborne, leaving the orbit unflown while the operator was told
+        # otherwise. Mirroring the LATCH rather than re-testing the engage
+        # threshold every cycle matters just as much: the firmware keeps the
+        # flag through a slow-down, so a continuous comparison would drop a
+        # running orbit the FC was perfectly happy to keep flying.
+        # Both flight metrics must be FRESH, not merely cached. When GPS
+        # telemetry stops while attitude and the uplink stay live,
+        # _update_airborne_state deliberately freezes airborne_state and the
+        # cached speed/altitude rather than guessing -- so if the aircraft
+        # lands during that outage the GS goes on reporting the last airborne
+        # values it saw. Authorising a request on those would raise CH10 for an
+        # FC that has already cleared its own latch, and its rising-edge rule
+        # never retries. Treat stale as unavailable; fc_airborne_engage_ok
+        # already refuses on a missing reading. Same helpers, same timeout the
+        # airborne detector and auto-trim already use.
+        gps_timeout = self._airborne_config_value("gps_fresh_timeout_s", 2.0)
+        metrics_fresh = self._is_packet_fresh("gps", gps_timeout) and (
+            self._airspeed_value_fresh(now, gps_timeout)
+        )
+
+        gs_airborne = self._is_airborne()
+        airspeed_mph = (
+            self._safe_float(self.telemetry_state.get("airspeed_mph"))
+            if metrics_fresh
+            else None
+        )
+        height_agl_ft = self._current_altitude_agl_ft() if metrics_fresh else None
+        self._fc_airborne_latched = fc_airborne_latched(
+            getattr(self, "_fc_airborne_latched", False),
+            gs_airborne,
+            airspeed_mph,
+            height_agl_ft,
+        )
+
+        return LoiterGates(
+            fbw_active=self.control_mode == "Fly-By-Wire",
+            transmitting=transmitting,
+            attitude_fresh=attitude_fresh,
+            joystick_live=joystick_live,
+            airborne=self._fc_airborne_latched,
+            # Re-derived, never the latch, and BOTH halves of the firmware's
+            # condition. The latch can read true while the FC has dropped its
+            # own: after a watchdog reset it clears on airspeed (invisible to
+            # the GS), and in normal flight it clears at 1.5 m while the GS
+            # needs a sustained low-and-slow landing debounce -- so a fast low
+            # pass leaves the GS airborne at cruise speed with the FC grounded.
+            engage_airborne=fc_airborne_engage_ok(
+                gs_airborne, airspeed_mph, height_agl_ft
+            ),
+            # Physical stick position, not the sensitivity-scaled command:
+            # see _capture_stick_state. getattr throughout because the loiter
+            # controller is built earlier in __init__ than these caches, so
+            # nothing here may assume ordering.
+            stick_roll=getattr(self, "_last_stick_roll_phys_norm", None),
+            stick_pitch=getattr(self, "_last_stick_pitch_phys_norm", None),
+        )
+
+    def _loiter_press(self, source: str = PRESS_SOURCE_KEY) -> None:
+        """Handle a press edge of the control-mode toggle (key or button)."""
+
+        self._handle_loiter_event(self.loiter.press(time.monotonic(), source))
+
+    def _loiter_release(self, source: str = PRESS_SOURCE_KEY) -> None:
+        """Handle a release edge; a short tap still toggles Manual/Fly-By-Wire.
+
+        The source is carried through so a release from one control cannot
+        consume a press from the other -- an unmatched joystick release while
+        Ctrl+M is held would otherwise cancel the keyboard hold and toggle the
+        flight mode with the key still down.
+        """
+
+        if self.loiter.release(time.monotonic(), source) == REASON_TOGGLE:
+            self.toggle_control_mode()
+
+    def _abort_loiter(self, reason: str) -> None:
+        """Force loiter off synchronously at a teardown the gates cannot see.
+
+        A transport or joystick handler replaced inside one GUI callback never
+        presents the periodic gates with an unhealthy tick, so a running orbit
+        would otherwise survive the swap -- and the rebuilt transport would be
+        seeded with CH10 already high for a reconnecting FC to read as a fresh
+        request edge.
+        """
+
+        self._handle_loiter_event(self.loiter.abort(reason))
+
+    def _poll_loiter(self) -> None:
+        """Advance the engage hold and re-check the gates for a running orbit."""
+
+        self._handle_loiter_event(
+            self.loiter.poll(time.monotonic(), self._loiter_gates())
+        )
+        # The latch exists only to force the handover the poll above just did.
+        # Clearing it whenever loiter is not engaged keeps a single dropout
+        # from refusing every future hold, while a gap DURING an orbit is still
+        # consumed by the poll before it clears.
+        if not self.loiter.engaged:
+            self._loiter_attitude_gap_seen = False
+
+    def _handle_loiter_event(self, event) -> None:
+        """Annunciate a loiter transition and refresh the mode indicator."""
+
+        if event is None:
+            return
+
+        if event.kind == EVENT_ENGAGED:
+            logging.info("Loiter requested on CH10 (FC gates decide whether it flies)")
+            self.play_sound(self.LOITER_SOUND_ENGAGED)
+        elif event.kind == EVENT_REFUSED:
+            logging.info("Loiter refused: %s", event.reason)
+            self.play_sound(self.LOITER_SOUND_REFUSED)
+        elif event.kind == EVENT_DISENGAGED:
+            logging.info("Loiter disengaged: %s", event.reason)
+            # A pilot-commanded exit is a normal handover; anything else means
+            # the mode lost a condition it needed and deserves the fault cue.
+            pilot_commanded = event.reason in (REASON_TOGGLE, REASON_STICK)
+            self.play_sound(
+                self.LOITER_SOUND_DISENGAGED
+                if pilot_commanded
+                else self.LOITER_SOUND_FAULT
+            )
+
+        self.update_control_mode_label()
+
+    def _apply_loiter_to_channels(self, channels: list[int]) -> list[int]:
+        """Drive CH10/AUX6 with the loiter request.
+
+        The GS asks; the FC decides. This never touches roll or pitch: the
+        orbit's attitude is the firmware's to command, which is what keeps it
+        flying through the link jitter and ground-station stalls that a
+        GS-closed loop would not survive.
+        """
+
+        needed = LOITER_CHANNEL_INDEX + 1
+        if len(channels) < needed:
+            channels.extend([CRSF_CHANNEL_CENTER] * (needed - len(channels)))
+        channels[LOITER_CHANNEL_INDEX] = loiter_channel_value(self.loiter.engaged)
+        return channels
 
     def _setup_throttle_mode_indicator(self) -> None:
         """Make the throttle mode indicator act as the mode toggle."""
@@ -5518,6 +5935,10 @@ class MainWindow(QMainWindow):
         if self.crsf_processor:
             self.crsf_processor.transmission_enabled_update.emit(False)
         self.transmission_active = False
+        # Drop loiter at the teardown rather than waiting for the transmitting
+        # gate: synchronous, so CH10 cannot be left high for a later restart to
+        # deliver as a fresh edge.
+        self._abort_loiter(REASON_NOT_TRANSMITTING)
         # Without RC frames the FC aborts any running compass calibration on
         # its own (stale-link abort); reflect that in the button state.
         self._finish_compass_cal(reason="packet transmission stopped")
@@ -5762,6 +6183,11 @@ class MainWindow(QMainWindow):
             except Exception:
                 logging.error("Failed to close joystick on reselect", exc_info=True)
             self.joystick = None
+            # Same reason as the worker-error path, and the same reason abort
+            # is used rather than cancel_press: a running orbit must not
+            # outlive the device its takeover input comes from.
+            self._last_stick_sample_time = 0.0
+            self._abort_loiter(REASON_NO_JOYSTICK)
         if validate_port("joystick", port):
             try:
                 self.joystick = JoystickRawHandler(
@@ -5826,6 +6252,11 @@ class MainWindow(QMainWindow):
         # would put CH7 straight back into the request band on auto-reconnect
         # and could restart the FC calibration with nobody at the button.
         self._finish_compass_cal(reason="CRSF link disconnected or reselected")
+        # Same hazard, same reasoning as the compass-cal line above: a stale
+        # loiter request would seed the rebuilt transport with CH10 high, and a
+        # reconnecting airborne FC reads that as a fresh rising edge and enters
+        # the orbit with nobody having asked for it.
+        self._abort_loiter(REASON_NOT_TRANSMITTING)
         if not preserve_preference:
             self.crsf_cfg["port"] = port
             self._crsf_desired_port = port
